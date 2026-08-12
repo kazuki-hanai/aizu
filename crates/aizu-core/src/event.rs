@@ -544,4 +544,58 @@ mod tests {
             ValidationError::ControlCharacter { field: "title" }
         ));
     }
+
+    #[test]
+    fn rejects_non_rfc_source_uuid_variant() {
+        let mut event = EmitRequest {
+            kind: Some(EventKind::AgentQuestion),
+            title: Some("Question".into()),
+            ..EmitRequest::default()
+        }
+        .normalize(source_id(), "local".into(), None)
+        .unwrap();
+        event.source.source_id = Uuid::nil();
+
+        assert!(matches!(
+            event.validate().unwrap_err(),
+            ValidationError::SourceIdMustBeRfc4122
+        ));
+    }
+
+    #[test]
+    fn enforces_unicode_scalar_length_boundaries() {
+        EmitRequest {
+            kind: Some(EventKind::AgentQuestion),
+            title: Some("界".repeat(120)),
+            body: Some("🙂".repeat(1_000)),
+            ..EmitRequest::default()
+        }
+        .normalize(source_id(), "local".into(), None)
+        .unwrap();
+
+        let title_error = EmitRequest {
+            kind: Some(EventKind::AgentQuestion),
+            title: Some("界".repeat(121)),
+            ..EmitRequest::default()
+        }
+        .normalize(source_id(), "local".into(), None)
+        .unwrap_err();
+        assert!(matches!(
+            title_error,
+            ValidationError::InvalidLength { field: "title", .. }
+        ));
+
+        let body_error = EmitRequest {
+            kind: Some(EventKind::AgentQuestion),
+            title: Some("Question".into()),
+            body: Some("🙂".repeat(1_001)),
+            ..EmitRequest::default()
+        }
+        .normalize(source_id(), "local".into(), None)
+        .unwrap_err();
+        assert!(matches!(
+            body_error,
+            ValidationError::InvalidLength { field: "body", .. }
+        ));
+    }
 }

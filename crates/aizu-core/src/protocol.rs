@@ -362,6 +362,18 @@ mod tests {
     }
 
     #[test]
+    fn parser_preserves_unknown_optional_event_fields() {
+        let line = br#"{"type":"event","sequence":1,"future_frame_field":true,"event":{"schema_version":1,"id":"0198a012-3456-7abc-8def-0123456789ab","kind":"agent.question","occurred_at":"2026-08-12T12:34:56.789Z","source":{"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","display_name":"build-server","agent":"generic","future_source_field":"kept"},"title":"Question","future_event_field":{"value":1}}}"#;
+        let ParsedBridgeFrame::Known(BridgeFrame::Event { event, .. }) =
+            parse_frame_line(line).unwrap()
+        else {
+            panic!("expected an event frame");
+        };
+        assert_eq!(event.extra["future_event_field"]["value"], 1);
+        assert_eq!(event.source.extra["future_source_field"], "kept");
+    }
+
+    #[test]
     fn parser_validates_event_and_sequence_invariants() {
         assert!(matches!(
             parse_frame_line(

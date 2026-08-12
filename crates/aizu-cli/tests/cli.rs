@@ -98,6 +98,7 @@ fn bridge_rejects_protocol_mismatch_before_hello() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(2));
+    assert!(output.stderr.is_empty());
     let lines: Vec<_> = output.stdout.split(|byte| *byte == b'\n').collect();
     let frame: Value = serde_json::from_slice(lines[0]).unwrap();
     assert_eq!(frame["type"], "error");
@@ -218,6 +219,7 @@ fn hook_is_best_effort_unless_strict() {
         .write_stdin("{}")
         .assert()
         .success()
+        .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("was not persisted"));
 
     aizu()
@@ -234,6 +236,60 @@ fn hook_is_best_effort_unless_strict() {
         .write_stdin("{}")
         .assert()
         .failure();
+}
+
+#[test]
+fn bridge_spool_failure_is_a_single_protocol_frame() {
+    let directory = TempDir::new().unwrap();
+    let state_path = directory.path().join("state");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(directory.path().join("target"), &state_path).unwrap();
+    #[cfg(not(unix))]
+    fs::write(&state_path, "not a directory").unwrap();
+
+    let output = aizu()
+        .args([
+            "--state-dir",
+            state_path.to_str().unwrap(),
+            "bridge",
+            "--protocol",
+            "1",
+            "--after",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let frames: Vec<Value> = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["type"], "error");
+    assert_eq!(frames[0]["code"], "spool_unavailable");
+    assert!(!output.stderr.is_empty());
+}
+
+#[test]
+fn version_does_not_create_a_spool() {
+    let directory = TempDir::new().unwrap();
+    let state_path = directory.path().join("unused");
+    let output = aizu()
+        .args([
+            "--state-dir",
+            state_path.to_str().unwrap(),
+            "version",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["protocol"], 1);
+    assert_eq!(report["event_schema"], 1);
+    assert!(!state_path.exists());
 }
 
 #[test]
@@ -450,4 +506,59 @@ fn bridge_reports_gap_when_every_event_was_pruned() {
     assert_eq!(frames[1]["type"], "gap");
     assert_eq!(frames[1]["oldest_sequence"], Value::Null);
     assert_eq!(frames[1]["lost_through_sequence"], 1);
+}
+
+#[test]
+fn concurrent_process_emit_allocates_every_sequence_once() {
+    let directory = TempDir::new().unwrap();
+    let binary = assert_cmd::cargo::cargo_bin!("aizu");
+    let mut children = Vec::new();
+    for index in 0..20 {
+        children.push(
+            Command::new(binary)
+                .args([
+                    "--state-dir",
+                    directory.path().to_str().unwrap(),
+                    "--display-name",
+                    "process-test",
+                    "emit",
+                    "agent.question",
+                    "--title",
+                    &format!("Question {index}"),
+                    "--json",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+
+    let mut sequences = Vec::new();
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        sequences.push(value["sequence"].as_i64().unwrap());
+    }
+    sequences.sort_unstable();
+    assert_eq!(sequences, (1..=20).collect::<Vec<_>>());
+
+    let report = aizu()
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "doctor",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(report["event_count"], 20);
+    assert_eq!(report["latest_sequence"], 20);
 }

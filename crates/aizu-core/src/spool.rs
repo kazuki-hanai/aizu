@@ -119,7 +119,10 @@ impl Spool {
         if after < 0 {
             return Err(SpoolError::InvalidCursor(after));
         }
-        let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, 10_000);
+        let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE);
+        if !(1..=10_000).contains(&limit) {
+            return Err(SpoolError::InvalidPageSize);
+        }
         let limit = i64::try_from(limit).map_err(|_| SpoolError::InvalidPageSize)?;
         let connection = self.connection()?;
         let spool_source_id: String = connection.query_row(
@@ -225,99 +228,16 @@ impl Spool {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         self.ensure_maintenance_inactive()?;
-        let (mut remaining_events, mut remaining_payload_bytes): (i64, i64) = transaction
-            .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0)
-                 FROM events",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-        let cutoff = now
-            .checked_sub_signed(policy.max_age)
-            .ok_or(SpoolError::InvalidRetentionPolicy)?;
-        let mut deleted_events = 0_i64;
-        let mut deleted_payload_bytes = 0_i64;
-        for _ in 0..policy.batch_size {
-            let candidate = transaction
-                .query_row(
-                    "SELECT sequence, inserted_at, LENGTH(CAST(payload_json AS BLOB))
-                     FROM events
-                     WHERE inserted_at < ?1
-                        OR ?2 > ?3
-                        OR ?4 > ?5
-                     ORDER BY
-                        CASE WHEN inserted_at < ?1 THEN 0 ELSE 1 END,
-                        sequence ASC
-                     LIMIT 1",
-                    params![
-                        format_timestamp(cutoff),
-                        remaining_events,
-                        policy.max_events,
-                        remaining_payload_bytes,
-                        policy.max_payload_bytes,
-                    ],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, i64>(2)?,
-                        ))
-                    },
-                )
-                .optional()?;
-            let Some((sequence, inserted_at, payload_bytes)) = candidate else {
-                break;
-            };
-            let inserted_at = DateTime::parse_from_rfc3339(&inserted_at)
-                .map_err(|source| SpoolError::InvalidStoredTimestamp {
-                    raw: inserted_at,
-                    source,
-                })?
-                .with_timezone(&Utc);
-            let over_age = inserted_at < cutoff;
-            let over_count = remaining_events > policy.max_events;
-            let over_bytes = remaining_payload_bytes > policy.max_payload_bytes;
-            if !over_age && !over_count && !over_bytes {
-                break;
-            }
-            transaction.execute("DELETE FROM events WHERE sequence = ?1", params![sequence])?;
-            deleted_events += 1;
-            deleted_payload_bytes += payload_bytes;
-            remaining_events -= 1;
-            remaining_payload_bytes -= payload_bytes;
-        }
-        transaction.execute(
-            "UPDATE source_identity
-             SET last_maintenance_at = ?1
-             WHERE singleton = 1",
-            params![format_timestamp(now)],
-        )?;
+        let report = prune_retention_batch(&transaction, now, policy)?;
         transaction.commit()?;
 
-        if deleted_events > 0 {
+        if report.deleted_events > 0 {
             connection.execute_batch(
                 "PRAGMA wal_checkpoint(PASSIVE);
                  PRAGMA incremental_vacuum(256);",
             )?;
         }
-        let expired_exists: bool = connection.query_row(
-            "SELECT EXISTS(
-                SELECT 1 FROM events WHERE inserted_at < ?1
-             )",
-            params![format_timestamp(cutoff)],
-            |row| row.get(0),
-        )?;
-        let more_required = remaining_events > policy.max_events
-            || remaining_payload_bytes > policy.max_payload_bytes
-            || expired_exists;
-
-        Ok(MaintenanceReport {
-            deleted_events,
-            deleted_payload_bytes,
-            remaining_events,
-            remaining_payload_bytes,
-            more_required,
-        })
+        Ok(report)
     }
 
     pub fn maintain_default(&self) -> Result<MaintenanceReport, SpoolError> {
@@ -372,8 +292,9 @@ impl Spool {
 
     fn initialize(&self) -> Result<(), SpoolError> {
         let mut connection = Connection::open(self.paths.spool_db())?;
-        configure_connection(&connection)?;
         ensure_safe_sqlite_version(&connection)?;
+        reject_newer_database(&connection)?;
+        configure_connection(&connection)?;
 
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Exclusive)?;
         transaction.execute_batch(
@@ -405,15 +326,9 @@ impl Spool {
 
     fn connection(&self) -> Result<Connection, SpoolError> {
         let connection = Connection::open(self.paths.spool_db())?;
-        configure_connection(&connection)?;
         ensure_safe_sqlite_version(&connection)?;
-        let schema_version = database_schema_version(&connection)?;
-        if schema_version > DATABASE_SCHEMA_VERSION {
-            return Err(SpoolError::DatabaseTooNew {
-                found: schema_version,
-                supported: DATABASE_SCHEMA_VERSION,
-            });
-        }
+        reject_newer_database(&connection)?;
+        configure_connection(&connection)?;
         Ok(connection)
     }
 
@@ -464,6 +379,107 @@ impl Spool {
         let elapsed = now.signed_duration_since(last);
         Ok(elapsed < ChronoDuration::zero() || elapsed >= MAINTENANCE_INTERVAL)
     }
+}
+
+fn prune_retention_batch(
+    transaction: &Transaction<'_>,
+    now: DateTime<Utc>,
+    policy: RetentionPolicy,
+) -> Result<MaintenanceReport, SpoolError> {
+    let (mut remaining_events, mut remaining_payload_bytes): (i64, i64) = transaction.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0)
+             FROM events",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let cutoff = now
+        .checked_sub_signed(policy.max_age)
+        .ok_or(SpoolError::InvalidRetentionPolicy)?;
+    let mut deleted_events = 0_i64;
+    let mut deleted_payload_bytes = 0_i64;
+
+    for _ in 0..policy.batch_size {
+        let candidate = next_retention_candidate(
+            transaction,
+            cutoff,
+            remaining_events,
+            remaining_payload_bytes,
+            policy,
+        )?;
+        let Some((sequence, inserted_at, payload_bytes)) = candidate else {
+            break;
+        };
+        let inserted_at = DateTime::parse_from_rfc3339(&inserted_at)
+            .map_err(|source| SpoolError::InvalidStoredTimestamp {
+                raw: inserted_at,
+                source,
+            })?
+            .with_timezone(&Utc);
+        if inserted_at >= cutoff
+            && remaining_events <= policy.max_events
+            && remaining_payload_bytes <= policy.max_payload_bytes
+        {
+            break;
+        }
+        transaction.execute("DELETE FROM events WHERE sequence = ?1", params![sequence])?;
+        deleted_events += 1;
+        deleted_payload_bytes += payload_bytes;
+        remaining_events -= 1;
+        remaining_payload_bytes -= payload_bytes;
+    }
+
+    let expired_exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM events WHERE inserted_at < ?1)",
+        params![format_timestamp(cutoff)],
+        |row| row.get(0),
+    )?;
+    let more_required = remaining_events > policy.max_events
+        || remaining_payload_bytes > policy.max_payload_bytes
+        || expired_exists;
+    transaction.execute(
+        "UPDATE source_identity
+         SET last_maintenance_at = ?1
+         WHERE singleton = 1",
+        params![if more_required {
+            None
+        } else {
+            Some(format_timestamp(now))
+        }],
+    )?;
+
+    Ok(MaintenanceReport {
+        deleted_events,
+        deleted_payload_bytes,
+        remaining_events,
+        remaining_payload_bytes,
+        more_required,
+    })
+}
+
+fn next_retention_candidate(
+    transaction: &Transaction<'_>,
+    cutoff: DateTime<Utc>,
+    remaining_events: i64,
+    remaining_payload_bytes: i64,
+    policy: RetentionPolicy,
+) -> Result<Option<(i64, String, i64)>, SpoolError> {
+    Ok(transaction
+        .query_row(
+            "SELECT sequence, inserted_at, LENGTH(CAST(payload_json AS BLOB))
+             FROM events
+             WHERE inserted_at < ?1 OR ?2 > ?3 OR ?4 > ?5
+             ORDER BY CASE WHEN inserted_at < ?1 THEN 0 ELSE 1 END, sequence ASC
+             LIMIT 1",
+            params![
+                format_timestamp(cutoff),
+                remaining_events,
+                policy.max_events,
+                remaining_payload_bytes,
+                policy.max_payload_bytes,
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?)
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), SpoolError> {
@@ -600,6 +616,18 @@ fn database_schema_version(connection: &Connection) -> Result<i64, SpoolError> {
             row.get::<_, Option<i64>>(0)
         })?
         .unwrap_or(0))
+}
+
+fn reject_newer_database(connection: &Connection) -> Result<(), SpoolError> {
+    let schema_version = database_schema_version(connection)?;
+    if schema_version > DATABASE_SCHEMA_VERSION {
+        Err(SpoolError::DatabaseTooNew {
+            found: schema_version,
+            supported: DATABASE_SCHEMA_VERSION,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn default_display_name() -> String {
@@ -923,7 +951,24 @@ mod tests {
         ));
         let regenerated = spool.regenerate_identity(true, true).unwrap();
         assert_eq!(regenerated.discarded_events, 1);
-        assert!(regenerated.backup_path.unwrap().exists());
+        let backup_path = regenerated.backup_path.unwrap();
+        assert!(backup_path.exists());
+        let backup = Connection::open(backup_path).unwrap();
+        let backup_event_count: i64 = backup
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        let backup_source_id: String = backup
+            .query_row(
+                "SELECT source_id FROM source_identity WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(backup_event_count, 1);
+        assert_eq!(
+            Uuid::parse_str(&backup_source_id).unwrap(),
+            regenerated.old_source_id
+        );
         assert_eq!(spool.snapshot().unwrap().latest_sequence, 0);
     }
 
@@ -1135,5 +1180,127 @@ mod tests {
         drop(connection);
 
         assert!(spool.maintenance_due(Utc::now()).unwrap());
+    }
+
+    #[test]
+    fn refuses_newer_database_schema_without_removing_it() {
+        let (directory, spool) = spool();
+        let connection = spool.connection().unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?1)",
+                params![format_timestamp(Utc::now())],
+            )
+            .unwrap();
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+        drop(connection);
+        drop(spool);
+        let database = directory.path().join("spool.sqlite3");
+        let before = fs::read(&database).unwrap();
+
+        assert!(matches!(
+            Spool::open(StatePaths::new(directory.path())).unwrap_err(),
+            SpoolError::DatabaseTooNew {
+                found: 2,
+                supported: 1
+            }
+        ));
+        assert_eq!(fs::read(&database).unwrap(), before);
+        let connection = Connection::open(database).unwrap();
+        let version: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn corrupt_database_is_preserved_for_recovery() {
+        let directory = TempDir::new().unwrap();
+        let database = directory.path().join("spool.sqlite3");
+        let original = b"not a SQLite database";
+        fs::write(&database, original).unwrap();
+
+        assert!(Spool::open(StatePaths::new(directory.path())).is_err());
+        assert_eq!(fs::read(database).unwrap(), original);
+    }
+
+    #[test]
+    fn sequence_exhaustion_does_not_insert_an_event() {
+        let (_directory, spool) = spool();
+        let connection = spool.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE source_identity SET high_watermark = ?1 WHERE singleton = 1",
+                params![i64::MAX],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            spool
+                .emit(
+                    EmitRequest {
+                        title: Some("Question".into()),
+                        ..EmitRequest::default()
+                    },
+                    Some(EventKind::AgentQuestion),
+                )
+                .unwrap_err(),
+            SpoolError::SequenceExhausted
+        ));
+        assert!(spool.events_after(0, None).unwrap().is_empty());
+        assert_eq!(spool.snapshot().unwrap().latest_sequence, i64::MAX);
+    }
+
+    #[test]
+    fn rejects_invalid_cursor_and_page_sizes() {
+        let (_directory, spool) = spool();
+        assert!(matches!(
+            spool.events_after(-1, None).unwrap_err(),
+            SpoolError::InvalidCursor(-1)
+        ));
+        assert!(matches!(
+            spool.events_after(0, Some(0)).unwrap_err(),
+            SpoolError::InvalidPageSize
+        ));
+        assert!(matches!(
+            spool.events_after(0, Some(10_001)).unwrap_err(),
+            SpoolError::InvalidPageSize
+        ));
+    }
+
+    #[test]
+    fn bounded_maintenance_reports_remaining_work() {
+        let (_directory, spool) = spool();
+        for index in 0..3 {
+            spool
+                .emit(
+                    EmitRequest {
+                        title: Some(format!("Event {index}")),
+                        ..EmitRequest::default()
+                    },
+                    Some(EventKind::AgentQuestion),
+                )
+                .unwrap();
+        }
+        let policy = RetentionPolicy {
+            max_events: 0,
+            batch_size: 1,
+            ..RetentionPolicy::default()
+        };
+        let first = spool.maintain(Utc::now(), policy).unwrap();
+        assert_eq!(first.deleted_events, 1);
+        assert!(first.more_required);
+        assert!(spool.maintenance_due(Utc::now()).unwrap());
+        let second = spool.maintain(Utc::now(), policy).unwrap();
+        assert_eq!(second.deleted_events, 1);
+        assert!(second.more_required);
+        let third = spool.maintain(Utc::now(), policy).unwrap();
+        assert_eq!(third.deleted_events, 1);
+        assert!(!third.more_required);
     }
 }

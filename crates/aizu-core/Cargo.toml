@@ -1,5 +1,7 @@
 [package]
 name = "aizu-core"
+description = "Shared event, SQLite spool, and bridge protocol implementation for Aizu"
+publish = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true

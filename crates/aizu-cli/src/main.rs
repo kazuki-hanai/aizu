@@ -434,24 +434,7 @@ fn stream_bridge(
 
     loop {
         let snapshot = spool.snapshot()?;
-        if snapshot.source_id != source_id {
-            write_frame(
-                stdout,
-                &BridgeFrame::terminal_error(
-                    "source_identity_changed",
-                    "source identity changed during the stream",
-                ),
-            )?;
-            return Ok(2);
-        }
-        if cursor > snapshot.latest_sequence {
-            write_frame(
-                stdout,
-                &BridgeFrame::terminal_error(
-                    "cursor_ahead",
-                    "requested cursor is ahead of the source",
-                ),
-            )?;
+        if !stream_snapshot_is_valid(stdout, &snapshot, source_id, cursor)? {
             return Ok(2);
         }
         if emit_gap_if_needed(stdout, &snapshot, &mut cursor)? {
@@ -487,6 +470,13 @@ fn stream_bridge(
         if event_count == BRIDGE_PAGE_SIZE {
             continue;
         }
+        let post_read_snapshot = spool.snapshot()?;
+        if !stream_snapshot_is_valid(stdout, &post_read_snapshot, source_id, cursor)? {
+            return Ok(2);
+        }
+        if cursor < post_read_snapshot.latest_sequence {
+            continue;
+        }
         if !args.follow {
             return Ok(0);
         }
@@ -500,6 +490,33 @@ fn stream_bridge(
             last_frame = Instant::now();
         }
         thread::sleep(follow_poll_interval());
+    }
+}
+
+fn stream_snapshot_is_valid(
+    writer: &mut impl Write,
+    snapshot: &aizu_core::SpoolSnapshot,
+    expected_source_id: uuid::Uuid,
+    cursor: i64,
+) -> Result<bool, Box<dyn Error>> {
+    let error = if snapshot.source_id != expected_source_id {
+        Some(BridgeFrame::terminal_error(
+            "source_identity_changed",
+            "source identity changed during the stream",
+        ))
+    } else if cursor > snapshot.latest_sequence {
+        Some(BridgeFrame::terminal_error(
+            "cursor_ahead",
+            "requested cursor is ahead of the source",
+        ))
+    } else {
+        None
+    };
+    if let Some(frame) = error {
+        write_frame(writer, &frame)?;
+        Ok(false)
+    } else {
+        Ok(true)
     }
 }
 
