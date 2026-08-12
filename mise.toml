@@ -1,0 +1,73 @@
+min_version = "2026.7.17"
+
+[settings]
+lockfile = true
+
+[tools]
+rust = { version = "1.97.1", components = "clippy,rustfmt", profile = "minimal" }
+node = "24.19.0"
+pnpm = "11.21.0"
+
+[env]
+CARGO_TERM_COLOR = "always"
+
+[tasks."rust:fmt"]
+description = "Check Rust formatting"
+run = "cargo fmt --all --check"
+
+[tasks."rust:clippy"]
+description = "Lint every Rust target with warnings denied"
+run = "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+
+[tasks."rust:test"]
+description = "Run all Rust tests with locked dependencies"
+run = "cargo test --workspace --all-features --locked"
+
+[tasks."rust:build"]
+description = "Build the optimized Rust workspace"
+run = "cargo build --workspace --release --all-features --locked"
+
+[tasks.check]
+description = "Run the local CI-equivalent Rust quality gates"
+run = [
+  { task = "rust:fmt" },
+  { task = "rust:clippy" },
+  { task = "rust:test" },
+]
+
+[tasks.build]
+description = "Build all currently implemented release artifacts"
+run = [{ task = "rust:build" }]
+
+[tasks.ci]
+description = "Run checks and release builds"
+run = [
+  { task = "check" },
+  { task = "build" },
+]
+
+[tasks."cli:smoke"]
+description = "Exercise the durable CLI event pipeline in an isolated directory"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_dir="$(mktemp -d)"
+trap 'rm -rf "$state_dir"' EXIT
+
+cargo run --quiet -p aizu-cli -- \
+  --state-dir "$state_dir" \
+  --display-name mise-smoke \
+  emit task.completed \
+  --title "Smoke test completed" \
+  --outcome succeeded \
+  --json
+
+cargo run --quiet -p aizu-cli -- \
+  --state-dir "$state_dir" \
+  doctor --json
+
+cargo run --quiet -p aizu-cli -- \
+  --state-dir "$state_dir" \
+  bridge --protocol 1 --after 0
+"""

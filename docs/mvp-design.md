@@ -887,7 +887,8 @@ Unix domain socket を MVP の基盤にしないことで、Windows 対応時に
 ├── Cargo.lock
 ├── package.json
 ├── pnpm-lock.yaml
-└── rust-toolchain.toml
+├── mise.toml
+└── mise.lock
 ```
 
 protocol と event schema の初版は [`docs/protocol.md`](protocol.md) と [`docs/schemas/event-v1.schema.json`](schemas/event-v1.schema.json) に切り出してある。本 Design Doc とこれら 2 ファイルは常に同期させる（AGENTS.md §20）。

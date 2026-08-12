@@ -390,7 +390,16 @@ fn follow_stream_delivers_event_added_after_startup() {
         .assert()
         .success();
 
-    let event: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    let event = (0..20)
+        .find_map(|_| {
+            let frame: Value = serde_json::from_str(&lines.next()?.ok()?).ok()?;
+            match frame["type"].as_str() {
+                Some("event") => Some(frame),
+                Some("heartbeat") => None,
+                other => panic!("unexpected bridge frame before event: {other:?}"),
+            }
+        })
+        .expect("event should arrive within 20 bridge frames");
     assert_eq!(event["type"], "event");
     assert_eq!(event["event"]["title"], "Question");
     drop(lines);
