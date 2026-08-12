@@ -1,4 +1,5 @@
-use std::fs::{self, OpenOptions};
+use std::fs::TryLockError;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -356,11 +357,14 @@ impl Spool {
     }
 
     fn ensure_maintenance_inactive(&self) -> Result<(), SpoolError> {
-        if self.paths.root().join("maintenance.lock").exists() {
-            Err(SpoolError::MaintenanceBusy)
-        } else {
-            Ok(())
+        let path = self.paths.root().join("maintenance.lock");
+        if !path.exists() {
+            return Ok(());
         }
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        file.try_lock_shared().map_err(map_lock_error)?;
+        file.unlock()?;
+        Ok(())
     }
 
     fn maintenance_due(&self, now: DateTime<Utc>) -> Result<bool, SpoolError> {
@@ -690,31 +694,34 @@ fn set_private_file(path: &Path) -> Result<(), SpoolError> {
 }
 
 struct MaintenanceLock {
-    path: PathBuf,
+    file: File,
 }
 
 impl MaintenanceLock {
     fn acquire(root: &Path) -> Result<Self, SpoolError> {
         let path = root.join("maintenance.lock");
-        OpenOptions::new()
+        let file = OpenOptions::new()
+            .read(true)
             .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    SpoolError::MaintenanceBusy
-                } else {
-                    SpoolError::Io(error)
-                }
-            })?;
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
         set_private_file(&path)?;
-        Ok(Self { path })
+        file.try_lock().map_err(map_lock_error)?;
+        Ok(Self { file })
+    }
+}
+
+fn map_lock_error(error: TryLockError) -> SpoolError {
+    match error {
+        TryLockError::WouldBlock => SpoolError::MaintenanceBusy,
+        TryLockError::Error(error) => SpoolError::Io(error),
     }
 }
 
 impl Drop for MaintenanceLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        let _ = self.file.unlock();
     }
 }
 
@@ -1027,7 +1034,7 @@ mod tests {
     #[test]
     fn maintenance_lock_blocks_emit() {
         let (_directory, spool) = spool();
-        fs::write(spool.paths.root().join("maintenance.lock"), b"locked").unwrap();
+        let _lock = MaintenanceLock::acquire(spool.paths.root()).unwrap();
 
         assert!(matches!(
             spool
@@ -1041,6 +1048,31 @@ mod tests {
                 .unwrap_err(),
             SpoolError::MaintenanceBusy
         ));
+    }
+
+    #[test]
+    fn stale_maintenance_lock_file_does_not_block_emit() {
+        let (_directory, spool) = spool();
+        fs::write(spool.paths.root().join("maintenance.lock"), b"stale").unwrap();
+
+        spool
+            .emit(
+                EmitRequest {
+                    title: Some("Question".into()),
+                    ..EmitRequest::default()
+                },
+                Some(EventKind::AgentQuestion),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn maintenance_lock_can_be_reacquired_after_drop() {
+        let (_directory, spool) = spool();
+        {
+            let _lock = MaintenanceLock::acquire(spool.paths.root()).unwrap();
+        }
+        let _reacquired = MaintenanceLock::acquire(spool.paths.root()).unwrap();
     }
 
     #[cfg(unix)]
