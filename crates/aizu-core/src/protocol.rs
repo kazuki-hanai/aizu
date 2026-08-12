@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Write};
+use std::mem;
 
 use chrono::{DateTime, Utc};
 use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
@@ -46,6 +47,238 @@ pub enum BridgeFrame {
 pub enum ParsedBridgeFrame {
     Known(BridgeFrame),
     Unknown { frame_type: String },
+}
+
+/// Incrementally splits a byte stream into bounded NDJSON frames.
+///
+/// The decoder enforces the line limit before a delimiter arrives, so callers
+/// never need to allocate an unbounded buffer for a malicious SSH peer.
+#[derive(Debug, Default)]
+pub struct FrameDecoder {
+    buffer: Vec<u8>,
+}
+
+impl FrameDecoder {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { buffer: Vec::new() }
+    }
+
+    pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<ParsedBridgeFrame>, ProtocolError> {
+        let mut frames = Vec::new();
+        for byte in chunk {
+            if *byte == b'\n' {
+                let mut line = mem::take(&mut self.buffer);
+                line.push(b'\n');
+                frames.push(parse_frame_line(&line)?);
+                continue;
+            }
+            self.buffer.push(*byte);
+            let delimiter_cr =
+                self.buffer.len() == MAX_FRAME_BYTES + 1 && self.buffer.last() == Some(&b'\r');
+            if self.buffer.len() > MAX_FRAME_BYTES && !delimiter_cr {
+                return Err(ProtocolError::FrameTooLarge {
+                    actual: self.buffer.len(),
+                    maximum: MAX_FRAME_BYTES,
+                });
+            }
+        }
+        Ok(frames)
+    }
+
+    /// Verifies that EOF occurs at a frame boundary.
+    pub fn finish(&mut self) -> Result<Option<ParsedBridgeFrame>, ProtocolError> {
+        if self.buffer.is_empty() {
+            return Ok(None);
+        }
+        Err(ProtocolError::UnterminatedFrame {
+            buffered: self.buffer.len(),
+        })
+    }
+
+    #[must_use]
+    pub fn buffered_len(&self) -> usize {
+        self.buffer.len()
+    }
+}
+
+/// Stateful validation for a single bridge process stream.
+#[derive(Clone, Debug)]
+pub struct BridgeStreamValidator {
+    expected_protocol: u32,
+    pinned_source_id: Option<Uuid>,
+    source_id: Option<Uuid>,
+    cursor: i64,
+    required_gap_through: Option<i64>,
+    phase: StreamPhase,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamPhase {
+    AwaitingHello,
+    Active,
+    Terminal,
+}
+
+impl BridgeStreamValidator {
+    pub fn new(
+        expected_protocol: u32,
+        after: i64,
+        pinned_source_id: Option<Uuid>,
+    ) -> Result<Self, ProtocolError> {
+        if after < 0 {
+            return Err(ProtocolError::InvalidInitialCursor(after));
+        }
+        Ok(Self {
+            expected_protocol,
+            pinned_source_id,
+            source_id: None,
+            cursor: after,
+            required_gap_through: None,
+            phase: StreamPhase::AwaitingHello,
+        })
+    }
+
+    pub fn accept(&mut self, frame: &ParsedBridgeFrame) -> Result<(), ProtocolError> {
+        if let ParsedBridgeFrame::Known(frame) = frame {
+            validate_frame(frame)?;
+        }
+        match self.phase {
+            StreamPhase::AwaitingHello => self.accept_before_hello(frame),
+            StreamPhase::Active => self.accept_active(frame),
+            StreamPhase::Terminal => Err(ProtocolError::FrameAfterTerminal),
+        }
+    }
+
+    #[must_use]
+    pub const fn cursor(&self) -> i64 {
+        self.cursor
+    }
+
+    #[must_use]
+    pub const fn source_id(&self) -> Option<Uuid> {
+        self.source_id
+    }
+
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self.phase, StreamPhase::Terminal)
+    }
+
+    fn accept_before_hello(&mut self, frame: &ParsedBridgeFrame) -> Result<(), ProtocolError> {
+        match frame {
+            ParsedBridgeFrame::Known(BridgeFrame::Hello {
+                protocol_version,
+                source_id,
+                oldest_sequence,
+                latest_sequence,
+            }) => {
+                if *protocol_version != self.expected_protocol {
+                    return Err(ProtocolError::ProtocolVersionMismatch {
+                        expected: self.expected_protocol,
+                        actual: *protocol_version,
+                    });
+                }
+                if let Some(pinned) = self.pinned_source_id
+                    && pinned != *source_id
+                {
+                    return Err(ProtocolError::SourceIdentityMismatch {
+                        expected: pinned,
+                        actual: *source_id,
+                    });
+                }
+                self.source_id = Some(*source_id);
+                self.required_gap_through = match oldest_sequence {
+                    Some(oldest) if self.cursor < oldest.saturating_sub(1) => Some(oldest - 1),
+                    None if self.cursor < *latest_sequence => Some(*latest_sequence),
+                    _ => None,
+                };
+                self.phase = StreamPhase::Active;
+                Ok(())
+            }
+            ParsedBridgeFrame::Known(BridgeFrame::Error { .. }) => {
+                self.phase = StreamPhase::Terminal;
+                Ok(())
+            }
+            ParsedBridgeFrame::Known(frame) => Err(ProtocolError::FrameBeforeHello(
+                known_frame_type(frame).to_owned(),
+            )),
+            ParsedBridgeFrame::Unknown { frame_type } => {
+                Err(ProtocolError::FrameBeforeHello(frame_type.clone()))
+            }
+        }
+    }
+
+    fn accept_active(&mut self, frame: &ParsedBridgeFrame) -> Result<(), ProtocolError> {
+        match frame {
+            ParsedBridgeFrame::Unknown { .. }
+            | ParsedBridgeFrame::Known(BridgeFrame::Heartbeat { .. }) => Ok(()),
+            ParsedBridgeFrame::Known(BridgeFrame::Event { sequence, event }) => {
+                if let Some(lost_through) = self.required_gap_through {
+                    return Err(ProtocolError::RequiredGapMissing { lost_through });
+                }
+                let source_id = self.source_id.ok_or(ProtocolError::MissingStreamSource)?;
+                if event.source.source_id != source_id {
+                    return Err(ProtocolError::SourceIdentityMismatch {
+                        expected: source_id,
+                        actual: event.source.source_id,
+                    });
+                }
+                let expected = self
+                    .cursor
+                    .checked_add(1)
+                    .ok_or(ProtocolError::SequenceOverflow)?;
+                if *sequence != expected {
+                    return Err(ProtocolError::SequenceDiscontinuity {
+                        expected,
+                        actual: *sequence,
+                    });
+                }
+                self.cursor = *sequence;
+                Ok(())
+            }
+            ParsedBridgeFrame::Known(BridgeFrame::Gap {
+                requested_after,
+                lost_through_sequence,
+                ..
+            }) => {
+                if *requested_after != self.cursor {
+                    return Err(ProtocolError::GapCursorMismatch {
+                        expected: self.cursor,
+                        actual: *requested_after,
+                    });
+                }
+                if let Some(required) = self.required_gap_through
+                    && *lost_through_sequence != required
+                {
+                    return Err(ProtocolError::RequiredGapMismatch {
+                        expected: required,
+                        actual: *lost_through_sequence,
+                    });
+                }
+                self.cursor = *lost_through_sequence;
+                self.required_gap_through = None;
+                Ok(())
+            }
+            ParsedBridgeFrame::Known(BridgeFrame::Error { .. }) => {
+                self.phase = StreamPhase::Terminal;
+                Ok(())
+            }
+            ParsedBridgeFrame::Known(BridgeFrame::Hello { .. }) => {
+                Err(ProtocolError::DuplicateHello)
+            }
+        }
+    }
+}
+
+const fn known_frame_type(frame: &BridgeFrame) -> &'static str {
+    match frame {
+        BridgeFrame::Hello { .. } => "hello",
+        BridgeFrame::Event { .. } => "event",
+        BridgeFrame::Heartbeat { .. } => "heartbeat",
+        BridgeFrame::Gap { .. } => "gap",
+        BridgeFrame::Error { .. } => "error",
+    }
 }
 
 impl BridgeFrame {
@@ -108,9 +341,7 @@ pub fn parse_frame_line(input: &[u8]) -> Result<ParsedBridgeFrame, ProtocolError
         return Err(ProtocolError::EmbeddedLineBreak);
     }
 
-    let mut deserializer = serde_json::Deserializer::from_slice(line);
-    let value = StrictValueSeed { depth: 0 }.deserialize(&mut deserializer)?;
-    deserializer.end()?;
+    let value = parse_strict_json_value(line, MAX_FRAME_BYTES)?;
     let frame_type = value
         .as_object()
         .and_then(|object| object.get("type"))
@@ -128,6 +359,63 @@ pub fn parse_frame_line(input: &[u8]) -> Result<ParsedBridgeFrame, ProtocolError
     let frame: BridgeFrame = serde_json::from_value(value)?;
     validate_frame(&frame)?;
     Ok(ParsedBridgeFrame::Known(frame))
+}
+
+/// Parses bounded JSON while rejecting duplicate object keys, excessive
+/// nesting, and integers outside the signed 64-bit range.
+pub fn parse_strict_json_value(input: &[u8], maximum_bytes: usize) -> Result<Value, ProtocolError> {
+    if input.len() > maximum_bytes {
+        return Err(ProtocolError::FrameTooLarge {
+            actual: input.len(),
+            maximum: maximum_bytes,
+        });
+    }
+    validate_json_integer_tokens(input)?;
+    let mut deserializer = serde_json::Deserializer::from_slice(input);
+    let value = StrictValueSeed { depth: 0 }.deserialize(&mut deserializer)?;
+    deserializer.end()?;
+    Ok(value)
+}
+
+fn validate_json_integer_tokens(input: &[u8]) -> Result<(), ProtocolError> {
+    let mut index = 0;
+    while index < input.len() {
+        match input[index] {
+            b'"' => {
+                index += 1;
+                while index < input.len() {
+                    match input[index] {
+                        b'\\' => index = index.saturating_add(2),
+                        b'"' => {
+                            index += 1;
+                            break;
+                        }
+                        _ => index += 1,
+                    }
+                }
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = index;
+                index += 1;
+                while index < input.len()
+                    && matches!(input[index], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
+                {
+                    index += 1;
+                }
+                let token = &input[start..index];
+                if !token.iter().any(|byte| matches!(byte, b'.' | b'e' | b'E'))
+                    && std::str::from_utf8(token)
+                        .ok()
+                        .and_then(|raw| raw.parse::<i64>().ok())
+                        .is_none()
+                {
+                    return Err(ProtocolError::IntegerOutOfRange);
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    Ok(())
 }
 
 fn validate_frame(frame: &BridgeFrame) -> Result<(), ProtocolError> {
@@ -303,10 +591,38 @@ pub enum ProtocolError {
     EmptyFrame,
     #[error("bridge frame contains an embedded line break")]
     EmbeddedLineBreak,
+    #[error("bridge stream ended with an unterminated {buffered}-byte frame")]
+    UnterminatedFrame { buffered: usize },
     #[error("bridge frame is missing a string type field")]
     MissingFrameType,
+    #[error("JSON integer exceeds the signed 64-bit range")]
+    IntegerOutOfRange,
     #[error("bridge frame violates the {0} invariant")]
     InvalidFrameInvariant(&'static str),
+    #[error("initial bridge cursor must be non-negative, got {0}")]
+    InvalidInitialCursor(i64),
+    #[error("bridge protocol version mismatch: expected {expected}, got {actual}")]
+    ProtocolVersionMismatch { expected: u32, actual: u32 },
+    #[error("bridge source identity mismatch: expected {expected}, got {actual}")]
+    SourceIdentityMismatch { expected: Uuid, actual: Uuid },
+    #[error("bridge frame {0:?} arrived before hello")]
+    FrameBeforeHello(String),
+    #[error("bridge emitted hello more than once")]
+    DuplicateHello,
+    #[error("bridge frame arrived after a terminal error")]
+    FrameAfterTerminal,
+    #[error("bridge stream source identity is missing")]
+    MissingStreamSource,
+    #[error("bridge sequence overflow")]
+    SequenceOverflow,
+    #[error("bridge event sequence discontinuity: expected {expected}, got {actual}")]
+    SequenceDiscontinuity { expected: i64, actual: i64 },
+    #[error("bridge gap cursor mismatch: expected {expected}, got {actual}")]
+    GapCursorMismatch { expected: i64, actual: i64 },
+    #[error("bridge event arrived before required gap through sequence {lost_through}")]
+    RequiredGapMissing { lost_through: i64 },
+    #[error("bridge gap did not cover hello-declared loss: expected {expected}, got {actual}")]
+    RequiredGapMismatch { expected: i64, actual: i64 },
     #[error("event validation failed: {0}")]
     Validation(#[from] ValidationError),
     #[error("invalid bridge JSON: {0}")]
@@ -348,6 +664,14 @@ mod tests {
         let line = br#"{"type":"hello","type":"event","protocol_version":1,"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","oldest_sequence":null,"latest_sequence":0}"#;
         assert!(matches!(
             parse_frame_line(line).unwrap_err(),
+            ProtocolError::Json(_)
+        ));
+    }
+
+    #[test]
+    fn strict_json_parser_rejects_nested_duplicate_keys() {
+        assert!(matches!(
+            parse_strict_json_value(br#"{"outer":{"value":1,"value":2}}"#, 1024).unwrap_err(),
             ProtocolError::Json(_)
         ));
     }
@@ -420,7 +744,184 @@ mod tests {
         ));
         assert!(matches!(
             parse_frame_line(br#"{"type":"future","value":18446744073709551615}"#).unwrap_err(),
-            ProtocolError::Json(_)
+            ProtocolError::IntegerOutOfRange
+        ));
+        assert!(matches!(
+            parse_frame_line(br#"{"type":"future","value":-9223372036854775809}"#).unwrap_err(),
+            ProtocolError::IntegerOutOfRange
+        ));
+        assert!(
+            parse_frame_line(br#"{"type":"future","value":-9223372036854775808,"float":1.25e20}"#)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn incremental_decoder_handles_split_and_multiple_frames() {
+        let hello = br#"{"type":"hello","protocol_version":1,"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","oldest_sequence":null,"latest_sequence":0}"#;
+        let unknown = br#"{"type":"future.frame","value":1}"#;
+        let split = hello.len() / 2;
+        let mut decoder = FrameDecoder::new();
+
+        assert!(decoder.push(&hello[..split]).unwrap().is_empty());
+        assert_eq!(decoder.buffered_len(), split);
+        let frames = decoder
+            .push(&[&hello[split..], b"\n", unknown, b"\r\n"].concat())
+            .unwrap();
+        assert_eq!(frames.len(), 2);
+        assert!(matches!(
+            frames[0],
+            ParsedBridgeFrame::Known(BridgeFrame::Hello { .. })
+        ));
+        assert!(matches!(
+            &frames[1],
+            ParsedBridgeFrame::Unknown { frame_type } if frame_type == "future.frame"
+        ));
+        assert_eq!(decoder.buffered_len(), 0);
+        assert!(decoder.finish().unwrap().is_none());
+    }
+
+    #[test]
+    fn incremental_decoder_rejects_unbounded_line_before_delimiter() {
+        let mut decoder = FrameDecoder::new();
+        let oversized = vec![b'x'; crate::MAX_FRAME_BYTES + 1];
+        assert!(matches!(
+            decoder.push(&oversized).unwrap_err(),
+            ProtocolError::FrameTooLarge { .. }
+        ));
+    }
+
+    #[test]
+    fn incremental_decoder_rejects_unterminated_frame_at_eof() {
+        let mut decoder = FrameDecoder::new();
+        decoder
+            .push(
+                br#"{"type":"hello","protocol_version":1,"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","oldest_sequence":null,"latest_sequence":0}"#,
+            )
+            .unwrap();
+        assert!(matches!(
+            decoder.finish().unwrap_err(),
+            ProtocolError::UnterminatedFrame { buffered } if buffered > 0
+        ));
+    }
+
+    #[test]
+    fn stream_validator_accepts_gap_then_event_and_terminal_error() {
+        let source_id = Uuid::parse_str("7a4881c7-c667-47dc-b544-f98a46ab17ca").unwrap();
+        let mut validator =
+            BridgeStreamValidator::new(PROTOCOL_VERSION, 0, Some(source_id)).unwrap();
+        let frames = [
+            br#"{"type":"hello","protocol_version":1,"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","oldest_sequence":3,"latest_sequence":3}"#
+                .as_slice(),
+            br#"{"type":"gap","requested_after":0,"oldest_sequence":3,"lost_through_sequence":2}"#
+                .as_slice(),
+            br#"{"type":"future.frame","value":1}"#.as_slice(),
+            br#"{"type":"event","sequence":3,"event":{"schema_version":1,"id":"0198a012-3456-7abc-8def-0123456789ab","kind":"agent.question","occurred_at":"2026-08-12T12:34:56.789Z","source":{"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","display_name":"build-server","agent":"generic"},"title":"Question"}}"#
+                .as_slice(),
+            br#"{"type":"heartbeat","sent_at":"2026-08-12T12:35:30Z"}"#.as_slice(),
+            br#"{"type":"error","code":"internal","message":"stream stopped"}"#.as_slice(),
+        ];
+        for frame in frames {
+            validator.accept(&parse_frame_line(frame).unwrap()).unwrap();
+        }
+        assert_eq!(validator.cursor(), 3);
+        assert_eq!(validator.source_id(), Some(source_id));
+        assert!(validator.is_terminal());
+        assert!(matches!(
+            validator
+                .accept(&parse_frame_line(frames[4]).unwrap())
+                .unwrap_err(),
+            ProtocolError::FrameAfterTerminal
+        ));
+    }
+
+    #[test]
+    fn stream_validator_rejects_order_identity_and_sequence_errors() {
+        let source_id = Uuid::parse_str("7a4881c7-c667-47dc-b544-f98a46ab17ca").unwrap();
+        let event = parse_frame_line(
+            br#"{"type":"event","sequence":2,"event":{"schema_version":1,"id":"0198a012-3456-7abc-8def-0123456789ab","kind":"agent.question","occurred_at":"2026-08-12T12:34:56.789Z","source":{"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","display_name":"build-server","agent":"generic"},"title":"Question"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            BridgeStreamValidator::new(1, 0, None)
+                .unwrap()
+                .accept(&event)
+                .unwrap_err(),
+            ProtocolError::FrameBeforeHello(_)
+        ));
+
+        let wrong_version = parse_frame_line(
+            br#"{"type":"hello","protocol_version":2,"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","oldest_sequence":null,"latest_sequence":0}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            BridgeStreamValidator::new(1, 0, None)
+                .unwrap()
+                .accept(&wrong_version)
+                .unwrap_err(),
+            ProtocolError::ProtocolVersionMismatch {
+                expected: 1,
+                actual: 2
+            }
+        ));
+
+        let hello = parse_frame_line(
+            br#"{"type":"hello","protocol_version":1,"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","oldest_sequence":1,"latest_sequence":2}"#,
+        )
+        .unwrap();
+        let other_source = Uuid::parse_str("6a4881c7-c667-47dc-b544-f98a46ab17ca").unwrap();
+        assert!(matches!(
+            BridgeStreamValidator::new(1, 0, Some(other_source))
+                .unwrap()
+                .accept(&hello)
+                .unwrap_err(),
+            ProtocolError::SourceIdentityMismatch { .. }
+        ));
+
+        let mut validator = BridgeStreamValidator::new(1, 0, Some(source_id)).unwrap();
+        validator.accept(&hello).unwrap();
+        assert!(matches!(
+            validator.accept(&event).unwrap_err(),
+            ProtocolError::SequenceDiscontinuity {
+                expected: 1,
+                actual: 2
+            }
+        ));
+
+        let invalid_direct = ParsedBridgeFrame::Known(BridgeFrame::hello(Uuid::nil(), None, 0));
+        assert!(matches!(
+            BridgeStreamValidator::new(1, 0, None)
+                .unwrap()
+                .accept(&invalid_direct)
+                .unwrap_err(),
+            ProtocolError::InvalidFrameInvariant("hello sequence range")
+        ));
+
+        let pruned_hello = parse_frame_line(
+            br#"{"type":"hello","protocol_version":1,"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","oldest_sequence":3,"latest_sequence":3}"#,
+        )
+        .unwrap();
+        let sequence_one = parse_frame_line(
+            br#"{"type":"event","sequence":1,"event":{"schema_version":1,"id":"0198a012-3456-7abc-8def-0123456789ab","kind":"agent.question","occurred_at":"2026-08-12T12:34:56.789Z","source":{"source_id":"7a4881c7-c667-47dc-b544-f98a46ab17ca","display_name":"build-server","agent":"generic"},"title":"Question"}}"#,
+        )
+        .unwrap();
+        let mut missing_gap = BridgeStreamValidator::new(1, 0, Some(source_id)).unwrap();
+        missing_gap.accept(&pruned_hello).unwrap();
+        assert!(matches!(
+            missing_gap.accept(&sequence_one).unwrap_err(),
+            ProtocolError::RequiredGapMissing { lost_through: 2 }
+        ));
+
+        let short_gap = parse_frame_line(
+            br#"{"type":"gap","requested_after":0,"oldest_sequence":2,"lost_through_sequence":1}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            missing_gap.accept(&short_gap).unwrap_err(),
+            ProtocolError::RequiredGapMismatch {
+                expected: 2,
+                actual: 1
+            }
         ));
     }
 }

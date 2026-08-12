@@ -158,8 +158,10 @@ source 側で継続不能な状態を通知する。
 | `code` | 意味 |
 |---|---|
 | `incompatible_protocol` | desktop の要求 major version を source が扱えない |
-| `incompatible_database` | source の spool schema が現在の CLI と互換性を持たず、CLI 更新または明示的 recovery が必要 |
 | `spool_unavailable` | spool を開けない・読めない |
+| `incompatible_database` | source の spool schema/runtime が現在の CLI と互換性を持たず、CLI/app update または明示的 recovery が必要 |
+| `unsupported_storage` | spool が network filesystem または WAL 非対応storageにあり、local filesystemへの移動が必要 |
+| `spool_corrupt` | stored event/index/high-watermark/SQLite integrity検証に失敗し、明示的recoveryが必要 |
 | `cursor_ahead` | requested cursor が source high watermark より大きく、DB rollback/source rewind が疑われる |
 | `source_identity_changed` | stream 中に source identity が変更され、同一 source として継続できない |
 | `invalid_request` | protocol/cursor argument が不正 |
@@ -167,7 +169,7 @@ source 側で継続不能な状態を通知する。
 
 `message` は user-safe な固定文言とし、最大 512 Unicode scalar values。path、username、SQL、secret を含めない。詳細診断は redacted stderr へ出す。
 
-desktop は `error` を error category として分類し、必要に応じて再接続または更新案内を行う。`incompatible_protocol`、`incompatible_database`、`cursor_ahead`、`source_identity_changed`、`invalid_request` は自動 retry せず、user action があるまで停止する。
+desktop は `error` を error category として分類し、必要に応じて再接続または更新案内を行う。`incompatible_protocol`、`incompatible_database`、`unsupported_storage`、`spool_corrupt`、`cursor_ahead`、`source_identity_changed`、`invalid_request` は自動 retry せず、user action があるまで停止する。
 
 ## 5. Delivery semantics
 

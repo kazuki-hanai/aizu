@@ -9,9 +9,12 @@ use rusqlite::{
 };
 use serde::Serialize;
 use thiserror::Error;
-use uuid::Uuid;
+use uuid::{Uuid, Variant};
 
-use crate::event::{EmitRequest, EventKind, NormalizedEvent, ValidationError, format_timestamp};
+use crate::MAX_EVENT_BYTES;
+use crate::event::{
+    EmitRequest, EventKind, NormalizedEvent, ValidationError, format_timestamp, parse_utc_timestamp,
+};
 use crate::paths::StatePaths;
 
 pub const DATABASE_SCHEMA_VERSION: i64 = 1;
@@ -36,7 +39,11 @@ impl Spool {
         paths: StatePaths,
         display_name: impl Into<String>,
     ) -> Result<Self, SpoolError> {
+        if paths.root().as_os_str().is_empty() {
+            return Err(SpoolError::EmptyStatePath);
+        }
         create_private_directory(paths.root())?;
+        ensure_local_filesystem(paths.root())?;
         create_private_database_file(&paths.spool_db())?;
         let spool = Self {
             paths,
@@ -114,7 +121,7 @@ impl Spool {
         }
 
         Ok(SpoolSnapshot {
-            source_id: parse_uuid_column(source_id, 0)?,
+            source_id: parse_stored_source_id(source_id, 0)?,
             oldest_sequence,
             latest_sequence,
         })
@@ -134,41 +141,60 @@ impl Spool {
         }
         let limit = i64::try_from(limit).map_err(|_| SpoolError::InvalidPageSize)?;
         let connection = self.connection()?;
-        let spool_source_id: String = connection.query_row(
-            "SELECT source_id FROM source_identity WHERE singleton = 1",
+        let (spool_source_id, high_watermark): (String, i64) = connection.query_row(
+            "SELECT source_id, high_watermark FROM source_identity WHERE singleton = 1",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let spool_source_id = parse_uuid_column(spool_source_id, 0)?;
+        let spool_source_id = parse_stored_source_id(spool_source_id, 0)?;
         let mut statement = connection.prepare(
-            "SELECT sequence, event_id, schema_version, kind, occurred_at, payload_json
+            "SELECT sequence, event_id, schema_version, kind, occurred_at,
+                    inserted_at, LENGTH(CAST(payload_json AS BLOB)), payload_json
              FROM events
              WHERE sequence > ?1
              ORDER BY sequence ASC
              LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![after, limit], |row| {
+        let mut rows = statement.query(params![after, limit])?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next()? {
             let sequence: i64 = row.get(0)?;
             let event_id: String = row.get(1)?;
             let schema_version: i64 = row.get(2)?;
             let kind: String = row.get(3)?;
             let occurred_at: String = row.get(4)?;
-            let payload: String = row.get(5)?;
+            let inserted_at: String = row.get(5)?;
+            if parse_utc_timestamp(&inserted_at).is_err() {
+                return Err(SpoolError::StoredEventMismatch {
+                    sequence,
+                    field: "inserted_at",
+                });
+            }
+            if sequence > high_watermark {
+                return Err(SpoolError::HighWatermarkBehind {
+                    high_watermark,
+                    newest_sequence: sequence,
+                });
+            }
+            let payload_bytes: i64 = row.get(6)?;
+            let maximum =
+                i64::try_from(MAX_EVENT_BYTES).map_err(|_| SpoolError::InvalidPageSize)?;
+            if payload_bytes < 0 || payload_bytes > maximum {
+                return Err(SpoolError::StoredPayloadTooLarge {
+                    sequence,
+                    actual: payload_bytes,
+                    maximum: MAX_EVENT_BYTES,
+                });
+            }
+            let payload: String = row.get(7)?;
             let event = serde_json::from_str::<NormalizedEvent>(&payload).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
+                SpoolError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
+                    7,
+                    Type::Text,
+                    Box::new(error),
+                ))
             })?;
-            Ok((
-                SpoolEvent { sequence, event },
-                event_id,
-                schema_version,
-                kind,
-                occurred_at,
-            ))
-        })?;
-
-        let mut events = Vec::new();
-        for row in rows {
-            let (item, event_id, schema_version, kind, occurred_at) = row?;
+            let item = SpoolEvent { sequence, event };
             item.event.validate()?;
             let mismatch = if item.event.id.to_string() != event_id {
                 Some("event_id")
@@ -621,7 +647,7 @@ fn source_id_in_transaction(transaction: &Transaction<'_>) -> Result<Uuid, Spool
         [],
         |row| row.get(0),
     )?;
-    parse_uuid_column(raw, 0)
+    parse_stored_source_id(raw, 0)
 }
 
 fn parse_uuid_column(raw: String, column: usize) -> Result<Uuid, SpoolError> {
@@ -630,6 +656,14 @@ fn parse_uuid_column(raw: String, column: usize) -> Result<Uuid, SpoolError> {
         raw,
         source: error,
     })
+}
+
+fn parse_stored_source_id(raw: String, column: usize) -> Result<Uuid, SpoolError> {
+    let source_id = parse_uuid_column(raw, column)?;
+    if source_id.get_variant() != Variant::RFC4122 {
+        return Err(SpoolError::InvalidStoredSourceUuid(source_id));
+    }
+    Ok(source_id)
 }
 
 fn database_schema_version(connection: &Connection) -> Result<i64, SpoolError> {
@@ -682,6 +716,60 @@ fn create_private_directory(path: &Path) -> Result<(), SpoolError> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
+}
+
+fn ensure_local_filesystem(path: &Path) -> Result<(), SpoolError> {
+    #[cfg(target_os = "macos")]
+    {
+        let stats = rustix::fs::statfs(path).map_err(rustix_errno_to_spool_error)?;
+        let bytes: Vec<u8> = stats
+            .f_fstypename
+            .iter()
+            .copied()
+            .take_while(|character| *character != 0)
+            .map(|character| character.to_ne_bytes()[0])
+            .collect();
+        let filesystem = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+        if macos_filesystem_is_network(&filesystem) {
+            return Err(SpoolError::NetworkFilesystem(filesystem));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let filesystem = i128::from(
+            rustix::fs::statfs(path)
+                .map_err(rustix_errno_to_spool_error)?
+                .f_type,
+        );
+        if linux_filesystem_is_network(filesystem) {
+            return Err(SpoolError::NetworkFilesystem(format!(
+                "magic 0x{filesystem:x}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn rustix_errno_to_spool_error(error: rustix::io::Errno) -> SpoolError {
+    SpoolError::Io(std::io::Error::from_raw_os_error(error.raw_os_error()))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_filesystem_is_network(filesystem: &str) -> bool {
+    matches!(filesystem, "afpfs" | "cifs" | "nfs" | "smbfs" | "webdav")
+}
+
+#[cfg(target_os = "linux")]
+const fn linux_filesystem_is_network(filesystem: i128) -> bool {
+    matches!(
+        filesystem,
+        0x6969 // NFS
+            | 0xff53_4d42 // CIFS/SMB2
+            | 0x0102_1997 // 9P
+            | 0x7375_7245 // CODA
+            | 0x564c // NCP
+    )
 }
 
 fn create_private_database_file(path: &Path) -> Result<(), SpoolError> {
@@ -845,6 +933,8 @@ pub struct IdentityRegeneration {
 pub enum SpoolError {
     #[error("the per-user state directory could not be determined")]
     StateDirectoryUnavailable,
+    #[error("state directory path must not be empty")]
+    EmptyStatePath,
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("filesystem error: {0}")]
@@ -864,6 +954,8 @@ pub enum SpoolError {
         #[source]
         source: uuid::Error,
     },
+    #[error("stored source UUID does not use the RFC 4122 variant: {0}")]
+    InvalidStoredSourceUuid(Uuid),
     #[error("sequence counter is exhausted")]
     SequenceExhausted,
     #[error("cursor must be non-negative, got {0}")]
@@ -878,6 +970,8 @@ pub enum SpoolError {
     MaintenanceBusy,
     #[error("state path must not be a symbolic link: {0}")]
     UnsafeStatePath(PathBuf),
+    #[error("spool must use a local filesystem, found {0}")]
+    NetworkFilesystem(String),
     #[error("retention policy is invalid")]
     InvalidRetentionPolicy,
     #[error("stored timestamp is invalid: {raw}")]
@@ -888,6 +982,12 @@ pub enum SpoolError {
     },
     #[error("stored event at sequence {sequence} does not match its {field} index")]
     StoredEventMismatch { sequence: i64, field: &'static str },
+    #[error("stored event at sequence {sequence} is {actual} bytes; maximum is {maximum}")]
+    StoredPayloadTooLarge {
+        sequence: i64,
+        actual: i64,
+        maximum: usize,
+    },
     #[error(
         "source high-watermark {high_watermark} is behind newest event sequence {newest_sequence}"
     )]
@@ -897,6 +997,32 @@ pub enum SpoolError {
     },
     #[error("SQLite integrity check failed: {0}")]
     IntegrityCheckFailed(String),
+}
+
+impl SpoolError {
+    #[must_use]
+    pub fn indicates_corruption(&self) -> bool {
+        match self {
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _)) => matches!(
+                error.code,
+                rusqlite::ffi::ErrorCode::DatabaseCorrupt | rusqlite::ffi::ErrorCode::NotADatabase
+            ),
+            Self::Sqlite(
+                rusqlite::Error::FromSqlConversionFailure(..)
+                | rusqlite::Error::InvalidColumnType(..)
+                | rusqlite::Error::QueryReturnedNoRows,
+            )
+            | Self::Validation(_)
+            | Self::InvalidStoredUuid { .. }
+            | Self::InvalidStoredSourceUuid(_)
+            | Self::InvalidStoredTimestamp { .. }
+            | Self::StoredEventMismatch { .. }
+            | Self::StoredPayloadTooLarge { .. }
+            | Self::HighWatermarkBehind { .. }
+            | Self::IntegrityCheckFailed(_) => true,
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1131,6 +1257,14 @@ mod tests {
     }
 
     #[test]
+    fn rejects_empty_state_root() {
+        assert!(matches!(
+            Spool::open(StatePaths::new("")).unwrap_err(),
+            SpoolError::EmptyStatePath
+        ));
+    }
+
+    #[test]
     fn source_identity_is_stable_across_reopen() {
         let directory = TempDir::new().unwrap();
         let paths = StatePaths::new(directory.path());
@@ -1165,6 +1299,15 @@ mod tests {
                 & 0o777,
             0o600
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn classifies_macos_network_filesystems() {
+        for filesystem in ["afpfs", "cifs", "nfs", "smbfs", "webdav"] {
+            assert!(macos_filesystem_is_network(filesystem));
+        }
+        assert!(!macos_filesystem_is_network("apfs"));
     }
 
     #[test]
@@ -1235,6 +1378,44 @@ mod tests {
                 field: "event_id"
             }
         ));
+        assert!(matches!(
+            spool.doctor().unwrap_err(),
+            SpoolError::StoredEventMismatch {
+                sequence: 1,
+                field: "event_id"
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_oversized_stored_payload_before_deserializing_it() {
+        let (_directory, spool) = spool();
+        spool
+            .emit(
+                EmitRequest {
+                    title: Some("Question".into()),
+                    ..EmitRequest::default()
+                },
+                Some(EventKind::AgentQuestion),
+            )
+            .unwrap();
+        let connection = spool.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE events SET payload_json = ?1 WHERE sequence = 1",
+                params!["x".repeat(MAX_EVENT_BYTES + 1)],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            spool.events_after(0, None).unwrap_err(),
+            SpoolError::StoredPayloadTooLarge {
+                sequence: 1,
+                actual,
+                maximum: MAX_EVENT_BYTES,
+            } if actual == i64::try_from(MAX_EVENT_BYTES + 1).unwrap()
+        ));
     }
 
     #[test]
@@ -1271,6 +1452,73 @@ mod tests {
                 high_watermark: 0,
                 newest_sequence: 1
             }
+        ));
+        assert!(matches!(
+            spool.events_after(0, None).unwrap_err(),
+            SpoolError::HighWatermarkBehind {
+                high_watermark: 0,
+                newest_sequence: 1
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_stored_insertion_timestamp() {
+        let (_directory, spool) = spool();
+        spool
+            .emit(
+                EmitRequest {
+                    title: Some("Question".into()),
+                    ..EmitRequest::default()
+                },
+                Some(EventKind::AgentQuestion),
+            )
+            .unwrap();
+        let connection = spool.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE events SET inserted_at = 'not-a-time' WHERE sequence = 1",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            spool.events_after(0, None).unwrap_err(),
+            SpoolError::StoredEventMismatch {
+                sequence: 1,
+                field: "inserted_at"
+            }
+        ));
+    }
+
+    #[test]
+    fn snapshot_and_emit_reject_non_rfc_stored_source_uuid() {
+        let (_directory, spool) = spool();
+        let connection = spool.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE source_identity SET source_id = ?1 WHERE singleton = 1",
+                params![Uuid::nil().to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            spool.snapshot().unwrap_err(),
+            SpoolError::InvalidStoredSourceUuid(_)
+        ));
+        assert!(matches!(
+            spool
+                .emit(
+                    EmitRequest {
+                        title: Some("Question".into()),
+                        ..EmitRequest::default()
+                    },
+                    Some(EventKind::AgentQuestion),
+                )
+                .unwrap_err(),
+            SpoolError::InvalidStoredSourceUuid(_)
         ));
     }
 
@@ -1333,6 +1581,19 @@ mod tests {
 
         assert!(Spool::open(StatePaths::new(directory.path())).is_err());
         assert_eq!(fs::read(database).unwrap(), original);
+    }
+
+    #[test]
+    fn classifies_sqlite_corruption_errors() {
+        let sqlite = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ffi::ErrorCode::DatabaseCorrupt,
+                extended_code: 11,
+            },
+            None,
+        );
+        assert!(SpoolError::Sqlite(sqlite).indicates_corruption());
+        assert!(!SpoolError::MaintenanceBusy.indicates_corruption());
     }
 
     #[test]

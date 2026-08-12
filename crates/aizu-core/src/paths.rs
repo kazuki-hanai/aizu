@@ -19,7 +19,9 @@ impl StatePaths {
 
     /// Resolves the default per-user state directory.
     pub fn discover() -> Result<Self, SpoolError> {
-        if let Some(path) = std::env::var_os("AIZU_STATE_DIR") {
+        if let Some(path) = std::env::var_os("AIZU_STATE_DIR")
+            && !path.is_empty()
+        {
             return Ok(Self::new(path));
         }
 

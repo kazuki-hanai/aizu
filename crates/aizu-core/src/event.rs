@@ -225,12 +225,40 @@ impl EmitRequest {
 }
 
 pub fn parse_utc_timestamp(raw: &str) -> Result<DateTime<Utc>, ValidationError> {
-    if !raw.ends_with('Z') {
+    if !has_strict_utc_timestamp_shape(raw) {
         return Err(ValidationError::TimestampMustBeUtc);
     }
     let parsed =
         DateTime::parse_from_rfc3339(raw).map_err(|_| ValidationError::InvalidTimestamp)?;
     Ok(parsed.with_timezone(&Utc))
+}
+
+fn has_strict_utc_timestamp_shape(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    if bytes.len() < 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes.last() != Some(&b'Z')
+    {
+        return false;
+    }
+    let required_digits = [0_usize, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
+    if required_digits
+        .iter()
+        .any(|index| !bytes[*index].is_ascii_digit())
+    {
+        return false;
+    }
+    match bytes.len() {
+        20 => true,
+        length if bytes[19] == b'.' && length > 21 => {
+            bytes[20..length - 1].iter().all(u8::is_ascii_digit)
+        }
+        _ => false,
+    }
 }
 
 #[must_use]
@@ -453,6 +481,18 @@ mod tests {
             format_timestamp(parse_utc_timestamp("2026-08-12T12:00:00Z").unwrap()),
             "2026-08-12T12:00:00.000Z"
         );
+        assert!(matches!(
+            parse_utc_timestamp("2026-08-12 12:00:00Z").unwrap_err(),
+            ValidationError::TimestampMustBeUtc
+        ));
+        assert!(matches!(
+            parse_utc_timestamp("2026-08-12T12:00:00.Z").unwrap_err(),
+            ValidationError::TimestampMustBeUtc
+        ));
+        assert!(matches!(
+            parse_utc_timestamp("+2026-08-12T12:00:00Z").unwrap_err(),
+            ValidationError::TimestampMustBeUtc
+        ));
     }
 
     #[test]
@@ -597,5 +637,28 @@ mod tests {
             body_error,
             ValidationError::InvalidLength { field: "body", .. }
         ));
+    }
+
+    #[test]
+    fn rust_event_contract_stays_in_sync_with_json_schema() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../../../docs/schemas/event-v1.schema.json"))
+                .unwrap();
+        assert_eq!(
+            schema["properties"]["schema_version"]["const"],
+            SCHEMA_VERSION
+        );
+        assert_eq!(schema["properties"]["title"]["maxLength"], 120);
+        assert_eq!(schema["properties"]["body"]["maxLength"], 1_000);
+        assert_eq!(
+            schema["properties"]["kind"]["enum"],
+            serde_json::json!(["task.completed", "agent.question"])
+        );
+        assert_eq!(
+            schema["properties"]["outcome"]["enum"],
+            serde_json::json!(["succeeded", "failed", "cancelled", "unknown"])
+        );
+        assert_eq!(schema["additionalProperties"], true);
+        assert_eq!(schema["properties"]["source"]["additionalProperties"], true);
     }
 }

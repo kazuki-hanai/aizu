@@ -164,6 +164,34 @@ fn stdin_json_ignores_spoofed_identity_fields() {
 }
 
 #[test]
+fn stdin_json_rejects_duplicate_keys_without_persisting() {
+    let directory = TempDir::new().unwrap();
+    aizu()
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "emit",
+            "--stdin-json",
+        ])
+        .write_stdin(r#"{"kind":"agent.question","title":"one","title":"two"}"#)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("duplicate JSON object key"));
+
+    let report = aizu()
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "doctor",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(report["event_count"], 0);
+}
+
+#[test]
 fn emit_rejects_invalid_inputs_without_persisting() {
     let directory = TempDir::new().unwrap();
     aizu()

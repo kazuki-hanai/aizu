@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use aizu_core::{
     BridgeFrame, EmitRequest, EventKind, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool,
-    SpoolError, StatePaths, Urgency,
+    SpoolError, StatePaths, Urgency, parse_strict_json_value,
 };
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -263,7 +263,8 @@ fn open_spool(paths: &StatePaths, display_name: Option<String>) -> Result<Spool,
 fn run_emit(spool: &Spool, args: EmitArgs) -> Result<(), Box<dyn Error>> {
     let (request, default_kind) = if args.stdin_json {
         let raw = read_stdin_limited(MAX_FRAME_BYTES)?;
-        let request = serde_json::from_slice::<EmitRequest>(&raw)?;
+        let request =
+            serde_json::from_value::<EmitRequest>(parse_strict_json_value(&raw, MAX_FRAME_BYTES)?)?;
         (request, None)
     } else {
         let metadata = args
@@ -317,7 +318,7 @@ fn run_hook_command(
         let mut request = if raw.is_empty() {
             EmitRequest::default()
         } else {
-            serde_json::from_slice::<EmitRequest>(&raw)?
+            serde_json::from_value::<EmitRequest>(parse_strict_json_value(&raw, MAX_FRAME_BYTES)?)?
         };
         request.kind = Some(kind);
         request.agent = Some(args.agent);
@@ -375,19 +376,13 @@ fn run_bridge_command(
     let spool = match open_spool(paths, display_name) {
         Ok(spool) => spool,
         Err(error) => {
-            write_frame(
-                &mut stdout,
-                &BridgeFrame::terminal_error("spool_unavailable", "spool is unavailable"),
-            )?;
+            write_frame(&mut stdout, &bridge_spool_error(&error))?;
             eprintln!("aizu bridge: {error}");
             return Ok(1);
         }
     };
     if let Err(error) = spool.maintain_default() {
-        write_frame(
-            &mut stdout,
-            &BridgeFrame::terminal_error("spool_unavailable", "spool maintenance failed"),
-        )?;
+        write_frame(&mut stdout, &bridge_spool_error(&error))?;
         eprintln!("aizu bridge: {error}");
         return Ok(1);
     }
@@ -395,13 +390,35 @@ fn run_bridge_command(
     match stream_bridge(&spool, args, &mut stdout) {
         Ok(code) => Ok(code),
         Err(error) => {
-            write_frame(
-                &mut stdout,
-                &BridgeFrame::terminal_error("internal", "bridge processing failed"),
-            )?;
+            let frame = error.downcast_ref::<SpoolError>().map_or_else(
+                || BridgeFrame::terminal_error("internal", "bridge processing failed"),
+                bridge_spool_error,
+            );
+            write_frame(&mut stdout, &frame)?;
             eprintln!("aizu bridge: {error}");
             Ok(1)
         }
+    }
+}
+
+fn bridge_spool_error(error: &SpoolError) -> BridgeFrame {
+    if error.indicates_corruption() {
+        return BridgeFrame::terminal_error("spool_corrupt", "spool integrity validation failed");
+    }
+    match error {
+        SpoolError::DatabaseTooNew { .. } | SpoolError::UnsafeSqliteVersion(_) => {
+            BridgeFrame::terminal_error(
+                "incompatible_database",
+                "spool requires a compatible Aizu CLI",
+            )
+        }
+        SpoolError::NetworkFilesystem(_) | SpoolError::WalUnavailable(_) => {
+            BridgeFrame::terminal_error(
+                "unsupported_storage",
+                "spool requires a supported local filesystem",
+            )
+        }
+        _ => BridgeFrame::terminal_error("spool_unavailable", "spool is unavailable"),
     }
 }
 
@@ -716,5 +733,42 @@ fn debug_duration_override(name: &str) -> Option<Duration> {
             .map(Duration::from_millis)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn database_compatibility_errors_are_non_retryable_bridge_frames() {
+        for error in [
+            SpoolError::DatabaseTooNew {
+                found: 2,
+                supported: 1,
+            },
+            SpoolError::UnsafeSqliteVersion("3.51.2".into()),
+        ] {
+            assert!(matches!(
+                bridge_spool_error(&error),
+                BridgeFrame::Error { code, .. } if code == "incompatible_database"
+            ));
+        }
+        assert!(matches!(
+            bridge_spool_error(&SpoolError::HighWatermarkBehind {
+                high_watermark: 0,
+                newest_sequence: 1,
+            }),
+            BridgeFrame::Error { code, .. } if code == "spool_corrupt"
+        ));
+        for error in [
+            SpoolError::WalUnavailable("delete".into()),
+            SpoolError::NetworkFilesystem("nfs".into()),
+        ] {
+            assert!(matches!(
+                bridge_spool_error(&error),
+                BridgeFrame::Error { code, .. } if code == "unsupported_storage"
+            ));
+        }
     }
 }

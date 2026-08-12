@@ -9,7 +9,10 @@ pub use event::{
     EmitRequest, EventKind, NormalizedEvent, Outcome, Source, Urgency, ValidationError,
 };
 pub use paths::StatePaths;
-pub use protocol::{BridgeFrame, PROTOCOL_VERSION, ParsedBridgeFrame, parse_frame_line};
+pub use protocol::{
+    BridgeFrame, BridgeStreamValidator, FrameDecoder, PROTOCOL_VERSION, ParsedBridgeFrame,
+    parse_frame_line, parse_strict_json_value,
+};
 pub use spool::{
     DATABASE_SCHEMA_VERSION, DoctorReport, IdentityRegeneration, MaintenanceReport,
     RetentionPolicy, Spool, SpoolError, SpoolEvent, SpoolSnapshot,
