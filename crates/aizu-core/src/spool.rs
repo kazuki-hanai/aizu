@@ -104,6 +104,14 @@ impl Spool {
         )?;
         let oldest_sequence =
             connection.query_row("SELECT MIN(sequence) FROM events", [], |row| row.get(0))?;
+        let newest_sequence: Option<i64> =
+            connection.query_row("SELECT MAX(sequence) FROM events", [], |row| row.get(0))?;
+        if newest_sequence.is_some_and(|newest| newest > latest_sequence) {
+            return Err(SpoolError::HighWatermarkBehind {
+                high_watermark: latest_sequence,
+                newest_sequence: newest_sequence.unwrap_or_default(),
+            });
+        }
 
         Ok(SpoolSnapshot {
             source_id: parse_uuid_column(source_id, 0)?,
@@ -188,6 +196,11 @@ impl Spool {
 
     pub fn doctor(&self) -> Result<DoctorReport, SpoolError> {
         let connection = self.connection()?;
+        let quick_check: String =
+            connection.query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
+        if !quick_check.eq_ignore_ascii_case("ok") {
+            return Err(SpoolError::IntegrityCheckFailed(quick_check));
+        }
         let sqlite_version: String =
             connection.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
         let journal_mode: String =
@@ -201,6 +214,8 @@ impl Spool {
             [],
             |row| row.get(0),
         )?;
+        drop(connection);
+        self.validate_all_events()?;
 
         Ok(DoctorReport {
             healthy: true,
@@ -382,6 +397,20 @@ impl Spool {
             .with_timezone(&Utc);
         let elapsed = now.signed_duration_since(last);
         Ok(elapsed < ChronoDuration::zero() || elapsed >= MAINTENANCE_INTERVAL)
+    }
+
+    fn validate_all_events(&self) -> Result<(), SpoolError> {
+        let mut cursor = 0_i64;
+        loop {
+            let events = self.events_after(cursor, Some(10_000))?;
+            let Some(last) = events.last() else {
+                return Ok(());
+            };
+            cursor = last.sequence;
+            if events.len() < 10_000 {
+                return Ok(());
+            }
+        }
     }
 }
 
@@ -859,6 +888,15 @@ pub enum SpoolError {
     },
     #[error("stored event at sequence {sequence} does not match its {field} index")]
     StoredEventMismatch { sequence: i64, field: &'static str },
+    #[error(
+        "source high-watermark {high_watermark} is behind newest event sequence {newest_sequence}"
+    )]
+    HighWatermarkBehind {
+        high_watermark: i64,
+        newest_sequence: i64,
+    },
+    #[error("SQLite integrity check failed: {0}")]
+    IntegrityCheckFailed(String),
 }
 
 #[cfg(test)]
@@ -1195,6 +1233,43 @@ mod tests {
             SpoolError::StoredEventMismatch {
                 sequence: 1,
                 field: "event_id"
+            }
+        ));
+    }
+
+    #[test]
+    fn snapshot_and_doctor_reject_high_watermark_behind_events() {
+        let (_directory, spool) = spool();
+        spool
+            .emit(
+                EmitRequest {
+                    title: Some("Question".into()),
+                    ..EmitRequest::default()
+                },
+                Some(EventKind::AgentQuestion),
+            )
+            .unwrap();
+        let connection = spool.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE source_identity SET high_watermark = 0 WHERE singleton = 1",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            spool.snapshot().unwrap_err(),
+            SpoolError::HighWatermarkBehind {
+                high_watermark: 0,
+                newest_sequence: 1
+            }
+        ));
+        assert!(matches!(
+            spool.doctor().unwrap_err(),
+            SpoolError::HighWatermarkBehind {
+                high_watermark: 0,
+                newest_sequence: 1
             }
         ));
     }
