@@ -7,7 +7,7 @@ use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 use thiserror::Error;
-use uuid::Uuid;
+use uuid::{Uuid, Variant};
 
 use crate::{MAX_FRAME_BYTES, NormalizedEvent, ValidationError};
 
@@ -133,11 +133,13 @@ pub fn parse_frame_line(input: &[u8]) -> Result<ParsedBridgeFrame, ProtocolError
 fn validate_frame(frame: &BridgeFrame) -> Result<(), ProtocolError> {
     match frame {
         BridgeFrame::Hello {
+            source_id,
             oldest_sequence,
             latest_sequence,
             ..
         } => {
-            if *latest_sequence < 0
+            if source_id.get_variant() != Variant::RFC4122
+                || *latest_sequence < 0
                 || oldest_sequence.is_some_and(|oldest| {
                     oldest <= 0 || oldest > *latest_sequence || *latest_sequence == 0
                 })
@@ -388,6 +390,13 @@ mod tests {
             )
             .unwrap_err(),
             ProtocolError::InvalidFrameInvariant("gap sequence range")
+        ));
+        assert!(matches!(
+            parse_frame_line(
+                br#"{"type":"hello","protocol_version":1,"source_id":"00000000-0000-0000-0000-000000000000","oldest_sequence":null,"latest_sequence":0}"#
+            )
+            .unwrap_err(),
+            ProtocolError::InvalidFrameInvariant("hello sequence range")
         ));
     }
 
