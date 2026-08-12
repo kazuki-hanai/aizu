@@ -1,0 +1,26 @@
+[package]
+name = "aizu-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "aizu"
+path = "src/main.rs"
+
+[dependencies]
+aizu-core = { path = "../aizu-core" }
+chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
