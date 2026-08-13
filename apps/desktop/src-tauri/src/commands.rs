@@ -23,16 +23,13 @@ pub fn get_e2e_notifications(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn set_e2e_remote_status(
-    app: AppHandle<Wry>,
     state: State<'_, DesktopState>,
     host_alias: String,
     status: crate::model::SourceStatus,
 ) -> Result<AppView, DesktopError> {
     let mut state = state.lock()?;
     state.set_remote_status(&host_alias, status, "E2E remote fixture");
-    let view = state.view();
-    publish(&app, &view);
-    Ok(view)
+    Ok(state.view())
 }
 
 #[tauri::command]

@@ -157,6 +157,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Aizu desktop runtime failed");
     app.run(|app, event| {
+        #[cfg(target_os = "macos")]
         if matches!(event, RunEvent::Reopen { .. }) {
             tray::show_main_window(app);
         }
