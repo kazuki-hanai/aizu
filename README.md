@@ -280,8 +280,9 @@ in their original language.
 
 Notification delivery defaults to **Aizu Banner**. It shows up to three alerts
 at the top right, preserves the complete privacy-filtered body, and keeps each
-alert visible while Aizu is running until it is dismissed or opened. Older
-alerts remain in Recent activity. Select **Settings > Notification style >
+alert visible while Aizu is running until its close button is used. Banner
+content is passive and does not open the app. Older alerts remain in Recent
+activity. Select **Settings > Notification style >
 macOS Notifications** to use Notification Center instead; the setting is saved
 immediately.
 

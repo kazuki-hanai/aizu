@@ -28,14 +28,6 @@ pub fn resize_banner(app: AppHandle<Wry>, height: f64) -> Result<(), DesktopErro
     crate::banner::resize(&app, height).map_err(DesktopError::from)
 }
 
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn open_from_banner(app: AppHandle<Wry>, id: i32) -> Result<(), DesktopError> {
-    crate::banner::dismiss(&app, id)?;
-    crate::tray::show_main_window(&app);
-    Ok(())
-}
-
 #[cfg(feature = "desktop-e2e")]
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]

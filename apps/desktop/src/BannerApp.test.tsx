@@ -49,7 +49,6 @@ function client(): BannerClient {
   return {
     getBanners: vi.fn().mockResolvedValue(notices),
     dismiss: vi.fn().mockResolvedValue(undefined),
-    open: vi.fn().mockResolvedValue(undefined),
     resize: vi.fn().mockResolvedValue(undefined),
     subscribe: vi.fn().mockResolvedValue(() => undefined),
   };
@@ -73,15 +72,16 @@ describe("Aizu Banner", () => {
     await waitFor(() => expect(backend.resize).toHaveBeenCalled());
   });
 
-  it("dismisses explicitly and opens Aizu from notification content", async () => {
+  it("keeps notification content passive and dismisses only from the close button", async () => {
     const user = userEvent.setup();
     const backend = client();
-    render(<BannerApp client={backend} />);
+    const { container } = render(<BannerApp client={backend} />);
 
+    await user.click((await screen.findAllByText("Codex task completed"))[0]);
+    expect(container.querySelector(".aizu-banner__content")).not.toHaveAttribute("role", "button");
+    expect(backend.dismiss).not.toHaveBeenCalled();
     await user.click((await screen.findAllByRole("button", { name: "Dismiss notification" }))[0]);
     expect(backend.dismiss).toHaveBeenCalledWith(1);
-    await user.click(screen.getAllByRole("button", { name: "Open Aizu" })[1]);
-    expect(backend.open).toHaveBeenCalledWith(2);
   });
 
   it("does not let an older banner snapshot replace a newer one", async () => {

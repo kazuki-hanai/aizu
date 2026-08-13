@@ -129,7 +129,7 @@ describe("Aizu desktop MVP", () => {
         ? window.getComputedStyle(banner).animationName
         : null;
     })).toBe("aizu-banner-enter");
-    await $('button[aria-label="Open Aizu"]').click();
+    await $('button[aria-label="Dismiss notification"]').click();
     await browser.switchToWindow("main");
     await expect($("h1=Agents")).toBeDisplayed();
     const paused = await invokeView("set_notifications_paused", { paused: true });

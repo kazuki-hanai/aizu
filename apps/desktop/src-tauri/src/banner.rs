@@ -1,4 +1,11 @@
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use tauri::{
     App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl,
@@ -16,14 +23,35 @@ const BANNER_WIDTH: f64 = 420.0;
 const MIN_BANNER_HEIGHT: f64 = 104.0;
 const MAX_BANNER_HEIGHT: f64 = 720.0;
 const SCREEN_MARGIN: f64 = 16.0;
+const MAX_PRESENTATION_ATTEMPTS: u8 = 5;
 
 #[derive(Default)]
-pub struct BannerState(Mutex<VecDeque<Notification>>);
+struct PresentationRetry {
+    attempts: u8,
+    next_attempt_at: Option<Instant>,
+}
+
+#[derive(Default)]
+pub struct BannerState {
+    banners: Mutex<VecDeque<Notification>>,
+    pending_sound: Mutex<Option<NotificationSound>>,
+    retry: Mutex<PresentationRetry>,
+    dirty: AtomicBool,
+    presentation_scheduled: AtomicBool,
+}
 
 impl BannerState {
     fn push(&self, notification: Notification) -> Result<(), NotifyError> {
+        if let Some(sound) = notification.sound {
+            *self.pending_sound.lock().map_err(|_| {
+                NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
+            })? = Some(sound);
+        }
+        *self.retry.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner retry state is unavailable".to_owned())
+        })? = PresentationRetry::default();
         let mut banners = self
-            .0
+            .banners
             .lock()
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
         if let Some(existing) = banners
@@ -31,18 +59,20 @@ impl BannerState {
             .find(|existing| existing.id == notification.id)
         {
             *existing = notification;
+            self.dirty.store(true, Ordering::Release);
             return Ok(());
         }
         if banners.len() == MAX_VISIBLE_BANNERS {
             banners.pop_front();
         }
         banners.push_back(notification);
+        self.dirty.store(true, Ordering::Release);
         Ok(())
     }
 
     fn dismiss(&self, id: i32) -> Result<bool, NotifyError> {
         let mut banners = self
-            .0
+            .banners
             .lock()
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
         banners.retain(|banner| banner.id != id);
@@ -50,10 +80,64 @@ impl BannerState {
     }
 
     fn snapshot(&self) -> Result<Vec<Notification>, NotifyError> {
-        self.0
+        self.banners
             .lock()
             .map(|banners| banners.iter().cloned().collect())
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))
+    }
+
+    fn begin_presentation(&self, now: Instant) -> bool {
+        if self.presentation_scheduled.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        let retry_due = self
+            .retry
+            .lock()
+            .is_ok_and(|retry| retry.next_attempt_at.is_none_or(|deadline| now >= deadline));
+        if !retry_due {
+            self.presentation_scheduled.store(false, Ordering::Release);
+            return false;
+        }
+        if self.dirty.swap(false, Ordering::AcqRel) {
+            return true;
+        }
+        self.presentation_scheduled.store(false, Ordering::Release);
+        false
+    }
+
+    fn finish_presentation(&self, succeeded: bool, now: Instant) {
+        if let Ok(mut retry) = self.retry.lock() {
+            if succeeded {
+                *retry = PresentationRetry::default();
+            } else {
+                retry.attempts = retry.attempts.saturating_add(1);
+                if retry.attempts < MAX_PRESENTATION_ATTEMPTS {
+                    self.dirty.store(true, Ordering::Release);
+                    retry.next_attempt_at = now.checked_add(retry_delay(retry.attempts));
+                } else {
+                    retry.next_attempt_at = None;
+                }
+            }
+        }
+        self.presentation_scheduled.store(false, Ordering::Release);
+    }
+
+    fn take_pending_sound(&self) -> Result<Option<NotificationSound>, NotifyError> {
+        self.pending_sound
+            .lock()
+            .map(|mut sound| sound.take())
+            .map_err(|_| {
+                NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
+            })
+    }
+}
+
+fn retry_delay(attempts: u8) -> Duration {
+    match attempts {
+        0 | 1 => Duration::from_millis(250),
+        2 => Duration::from_secs(1),
+        3 => Duration::from_secs(4),
+        _ => Duration::from_secs(15),
     }
 }
 
@@ -91,16 +175,39 @@ fn ensure_window(app: &AppHandle<Wry>) -> Result<tauri::WebviewWindow<Wry>, Noti
 
 pub fn show(app: &AppHandle<Wry>, notification: &Notification) -> Result<(), NotifyError> {
     app.state::<BannerState>().push(notification.clone())?;
-    let app = app.clone();
-    let main_thread_app = app.clone();
-    let sound = notification.sound;
-    app.run_on_main_thread(move || {
-        let _ = present(&main_thread_app, sound);
-    })
-    .map_err(|error| NotifyError::Scheduling(error.to_string()))
+    request_present(app)
 }
 
-fn present(app: &AppHandle<Wry>, sound: Option<NotificationSound>) -> Result<(), NotifyError> {
+pub fn request_present(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
+    let state = app.state::<BannerState>();
+    if !state.begin_presentation(Instant::now()) {
+        return Ok(());
+    }
+    let app = app.clone();
+    let main_thread_app = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        let result = present(&main_thread_app);
+        main_thread_app
+            .state::<BannerState>()
+            .finish_presentation(result.is_ok(), Instant::now());
+    }) {
+        state.finish_presentation(false, Instant::now());
+        return Err(NotifyError::Scheduling(error.to_string()));
+    }
+    Ok(())
+}
+
+fn present(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
+    let snapshot = app.state::<BannerState>().snapshot()?;
+    if snapshot.is_empty() {
+        let _ = app.state::<BannerState>().take_pending_sound()?;
+        if let Some(window) = app.get_webview_window(BANNER_WINDOW) {
+            window
+                .hide()
+                .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
+        }
+        return Ok(());
+    }
     let window = ensure_window(app)?;
     resize(app, MIN_BANNER_HEIGHT)?;
     window
@@ -109,7 +216,7 @@ fn present(app: &AppHandle<Wry>, sound: Option<NotificationSound>) -> Result<(),
     window
         .show()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
-    if let Some(sound) = sound {
+    if let Some(sound) = app.state::<BannerState>().take_pending_sound()? {
         play_sound(sound);
     }
     Ok(())
@@ -145,6 +252,9 @@ pub fn clear(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
     for id in ids {
         app.state::<BannerState>().dismiss(id)?;
     }
+    app.state::<BannerState>()
+        .dirty
+        .store(false, Ordering::Release);
     if let Some(window) = app.get_webview_window(BANNER_WINDOW) {
         window
             .hide()
@@ -227,7 +337,10 @@ fn play_sound(_sound: NotificationSound) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{BannerState, MAX_VISIBLE_BANNERS};
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    use super::{BannerState, MAX_PRESENTATION_ATTEMPTS, MAX_VISIBLE_BANNERS, retry_delay};
     use crate::model::Notification;
 
     fn notification(id: i32, body: &str) -> Notification {
@@ -270,5 +383,44 @@ mod tests {
         assert!(!state.dismiss(1).expect("dismiss first"));
         assert_eq!(state.snapshot().expect("remaining banners").len(), 1);
         assert!(state.dismiss(2).expect("dismiss second"));
+    }
+
+    #[test]
+    fn failed_or_coalesced_presentation_remains_retryable() {
+        let state = BannerState::default();
+        let start = Instant::now();
+        state.push(notification(1, "ready")).expect("queue banner");
+
+        assert!(state.begin_presentation(start));
+        assert!(!state.begin_presentation(start));
+        state.finish_presentation(false, start);
+        assert!(state.dirty.load(Ordering::Acquire));
+        assert!(!state.begin_presentation(start));
+        let retry_at = start + retry_delay(1);
+        assert!(state.begin_presentation(retry_at));
+        state.finish_presentation(true, retry_at);
+        assert!(!state.dirty.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn persistent_presentation_failure_stops_after_a_bounded_attempt_count() {
+        let state = BannerState::default();
+        let mut now = Instant::now();
+        state.push(notification(1, "ready")).expect("queue banner");
+
+        for attempt in 1..=MAX_PRESENTATION_ATTEMPTS {
+            assert!(state.begin_presentation(now));
+            state.finish_presentation(false, now);
+            if attempt < MAX_PRESENTATION_ATTEMPTS {
+                now += retry_delay(attempt);
+            }
+        }
+        assert!(!state.dirty.load(Ordering::Acquire));
+        assert!(!state.begin_presentation(now + Duration::from_mins(1)));
+
+        state
+            .push(notification(2, "new event"))
+            .expect("new banner");
+        assert!(state.begin_presentation(now + Duration::from_mins(1)));
     }
 }

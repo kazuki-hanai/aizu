@@ -77,18 +77,13 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
       {unavailable ? <p className="banner-error">Aizu Banner is unavailable.</p> : null}
       {banners.map((banner) => (
         <article className="aizu-banner" key={banner.id} lang={banner.language === "system" ? undefined : banner.language}>
-          <button
-            aria-label={messages(banner.language).openAizu}
-            className="aizu-banner__content"
-            onClick={() => void runAction(() => client.open(banner.id))}
-            type="button"
-          >
+          <div className="aizu-banner__content">
             <span className="aizu-banner__mark"><BrandMark small /></span>
             <span className="aizu-banner__copy">
               <strong>{banner.title}</strong>
               {banner.body ? <span className="aizu-banner__body">{banner.body}</span> : null}
             </span>
-          </button>
+          </div>
           <button
             aria-label={messages(banner.language).dismissNotification}
             className="aizu-banner__dismiss"
