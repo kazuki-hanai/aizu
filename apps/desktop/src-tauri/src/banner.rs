@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -31,29 +31,40 @@ struct PresentationRetry {
     next_attempt_at: Option<Instant>,
 }
 
+struct PendingSound {
+    generation: u64,
+    sound: Option<NotificationSound>,
+}
+
 #[derive(Default)]
 pub struct BannerState {
     banners: Mutex<VecDeque<Notification>>,
-    pending_sound: Mutex<Option<NotificationSound>>,
+    pending_sound: Mutex<Option<PendingSound>>,
     retry: Mutex<PresentationRetry>,
+    generation: AtomicU64,
     dirty: AtomicBool,
     presentation_scheduled: AtomicBool,
 }
 
 impl BannerState {
     fn push(&self, notification: Notification) -> Result<(), NotifyError> {
-        if let Some(sound) = notification.sound {
-            *self.pending_sound.lock().map_err(|_| {
-                NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
-            })? = Some(sound);
-        }
-        *self.retry.lock().map_err(|_| {
-            NotifyError::Scheduling("Aizu banner retry state is unavailable".to_owned())
-        })? = PresentationRetry::default();
         let mut banners = self
             .banners
             .lock()
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
+        let mut pending_sound = self.pending_sound.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
+        })?;
+        let mut retry = self.retry.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner retry state is unavailable".to_owned())
+        })?;
+
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        *pending_sound = Some(PendingSound {
+            generation,
+            sound: notification.sound,
+        });
+        *retry = PresentationRetry::default();
         if let Some(existing) = banners
             .iter_mut()
             .find(|existing| existing.id == notification.id)
@@ -86,9 +97,9 @@ impl BannerState {
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))
     }
 
-    fn begin_presentation(&self, now: Instant) -> bool {
+    fn begin_presentation(&self, now: Instant) -> Option<u64> {
         if self.presentation_scheduled.swap(true, Ordering::AcqRel) {
-            return false;
+            return None;
         }
         let retry_due = self
             .retry
@@ -96,16 +107,21 @@ impl BannerState {
             .is_ok_and(|retry| retry.next_attempt_at.is_none_or(|deadline| now >= deadline));
         if !retry_due {
             self.presentation_scheduled.store(false, Ordering::Release);
-            return false;
+            return None;
         }
         if self.dirty.swap(false, Ordering::AcqRel) {
-            return true;
+            return Some(self.generation.load(Ordering::Acquire));
         }
         self.presentation_scheduled.store(false, Ordering::Release);
-        false
+        None
     }
 
-    fn finish_presentation(&self, succeeded: bool, now: Instant) {
+    fn finish_presentation(&self, generation: u64, succeeded: bool, now: Instant) {
+        if self.generation.load(Ordering::Acquire) != generation {
+            self.presentation_scheduled.store(false, Ordering::Release);
+            return;
+        }
+        let mut discard_sound = false;
         if let Ok(mut retry) = self.retry.lock() {
             if succeeded {
                 *retry = PresentationRetry::default();
@@ -116,19 +132,46 @@ impl BannerState {
                     retry.next_attempt_at = now.checked_add(retry_delay(retry.attempts));
                 } else {
                     retry.next_attempt_at = None;
+                    discard_sound = true;
                 }
             }
+        }
+        if discard_sound {
+            let _ = self.take_pending_sound(generation);
         }
         self.presentation_scheduled.store(false, Ordering::Release);
     }
 
-    fn take_pending_sound(&self) -> Result<Option<NotificationSound>, NotifyError> {
+    fn take_pending_sound(
+        &self,
+        generation: u64,
+    ) -> Result<Option<NotificationSound>, NotifyError> {
         self.pending_sound
             .lock()
-            .map(|mut sound| sound.take())
+            .map(|mut pending| {
+                if pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.generation == generation)
+                {
+                    return pending.take().and_then(|pending| pending.sound);
+                }
+                None
+            })
             .map_err(|_| {
                 NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
             })
+    }
+
+    fn clear_pending(&self) -> Result<(), NotifyError> {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.dirty.store(false, Ordering::Release);
+        *self.pending_sound.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
+        })? = None;
+        *self.retry.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner retry state is unavailable".to_owned())
+        })? = PresentationRetry::default();
+        Ok(())
     }
 }
 
@@ -180,27 +223,37 @@ pub fn show(app: &AppHandle<Wry>, notification: &Notification) -> Result<(), Not
 
 pub fn request_present(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
     let state = app.state::<BannerState>();
-    if !state.begin_presentation(Instant::now()) {
+    let Some(generation) = state.begin_presentation(Instant::now()) else {
         return Ok(());
-    }
+    };
     let app = app.clone();
     let main_thread_app = app.clone();
     if let Err(error) = app.run_on_main_thread(move || {
-        let result = present(&main_thread_app);
-        main_thread_app
-            .state::<BannerState>()
-            .finish_presentation(result.is_ok(), Instant::now());
+        let result = present(&main_thread_app, generation);
+        main_thread_app.state::<BannerState>().finish_presentation(
+            generation,
+            result.is_ok(),
+            Instant::now(),
+        );
     }) {
-        state.finish_presentation(false, Instant::now());
+        state.finish_presentation(generation, false, Instant::now());
         return Err(NotifyError::Scheduling(error.to_string()));
     }
     Ok(())
 }
 
-fn present(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
+fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     let snapshot = app.state::<BannerState>().snapshot()?;
+    if app
+        .state::<BannerState>()
+        .generation
+        .load(Ordering::Acquire)
+        != generation
+    {
+        return Ok(());
+    }
     if snapshot.is_empty() {
-        let _ = app.state::<BannerState>().take_pending_sound()?;
+        let _ = app.state::<BannerState>().take_pending_sound(generation)?;
         if let Some(window) = app.get_webview_window(BANNER_WINDOW) {
             window
                 .hide()
@@ -216,7 +269,7 @@ fn present(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
     window
         .show()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
-    if let Some(sound) = app.state::<BannerState>().take_pending_sound()? {
+    if let Some(sound) = app.state::<BannerState>().take_pending_sound(generation)? {
         play_sound(sound);
     }
     Ok(())
@@ -252,9 +305,7 @@ pub fn clear(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
     for id in ids {
         app.state::<BannerState>().dismiss(id)?;
     }
-    app.state::<BannerState>()
-        .dirty
-        .store(false, Ordering::Release);
+    app.state::<BannerState>().clear_pending()?;
     if let Some(window) = app.get_webview_window(BANNER_WINDOW) {
         window
             .hide()
@@ -391,14 +442,18 @@ mod tests {
         let start = Instant::now();
         state.push(notification(1, "ready")).expect("queue banner");
 
-        assert!(state.begin_presentation(start));
-        assert!(!state.begin_presentation(start));
-        state.finish_presentation(false, start);
+        let generation = state
+            .begin_presentation(start)
+            .expect("initial presentation");
+        assert!(state.begin_presentation(start).is_none());
+        state.finish_presentation(generation, false, start);
         assert!(state.dirty.load(Ordering::Acquire));
-        assert!(!state.begin_presentation(start));
+        assert!(state.begin_presentation(start).is_none());
         let retry_at = start + retry_delay(1);
-        assert!(state.begin_presentation(retry_at));
-        state.finish_presentation(true, retry_at);
+        let generation = state
+            .begin_presentation(retry_at)
+            .expect("retry presentation");
+        state.finish_presentation(generation, true, retry_at);
         assert!(!state.dirty.load(Ordering::Acquire));
     }
 
@@ -406,21 +461,84 @@ mod tests {
     fn persistent_presentation_failure_stops_after_a_bounded_attempt_count() {
         let state = BannerState::default();
         let mut now = Instant::now();
-        state.push(notification(1, "ready")).expect("queue banner");
+        let mut audible = notification(1, "ready");
+        audible.sound = Some(crate::model::NotificationSound::Default);
+        state.push(audible).expect("queue banner");
 
         for attempt in 1..=MAX_PRESENTATION_ATTEMPTS {
-            assert!(state.begin_presentation(now));
-            state.finish_presentation(false, now);
+            let generation = state.begin_presentation(now).expect("presentation attempt");
+            state.finish_presentation(generation, false, now);
             if attempt < MAX_PRESENTATION_ATTEMPTS {
                 now += retry_delay(attempt);
             }
         }
         assert!(!state.dirty.load(Ordering::Acquire));
-        assert!(!state.begin_presentation(now + Duration::from_mins(1)));
+        assert!(
+            state
+                .begin_presentation(now + Duration::from_mins(1))
+                .is_none()
+        );
 
         state
             .push(notification(2, "new event"))
             .expect("new banner");
-        assert!(state.begin_presentation(now + Duration::from_mins(1)));
+        let generation = state
+            .begin_presentation(now + Duration::from_mins(1))
+            .expect("new notification presentation");
+        assert_eq!(
+            state
+                .take_pending_sound(generation)
+                .expect("silent notification"),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_presentation_cannot_consume_a_new_notification_sound() {
+        let state = BannerState::default();
+        let now = Instant::now();
+        let mut first = notification(1, "first");
+        first.sound = Some(crate::model::NotificationSound::Default);
+        state.push(first).expect("first notification");
+        let first_generation = state.begin_presentation(now).expect("first presentation");
+
+        state
+            .push(notification(2, "silent replacement"))
+            .expect("second notification");
+        state.finish_presentation(first_generation, true, now);
+
+        assert!(state.dirty.load(Ordering::Acquire));
+        let second_generation = state.begin_presentation(now).expect("second presentation");
+        assert_ne!(first_generation, second_generation);
+        assert_eq!(
+            state
+                .take_pending_sound(second_generation)
+                .expect("second sound"),
+            None
+        );
+    }
+
+    #[test]
+    fn clearing_banners_invalidates_in_flight_sound_and_retry() {
+        let state = BannerState::default();
+        let now = Instant::now();
+        let mut audible = notification(1, "audible");
+        audible.sound = Some(crate::model::NotificationSound::Default);
+        state.push(audible).expect("notification");
+        let generation = state.begin_presentation(now).expect("presentation");
+
+        state.clear_pending().expect("clear pending state");
+        state.finish_presentation(generation, false, now);
+
+        assert!(!state.dirty.load(Ordering::Acquire));
+        assert_eq!(
+            state.take_pending_sound(generation).expect("cleared sound"),
+            None
+        );
+        assert!(
+            state
+                .begin_presentation(now + Duration::from_mins(1))
+                .is_none()
+        );
     }
 }
