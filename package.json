@@ -5,7 +5,7 @@
   "scripts": {
     "build": "pnpm --filter @aizu/desktop build",
     "dev": "pnpm --filter @aizu/desktop dev",
-    "e2e:build": "RUSTUP_TOOLCHAIN=1.97.1 cargo build -p aizu-cli --locked && RUSTUP_TOOLCHAIN=1.97.1 VITE_DESKTOP_E2E=1 pnpm --filter @aizu/desktop exec tauri build --debug --no-bundle --features desktop-e2e --config src-tauri/tauri.e2e.conf.json",
+    "e2e:build": "RUSTUP_TOOLCHAIN=1.97.1 cargo build -p aizu-cli --locked && mkdir -p apps/desktop/src-tauri/resources/bin && install -m 755 target/debug/aizu apps/desktop/src-tauri/resources/bin/aizu && RUSTUP_TOOLCHAIN=1.97.1 VITE_DESKTOP_E2E=1 pnpm --filter @aizu/desktop exec tauri build --debug --no-bundle --features desktop-e2e --config src-tauri/tauri.e2e.conf.json",
     "e2e:desktop": "pnpm e2e:build && pnpm exec wdio run apps/desktop/wdio.conf.ts",
     "e2e:typecheck": "pnpm exec tsc -p tests/e2e/tsconfig.json --noEmit",
     "lint": "pnpm --filter @aizu/desktop lint",
