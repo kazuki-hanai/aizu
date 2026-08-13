@@ -91,6 +91,16 @@ fn ensure_window(app: &AppHandle<Wry>) -> Result<tauri::WebviewWindow<Wry>, Noti
 
 pub fn show(app: &AppHandle<Wry>, notification: &Notification) -> Result<(), NotifyError> {
     app.state::<BannerState>().push(notification.clone())?;
+    let app = app.clone();
+    let main_thread_app = app.clone();
+    let sound = notification.sound;
+    app.run_on_main_thread(move || {
+        let _ = present(&main_thread_app, sound);
+    })
+    .map_err(|error| NotifyError::Scheduling(error.to_string()))
+}
+
+fn present(app: &AppHandle<Wry>, sound: Option<NotificationSound>) -> Result<(), NotifyError> {
     let window = ensure_window(app)?;
     resize(app, MIN_BANNER_HEIGHT)?;
     window
@@ -99,8 +109,8 @@ pub fn show(app: &AppHandle<Wry>, notification: &Notification) -> Result<(), Not
     window
         .show()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
-    if let Some(sound) = notification.sound {
-        play_sound(app, sound)?;
+    if let Some(sound) = sound {
+        play_sound(sound);
     }
     Ok(())
 }
@@ -172,27 +182,48 @@ pub fn resize(app: &AppHandle<Wry>, requested_height: f64) -> Result<(), NotifyE
 }
 
 #[cfg(target_os = "macos")]
-fn play_sound(app: &AppHandle<Wry>, sound: NotificationSound) -> Result<(), NotifyError> {
+fn play_sound(sound: NotificationSound) {
+    use objc2::AnyThread;
+    use std::cell::RefCell;
+
+    const AIZU_POP: &[u8] = include_bytes!("../../../../assets/audio/aizu-pop.wav");
+
+    thread_local! {
+        static AIZU_POP_SOUND: RefCell<Option<objc2::rc::Retained<objc2_app_kit::NSSound>>> =
+            const { RefCell::new(None) };
+    }
+
+    if sound == NotificationSound::Default {
+        AIZU_POP_SOUND.with_borrow_mut(|cached| {
+            if cached.is_none() {
+                let data = objc2_foundation::NSData::with_bytes(AIZU_POP);
+                *cached =
+                    objc2_app_kit::NSSound::initWithData(objc2_app_kit::NSSound::alloc(), &data);
+            }
+            if let Some(sound) = cached.as_ref() {
+                let _ = sound.stop();
+                let _ = sound.play();
+            }
+        });
+        return;
+    }
+
     let name = match sound {
-        NotificationSound::Default | NotificationSound::Glass => "Glass",
+        NotificationSound::Default => unreachable!("Aizu Pop handled above"),
+        NotificationSound::Glass => "Glass",
         NotificationSound::Ping => "Ping",
         NotificationSound::Pop => "Pop",
         NotificationSound::Hero => "Hero",
     }
     .to_owned();
-    app.run_on_main_thread(move || {
-        let name = objc2_foundation::NSString::from_str(&name);
-        if let Some(sound) = objc2_app_kit::NSSound::soundNamed(&name) {
-            let _ = sound.play();
-        }
-    })
-    .map_err(|error| NotifyError::Scheduling(error.to_string()))
+    let name = objc2_foundation::NSString::from_str(&name);
+    if let Some(sound) = objc2_app_kit::NSSound::soundNamed(&name) {
+        let _ = sound.play();
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn play_sound(_app: &AppHandle<Wry>, _sound: NotificationSound) -> Result<(), NotifyError> {
-    Ok(())
-}
+fn play_sound(_sound: NotificationSound) {}
 
 #[cfg(test)]
 mod tests {
