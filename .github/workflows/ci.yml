@@ -121,6 +121,7 @@ jobs:
           cargo build --locked -p aizu-cli
           install -d -m 700 "$HOME/.ssh"
           sudo useradd --create-home --shell /bin/bash aizu-ci
+          sudo passwd --delete aizu-ci
           sudo install -d -o aizu-ci -g aizu-ci -m 700 \
             /home/aizu-ci/.local/bin /home/aizu-ci/.ssh
           sudo install -o aizu-ci -g aizu-ci -m 755 \
