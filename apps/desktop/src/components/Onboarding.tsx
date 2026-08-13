@@ -74,10 +74,12 @@ export function Onboarding({
               )}
             </div>
             <div className="setup-step__body">
-              <strong>{t.allowNotifications}</strong>
+              <strong>{view.preferences.notificationDelivery === "aizuBanner" ? t.notificationStyle : t.allowNotifications}</strong>
               <span>
                 {permissionGranted
-                  ? t.notificationsReady
+                  ? view.preferences.notificationDelivery === "aizuBanner"
+                    ? t.aizuBannerReady
+                    : t.notificationsReady
                   : permissionDenied
                     ? t.notificationsDenied
                     : t.notificationsExplicit}

@@ -15,9 +15,9 @@ use crate::{
     cli_diagnostic::CliDiagnostic,
     model::{
         AgentKind, AgentMonitorView, AgentRuntimeStatus, AppView, CliStatus, DeliveryStatus,
-        EventKind, HistoryEvent, HookStatus, Notification, PermissionStatus, Preferences,
-        RunningAgentView, SourceActionRequired, SourceKind, SourceStatus, SourceView, TaskOutcome,
-        TrayState,
+        EventKind, HistoryEvent, HookStatus, Notification, NotificationDelivery, PermissionStatus,
+        Preferences, RunningAgentView, SourceActionRequired, SourceKind, SourceStatus, SourceView,
+        TaskOutcome, TrayState,
     },
     notifier::{Notifier, NotifyError},
     store::{RemoteSourceConfig, SettingsStore, StoreError, StoredSettings},
@@ -110,7 +110,12 @@ impl AppService {
                 crate::remote_worker::MAX_REMOTE_SOURCES,
             ));
         }
-        let notification_permission = notifier.permission_status()?;
+        let notification_permission =
+            if settings.preferences.notification_delivery == NotificationDelivery::AizuBanner {
+                PermissionStatus::Granted
+            } else {
+                notifier.permission_status()?
+            };
         let cli_diagnostic = crate::cli_diagnostic::inspect(env!("CARGO_PKG_VERSION"))
             .unwrap_or(CliDiagnostic::Missing);
         let (cli_status, cli_version) = cli_status(&cli_diagnostic);
@@ -185,7 +190,9 @@ impl AppService {
     }
 
     pub fn poll_local_pipeline(&mut self) -> Result<(AppView, bool), DesktopError> {
-        if let Ok(permission) = self.notifier.permission_status() {
+        if self.settings.preferences.notification_delivery == NotificationDelivery::AizuBanner {
+            self.notification_permission = PermissionStatus::Granted;
+        } else if let Ok(permission) = self.notifier.permission_status() {
             self.notification_permission = permission;
         }
         let now = Utc::now();
@@ -209,6 +216,8 @@ impl AppService {
             .and_then(|minutes| u16::try_from(minutes).ok());
         let adapter = PipelineNotifier {
             notifier: self.notifier.as_ref(),
+            delivery: self.settings.preferences.notification_delivery,
+            language: self.settings.preferences.language,
             sound: self
                 .settings
                 .preferences
@@ -689,16 +698,29 @@ impl AppService {
     }
 
     pub fn request_notification_permission(&mut self) -> Result<AppView, DesktopError> {
-        self.notification_permission = self.notifier.request_permission()?;
+        self.notification_permission = if self.settings.preferences.notification_delivery
+            == NotificationDelivery::AizuBanner
+        {
+            PermissionStatus::Granted
+        } else {
+            self.notifier.request_permission()?
+        };
         Ok(self.view())
     }
 
     pub fn send_test_notification(&mut self) -> Result<AppView, DesktopError> {
-        self.notification_permission = self.notifier.permission_status()?;
+        self.notification_permission = if self.settings.preferences.notification_delivery
+            == NotificationDelivery::AizuBanner
+        {
+            PermissionStatus::Granted
+        } else {
+            self.notifier.permission_status()?
+        };
         if self.notification_permission != PermissionStatus::Granted {
             return Err(DesktopError::NotificationPermissionDisabled);
         }
         let japanese = self.settings.preferences.language.prefers_japanese();
+        let delivery = self.settings.preferences.notification_delivery;
         self.notifier.notify(&Notification {
             // A manual test is a new user action each time. Reusing a stable
             // identifier makes macOS replace the prior notification and may
@@ -711,9 +733,15 @@ impl AppService {
             }
             .to_owned(),
             body: if japanese {
-                "通知を利用できます。"
+                if delivery == NotificationDelivery::AizuBanner {
+                    "Aizuバナーを利用できます。"
+                } else {
+                    "macOS通知を利用できます。"
+                }
+            } else if delivery == NotificationDelivery::AizuBanner {
+                "Aizu Banner is ready."
             } else {
-                "Native notifications are ready."
+                "macOS notifications are ready."
             }
             .to_owned(),
             sound: self
@@ -721,6 +749,8 @@ impl AppService {
                 .preferences
                 .sound_enabled
                 .then_some(self.settings.preferences.notification_sound),
+            delivery,
+            language: self.settings.preferences.language,
         })?;
         Ok(self.view())
     }
@@ -801,7 +831,14 @@ impl AppService {
         preferences: Preferences,
     ) -> Result<AppView, DesktopError> {
         validate_preferences(&preferences)?;
+        let notification_permission =
+            if preferences.notification_delivery == NotificationDelivery::AizuBanner {
+                PermissionStatus::Granted
+            } else {
+                self.notifier.permission_status()?
+            };
         self.settings.preferences = preferences;
+        self.notification_permission = notification_permission;
         self.persist()?;
         Ok(self.view())
     }
@@ -896,6 +933,8 @@ impl AppService {
 
 struct PipelineNotifier<'a> {
     notifier: &'a dyn Notifier,
+    delivery: NotificationDelivery,
+    language: crate::model::LanguagePreference,
     sound: Option<crate::model::NotificationSound>,
 }
 
@@ -904,16 +943,19 @@ impl aizu_core::Notifier for PipelineNotifier<'_> {
         &self,
         notification: &aizu_core::PreparedNotification,
     ) -> Result<(), aizu_core::NotifyError> {
-        match self.notifier.permission_status() {
-            Ok(
-                PermissionStatus::Denied
-                | PermissionStatus::NotDetermined
-                | PermissionStatus::AlertsDisabled,
-            ) => {
-                return Err(aizu_core::NotifyError::PermissionDenied);
-            }
-            Ok(PermissionStatus::Granted) => {}
-            Err(_) => return Err(aizu_core::NotifyError::Retryable),
+        match self.delivery {
+            NotificationDelivery::AizuBanner => {}
+            NotificationDelivery::System => match self.notifier.permission_status() {
+                Ok(
+                    PermissionStatus::Denied
+                    | PermissionStatus::NotDetermined
+                    | PermissionStatus::AlertsDisabled,
+                ) => {
+                    return Err(aizu_core::NotifyError::PermissionDenied);
+                }
+                Ok(PermissionStatus::Granted) => {}
+                Err(_) => return Err(aizu_core::NotifyError::Retryable),
+            },
         }
         self.notifier
             .notify(&Notification {
@@ -921,6 +963,8 @@ impl aizu_core::Notifier for PipelineNotifier<'_> {
                 title: notification.title.clone(),
                 body: notification.body.clone(),
                 sound: self.sound,
+                delivery: self.delivery,
+                language: self.language,
             })
             .map_err(|_| aizu_core::NotifyError::Retryable)
     }
@@ -1148,8 +1192,8 @@ mod tests {
     use crate::{
         model::{
             AgentKind, AgentRuntimeStatus, DeliveryStatus, EventKind, HistoryEvent,
-            LanguagePreference, NotificationSound, PermissionStatus, SourceKind, SourceStatus,
-            TaskOutcome, TrayState,
+            LanguagePreference, NotificationDelivery, NotificationSound, PermissionStatus,
+            SourceKind, SourceStatus, TaskOutcome, TrayState,
         },
         notifier::FakeNotifier,
         store::SettingsStore,
@@ -1199,6 +1243,7 @@ mod tests {
         assert_eq!(notifications.len(), 1);
         assert_eq!(notifications[0].title, "Aizu test notification");
         assert_eq!(notifications[0].sound, Some(NotificationSound::Hero));
+        assert_eq!(notifications[0].delivery, NotificationDelivery::AizuBanner);
     }
 
     #[test]
@@ -1234,19 +1279,42 @@ mod tests {
 
         let notifications = notifier.notifications();
         assert_eq!(notifications[0].title, "Aizu テスト通知");
-        assert_eq!(notifications[0].body, "通知を利用できます。");
+        assert_eq!(notifications[0].body, "Aizuバナーを利用できます。");
     }
 
     #[test]
     fn test_notification_requires_granted_permission() {
         let notifier = FakeNotifier::with_permission(PermissionStatus::Denied);
         let mut service = service(notifier.clone());
+        let mut preferences = service.view().preferences;
+        preferences.notification_delivery = NotificationDelivery::System;
+        service
+            .update_preferences(preferences)
+            .expect("system notification choice should persist");
 
         assert!(matches!(
             service.send_test_notification(),
             Err(super::DesktopError::NotificationPermissionDisabled)
         ));
         assert!(notifier.notifications().is_empty());
+    }
+
+    #[test]
+    fn aizu_banner_does_not_require_native_notification_permission() {
+        let notifier = FakeNotifier::with_permission(PermissionStatus::Denied);
+        let mut service = service(notifier.clone());
+
+        service
+            .send_test_notification()
+            .expect("Aizu Banner should not depend on macOS notification permission");
+
+        let notifications = notifier.notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].delivery, NotificationDelivery::AizuBanner);
+        assert_eq!(
+            service.view().notification_permission,
+            PermissionStatus::Granted
+        );
     }
 
     #[test]
@@ -1438,6 +1506,8 @@ mod tests {
         let notifier = FakeNotifier::with_permission(PermissionStatus::Granted);
         let adapter = PipelineNotifier {
             notifier: notifier.as_ref(),
+            delivery: NotificationDelivery::System,
+            language: LanguagePreference::English,
             sound: Some(crate::model::NotificationSound::Ping),
         };
         let prepared = PreparedNotification {

@@ -3,13 +3,23 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import {
   appViewSchema,
+  bannerNotificationSchema,
   sshConnectionTestResultSchema,
   type AppView,
+  type BannerNotification,
   type CompleteOnboardingRequest,
   type Preferences,
   type SshConnectionTestResult,
   type UpdatePreferencesRequest,
 } from "./contracts";
+
+export type BannerClient = {
+  getBanners: () => Promise<BannerNotification[]>;
+  dismiss: (id: number) => Promise<void>;
+  open: (id: number) => Promise<void>;
+  resize: (height: number) => Promise<void>;
+  subscribe: (onChange: () => void) => Promise<UnlistenFn>;
+};
 
 export type BackendClient = {
   getView: () => Promise<AppView>;
@@ -102,12 +112,29 @@ const tauriBackend: BackendClient = {
     }),
 };
 
+export const bannerBackend: BannerClient = {
+  getBanners: async () =>
+    bannerNotificationSchema.array().parse(await invokeBackend("get_banners")),
+  dismiss: async (id) => {
+    await invokeBackend("dismiss_banner", { id });
+  },
+  open: async (id) => {
+    await invokeBackend("open_from_banner", { id });
+  },
+  resize: async (height) => {
+    await invokeBackend("resize_banner", { height });
+  },
+  subscribe: async (onChange) =>
+    listen("aizu://banners-changed", onChange),
+};
+
 const defaultPreferences: Preferences = {
   language: "system",
   completionEnabled: true,
   questionEnabled: true,
   agentDetailsEnabled: false,
   soundEnabled: true,
+  notificationDelivery: "aizuBanner",
   notificationSound: "default",
   privacyMode: "generic",
   launchAtLogin: false,
@@ -121,7 +148,7 @@ const defaultPreferences: Preferences = {
 
 export const developmentView: AppView = {
   onboardingComplete: false,
-  notificationPermission: "notDetermined",
+  notificationPermission: "granted",
   cliStatus: "missing",
   cliVersion: null,
   protocolVersion: 1,

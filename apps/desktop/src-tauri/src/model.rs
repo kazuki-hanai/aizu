@@ -214,6 +214,8 @@ pub struct Preferences {
     pub agent_details_enabled: bool,
     pub sound_enabled: bool,
     #[serde(default)]
+    pub notification_delivery: NotificationDelivery,
+    #[serde(default)]
     pub notification_sound: NotificationSound,
     pub privacy_mode: PrivacyMode,
     pub launch_at_login: bool,
@@ -228,12 +230,21 @@ impl Default for Preferences {
             question_enabled: true,
             agent_details_enabled: false,
             sound_enabled: true,
+            notification_delivery: NotificationDelivery::default(),
             notification_sound: NotificationSound::default(),
             privacy_mode: PrivacyMode::Generic,
             launch_at_login: false,
             quiet_hours: QuietHours::default(),
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NotificationDelivery {
+    #[default]
+    AizuBanner,
+    System,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,6 +334,8 @@ pub struct Notification {
     pub title: String,
     pub body: String,
     pub sound: Option<NotificationSound>,
+    pub delivery: NotificationDelivery,
+    pub language: LanguagePreference,
 }
 
 #[cfg(test)]
@@ -356,6 +369,7 @@ mod tests {
         assert_eq!(value["cliStatus"], "missing");
         assert_eq!(value["preferences"]["privacyMode"], "generic");
         assert_eq!(value["preferences"]["notificationSound"], "default");
+        assert_eq!(value["preferences"]["notificationDelivery"], "aizuBanner");
         assert_eq!(value["preferences"]["language"], "system");
     }
 
@@ -377,6 +391,10 @@ mod tests {
         .expect("older preferences should remain readable");
 
         assert_eq!(preferences.notification_sound, NotificationSound::Default);
+        assert_eq!(
+            preferences.notification_delivery,
+            super::NotificationDelivery::AizuBanner
+        );
         assert_eq!(preferences.language, LanguagePreference::System);
     }
 }

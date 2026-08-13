@@ -3,12 +3,38 @@ use tauri_plugin_autostart::ManagerExt;
 
 use crate::{
     model::{
-        AddRemoteSourceRequest, AppView, CompleteOnboardingRequest, Preferences,
-        SshConnectionTestResult,
+        AddRemoteSourceRequest, AppView, CompleteOnboardingRequest, Notification,
+        NotificationDelivery, Preferences, SshConnectionTestResult,
     },
     state::{DesktopError, DesktopState},
     tray::TrayUi,
 };
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn get_banners(app: AppHandle<Wry>) -> Result<Vec<Notification>, DesktopError> {
+    crate::banner::banners(&app).map_err(DesktopError::from)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn dismiss_banner(app: AppHandle<Wry>, id: i32) -> Result<(), DesktopError> {
+    crate::banner::dismiss(&app, id).map_err(DesktopError::from)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn resize_banner(app: AppHandle<Wry>, height: f64) -> Result<(), DesktopError> {
+    crate::banner::resize(&app, height).map_err(DesktopError::from)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn open_from_banner(app: AppHandle<Wry>, id: i32) -> Result<(), DesktopError> {
+    crate::banner::dismiss(&app, id)?;
+    crate::tray::show_main_window(&app);
+    Ok(())
+}
 
 #[cfg(feature = "desktop-e2e")]
 #[tauri::command]
@@ -119,7 +145,11 @@ pub fn update_preferences(
     if previous_launch_at_login != request.launch_at_login {
         set_autostart(&app, request.launch_at_login)?;
     }
+    let delivery = request.notification_delivery;
     let view = state.lock()?.update_preferences(request)?;
+    if delivery == NotificationDelivery::System {
+        crate::banner::clear(&app)?;
+    }
     publish(&app, &view);
     Ok(view)
 }

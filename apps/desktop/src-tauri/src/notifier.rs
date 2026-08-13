@@ -10,7 +10,7 @@ use tauri::{AppHandle, Wry};
 use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
 
-use crate::model::{Notification, PermissionStatus};
+use crate::model::{Notification, NotificationDelivery, PermissionStatus};
 
 #[derive(Debug, Error)]
 pub enum NotifyError {
@@ -46,6 +46,9 @@ impl Notifier for SystemNotifier {
     }
 
     fn notify(&self, notification: &Notification) -> Result<(), NotifyError> {
+        if notification.delivery == NotificationDelivery::AizuBanner {
+            return crate::banner::show(&self.app, notification);
+        }
         #[cfg(target_os = "macos")]
         return show_system_notification(&self.app, notification);
         #[cfg(not(target_os = "macos"))]
@@ -239,6 +242,38 @@ impl Notifier for FakeNotifier {
     }
 }
 
+#[cfg(feature = "desktop-e2e")]
+pub struct E2eNotifier {
+    app: AppHandle<Wry>,
+    recorder: Arc<FakeNotifier>,
+}
+
+#[cfg(feature = "desktop-e2e")]
+impl E2eNotifier {
+    pub fn new(app: AppHandle<Wry>, recorder: Arc<FakeNotifier>) -> Arc<Self> {
+        Arc::new(Self { app, recorder })
+    }
+}
+
+#[cfg(feature = "desktop-e2e")]
+impl Notifier for E2eNotifier {
+    fn permission_status(&self) -> Result<PermissionStatus, NotifyError> {
+        self.recorder.permission_status()
+    }
+
+    fn request_permission(&self) -> Result<PermissionStatus, NotifyError> {
+        self.recorder.request_permission()
+    }
+
+    fn notify(&self, notification: &Notification) -> Result<(), NotifyError> {
+        self.recorder.notify(notification)?;
+        if notification.delivery == NotificationDelivery::AizuBanner {
+            crate::banner::show(&self.app, notification)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use mac_usernotifications::{
@@ -292,6 +327,8 @@ mod tests {
             title: "Ready".to_owned(),
             body: "The task completed.".to_owned(),
             sound: Some(crate::model::NotificationSound::Glass),
+            delivery: crate::model::NotificationDelivery::System,
+            language: crate::model::LanguagePreference::English,
         };
 
         let native = build_macos_notification(&notification);

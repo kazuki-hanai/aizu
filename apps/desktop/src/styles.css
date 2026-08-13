@@ -41,6 +41,118 @@ body {
   -webkit-user-select: none;
 }
 
+html[data-window="banner"],
+html[data-window="banner"] body,
+html[data-window="banner"] #root {
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  color: #f4f6f5;
+  background: #171a19;
+}
+
+html[data-window="banner"] body {
+  overflow: auto;
+}
+
+.banner-stack {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  min-height: 0;
+  padding: 10px;
+  overflow: auto;
+}
+
+.aizu-banner {
+  position: relative;
+  display: grid;
+  min-height: 84px;
+  overflow: hidden;
+  color: #f4f6f5;
+  background: #202523;
+  border: 1px solid #454c48;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 26%);
+}
+
+.aizu-banner__content {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 11px;
+  width: 100%;
+  padding: 14px 42px 14px 14px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.aizu-banner__mark {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  overflow: hidden;
+  border-radius: 7px;
+  place-items: center;
+}
+
+.aizu-banner__mark .brand-mark {
+  width: 32px;
+  height: 32px;
+}
+
+.aizu-banner__copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.aizu-banner__copy strong {
+  padding-right: 4px;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.aizu-banner__body {
+  overflow-wrap: anywhere;
+  color: #c9cecb;
+  white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.aizu-banner__dismiss {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: #abb2ae;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  place-items: center;
+}
+
+.aizu-banner__dismiss:hover {
+  color: #fff;
+  background: #343a37;
+}
+
+.banner-error {
+  padding: 14px;
+  color: #fff;
+  background: #8b302b;
+  border-radius: 8px;
+}
+
 input,
 textarea {
   user-select: text;

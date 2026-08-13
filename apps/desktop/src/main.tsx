@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
+import { BannerApp } from "./BannerApp";
 import "./styles.css";
 
 if (import.meta.env.VITE_DESKTOP_E2E === "1") {
@@ -18,6 +19,11 @@ if (import.meta.env.VITE_DESKTOP_E2E === "1") {
 }
 
 const root = document.getElementById("root");
+const isBannerWindow = new URLSearchParams(window.location.search).get("banner") === "1";
+
+if (isBannerWindow) {
+  document.documentElement.dataset.window = "banner";
+}
 
 if (!root) {
   throw new Error("Aizu application root is missing");
@@ -25,6 +31,6 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    {isBannerWindow ? <BannerApp /> : <App />}
   </StrictMode>,
 );

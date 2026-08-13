@@ -24,6 +24,7 @@ type View = {
     questionEnabled: boolean;
     agentDetailsEnabled: boolean;
     soundEnabled: boolean;
+    notificationDelivery: string;
     notificationSound: string;
     privacyMode: string;
     launchAtLogin: boolean;
@@ -52,6 +53,10 @@ const invokeView = async (command: string, args?: Record<string, unknown>): Prom
 describe("Aizu desktop MVP", () => {
   it("runs the isolated backend pipeline, settings, tray, SSH validation, and single instance", async () => {
     await expect($("h1=Keep agent events within reach.")).toBeDisplayed();
+    const initial = await invokeView("get_app_view");
+    await invokeView("update_preferences", {
+      request: { ...initial.preferences, notificationDelivery: "system" },
+    });
 
     const stateRoot = process.env.AIZU_STATE_DIR;
     expect(stateRoot).toBeTruthy();
@@ -104,7 +109,23 @@ describe("Aizu desktop MVP", () => {
     expect(opened.onboardingComplete).toBe(true);
     await expect($("h1=Agents")).toBeDisplayed();
 
+    const systemPreferences = (await invokeView("get_app_view")).preferences;
+    await invokeView("update_preferences", {
+      request: { ...systemPreferences, notificationDelivery: "aizuBanner" },
+    });
     await invokeView("send_test_notification");
+    const banners = await browser.tauri.execute(({ core }) =>
+      core.invoke("get_banners")) as CapturedNotification[];
+    expect(banners).toContainEqual(expect.objectContaining({
+      title: "Aizu test notification",
+      body: "Aizu Banner is ready.",
+    }));
+    await browser.switchToWindow("banner");
+    await expect($("strong=Aizu test notification")).toBeDisplayed();
+    await expect($("span=Aizu Banner is ready.")).toBeDisplayed();
+    await $('button[aria-label="Open Aizu"]').click();
+    await browser.switchToWindow("main");
+    await expect($("h1=Agents")).toBeDisplayed();
     const paused = await invokeView("set_notifications_paused", { paused: true });
     expect(paused.trayState).toBe("paused");
     const resumed = await invokeView("set_notifications_paused", { paused: false });
