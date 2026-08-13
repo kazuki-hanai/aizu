@@ -123,7 +123,7 @@ jobs:
           sudo useradd --create-home --shell /bin/bash aizu-ci
           sudo passwd --delete aizu-ci
           sudo install -d -o aizu-ci -g aizu-ci -m 700 \
-            /home/aizu-ci/.local/bin /home/aizu-ci/.ssh
+            /home/aizu-ci/.local/bin /home/aizu-ci/.local/state /home/aizu-ci/.ssh
           sudo install -o aizu-ci -g aizu-ci -m 755 \
             target/debug/aizu /home/aizu-ci/.local/bin/aizu
           ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/aizu-ci-key"
@@ -165,13 +165,13 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o ClearAllForwardings=yes \
             aizu-ci \
-            'exec "$HOME/.local/bin/aizu" emit task.completed --title "SSH integration completed" --outcome succeeded --json' >/dev/null
+            'HOME=/home/aizu-ci XDG_STATE_HOME=/home/aizu-ci/.local/state exec /home/aizu-ci/.local/bin/aizu emit task.completed --title "SSH integration completed" --outcome succeeded --json' >/dev/null
           output=$(ssh -T -n \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             -o ClearAllForwardings=yes \
             aizu-ci \
-            'exec "$HOME/.local/bin/aizu" bridge --protocol 1 --after 0')
+            'HOME=/home/aizu-ci XDG_STATE_HOME=/home/aizu-ci/.local/state exec /home/aizu-ci/.local/bin/aizu bridge --protocol 1 --after 0')
           printf '%s\n' "$output" | node -e '
             let input = "";
             process.stdin.on("data", chunk => input += chunk);
@@ -185,7 +185,7 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o ClearAllForwardings=yes \
             aizu-ci \
-            'exec "$HOME/.local/bin/aizu" bridge --protocol 999 --after 0')
+            'HOME=/home/aizu-ci XDG_STATE_HOME=/home/aizu-ci/.local/state exec /home/aizu-ci/.local/bin/aizu bridge --protocol 999 --after 0')
           printf '%s\n' "$mismatch" | node -e '
             let input = "";
             process.stdin.on("data", chunk => input += chunk);
@@ -199,7 +199,7 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o ClearAllForwardings=yes \
             aizu-ci \
-            'exec "$HOME/.local/bin/aizu" bridge --protocol 1 --after 0' \
+            'HOME=/home/aizu-ci XDG_STATE_HOME=/home/aizu-ci/.local/state exec /home/aizu-ci/.local/bin/aizu bridge --protocol 1 --after 0' \
             >"$RUNNER_TEMP/missing-cli.stdout" 2>"$RUNNER_TEMP/missing-cli.stderr"; then
             echo "missing remote CLI unexpectedly succeeded"
             exit 1
