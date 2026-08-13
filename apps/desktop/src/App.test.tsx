@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { AppView, SshConnectionTestResult } from "./lib/contracts";
 import { makeBackend, makeView } from "./test/fakeBackend";
+import "./styles.css";
 
 describe("Aizu desktop shell", () => {
   it("does not show redundant global status in the sidebar", async () => {
@@ -153,7 +154,7 @@ describe("Aizu desktop shell", () => {
     expect(screen.getByRole("button", { name: "Update CLI" })).toBeEnabled();
   });
 
-  it("does not draw separators between configured source rows", async () => {
+  it("uses the same subtle row separators as the agents list", async () => {
     const user = userEvent.setup();
     const { container } = render(
       <App
@@ -186,9 +187,10 @@ describe("Aizu desktop shell", () => {
     );
 
     await user.click(await screen.findByRole("button", { name: "Sources" }));
-    const rows = container.querySelectorAll<HTMLElement>(".source-manage-row");
+    const rows = container.querySelectorAll<HTMLElement>(".source-row");
     expect(rows).toHaveLength(2);
-    expect(getComputedStyle(rows[0]).borderBottomStyle).toBe("none");
+    expect(getComputedStyle(rows[0]).borderBottomStyle).toBe("solid");
+    expect(getComputedStyle(rows[0]).borderBottomWidth).toBe("1px");
     expect(getComputedStyle(rows[1]).borderBottomStyle).toBe("none");
   });
 
