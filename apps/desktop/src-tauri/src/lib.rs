@@ -165,7 +165,12 @@ pub fn run() {
         .expect("Aizu desktop runtime failed");
     app.run(|app, event| {
         #[cfg(target_os = "macos")]
-        if matches!(event, RunEvent::Reopen { .. }) {
+        if let RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } = event
+            && should_open_main_on_reopen(has_visible_windows)
+        {
             tray::show_main_window(app);
         }
         if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
@@ -174,11 +179,21 @@ pub fn run() {
     });
 }
 
+fn should_open_main_on_reopen(has_visible_windows: bool) -> bool {
+    !has_visible_windows
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, time::SystemTime};
 
-    use super::WorkerLease;
+    use super::{WorkerLease, should_open_main_on_reopen};
+
+    #[test]
+    fn visible_banner_does_not_reopen_the_main_window() {
+        assert!(!should_open_main_on_reopen(true));
+        assert!(should_open_main_on_reopen(false));
+    }
 
     #[test]
     fn desktop_worker_lease_rejects_a_second_owner() {
