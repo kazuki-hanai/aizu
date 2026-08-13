@@ -475,7 +475,8 @@ p {
 
 .sources-layout { display: flex; flex-direction: column; gap: 16px; }
 .source-manage-row { position: relative; }
-.source-manage-row .source-row { padding-right: 132px; border-bottom: 0; }
+.source-manage-row .source-row { padding-right: 132px; }
+.source-manage-row:last-child .source-row { border-bottom: 0; }
 .source-actions { position: absolute; right: 15px; top: 14px; display: flex; align-items: center; gap: 7px; }
 .source-actions .icon-button { width: 30px; height: 30px; }
 .text-button { min-height: 30px; padding: 4px 6px; color: var(--danger); border: 0; background: transparent; font-size: 11px; font-weight: 650; cursor: pointer; }
@@ -636,7 +637,6 @@ p {
 .agent-row span,
 .agent-row small { color: var(--muted); font-size: 10px; }
 
-.source-row:last-child,
 .history-row:last-child { border-bottom: 0; }
 
 .source-row__icon,
