@@ -480,6 +480,10 @@ p {
 .source-actions { position: absolute; right: 15px; top: 14px; display: flex; align-items: center; gap: 7px; }
 .source-actions .icon-button { width: 30px; height: 30px; }
 .text-button { min-height: 30px; padding: 4px 6px; color: var(--danger); border: 0; background: transparent; font-size: 11px; font-weight: 650; cursor: pointer; }
+.source-repair { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px 15px; color: var(--warning); border-bottom: 1px solid var(--line); background: var(--warning-soft); }
+.source-repair > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.source-repair strong { color: var(--ink); font-size: 12px; }
+.source-repair span { color: var(--muted); font-size: 11px; line-height: 1.4; }
 .dialog-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: 20px; background: rgb(0 0 0 / 58%); }
 .source-dialog { width: min(520px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; color: var(--ink); border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 18px 52px rgb(0 0 0 / 35%); }
 .source-dialog__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 15px; border-bottom: 1px solid var(--line); }

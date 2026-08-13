@@ -111,6 +111,48 @@ describe("Aizu desktop shell", () => {
     expect(screen.getByRole("heading", { name: "No recent activity" })).toBeVisible();
   });
 
+  it("repairs a missing CLI after onboarding", async () => {
+    const user = userEvent.setup();
+    const backend = makeBackend(makeView({
+      onboardingComplete: true,
+      cliStatus: "missing",
+      cliVersion: null,
+      sources: [{
+        id: "local",
+        name: "This Mac",
+        kind: "local",
+        status: "disabled",
+        detail: "Aizu CLI is unavailable",
+        lastEventAt: null,
+        actionRequired: null,
+      }],
+    }));
+    const installCli = vi.spyOn(backend, "installCli");
+    render(<App backend={backend} />);
+
+    await user.click(await screen.findByRole("button", { name: "Sources" }));
+    expect(screen.getByText("Aizu CLI is not installed")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Install CLI" }));
+
+    await waitFor(() => expect(installCli).toHaveBeenCalledOnce());
+    expect(screen.queryByText("Aizu CLI is not installed")).not.toBeInTheDocument();
+  });
+
+  it("offers a CLI update when versions differ", async () => {
+    const user = userEvent.setup();
+    const backend = makeBackend(makeView({
+      onboardingComplete: true,
+      cliStatus: "versionMismatch",
+      cliVersion: "0.0.9",
+      appVersion: "0.1.0",
+    }));
+    render(<App backend={backend} />);
+
+    await user.click(await screen.findByRole("button", { name: "Sources" }));
+    expect(screen.getByText("Installed 0.0.9; this app requires 0.1.0.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Update CLI" })).toBeEnabled();
+  });
+
   it("requests notification permission before sending a test notification", async () => {
     const user = userEvent.setup();
     const backend = makeBackend(

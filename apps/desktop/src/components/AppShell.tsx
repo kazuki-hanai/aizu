@@ -92,6 +92,7 @@ export function AppShell({
   onRemoveRemoteSource,
   onReconnectRemoteSource,
   onConfirmRemoteIdentity,
+  onInstallCli,
   onConfigureAgents,
   onConfirmCodexTrust,
 }: AppShellProps) {
@@ -103,7 +104,7 @@ export function AppShell({
   const content = useMemo(() => {
     switch (activeView) {
       case "sources":
-        return <SourcesView busy={busy} locale={locale} onAdd={onAddRemoteSource} onConfirmIdentity={onConfirmRemoteIdentity} onReconnect={onReconnectRemoteSource} onRemove={onRemoveRemoteSource} onTest={onTestRemoteConnection} sources={view.sources} t={t} />;
+        return <SourcesView appVersion={view.appVersion} busy={busy} cliStatus={view.cliStatus} cliVersion={view.cliVersion} locale={locale} onAdd={onAddRemoteSource} onConfirmIdentity={onConfirmRemoteIdentity} onInstallCli={onInstallCli} onReconnect={onReconnectRemoteSource} onRemove={onRemoveRemoteSource} onTest={onTestRemoteConnection} sources={view.sources} t={t} />;
       case "settings":
         return (
           <SettingsView
@@ -139,6 +140,7 @@ export function AppShell({
     onRemoveRemoteSource,
     onReconnectRemoteSource,
     onConfirmRemoteIdentity,
+    onInstallCli,
     onConfigureAgents,
     onConfirmCodexTrust,
     onPauseChange,
@@ -283,18 +285,22 @@ function RunningAgentRow({ agent, monitor, t }: { agent: RunningAgent; monitor: 
 }
 
 type SourcesViewProps = {
+  appVersion: string;
   busy: boolean;
+  cliStatus: AppView["cliStatus"];
+  cliVersion: string | null;
   sources: SourceView[];
   onAdd: (hostAlias: string, localLabel: string) => Promise<boolean>;
   onTest: (hostAlias: string) => Promise<SshConnectionTestResult>;
   onRemove: (hostAlias: string) => Promise<void>;
   onReconnect: (hostAlias: string) => Promise<void>;
   onConfirmIdentity: (hostAlias: string) => Promise<void>;
+  onInstallCli: () => Promise<void>;
   locale: string;
   t: AppMessages;
 };
 
-function SourcesView({ busy, locale, sources, onAdd, onRemove, onReconnect, onConfirmIdentity, onTest, t }: SourcesViewProps) {
+function SourcesView({ appVersion, busy, cliStatus, cliVersion, locale, sources, onAdd, onRemove, onReconnect, onConfirmIdentity, onInstallCli, onTest, t }: SourcesViewProps) {
   const [addSourceOpen, setAddSourceOpen] = useState(false);
   const [hostAlias, setHostAlias] = useState("");
   const [localLabel, setLocalLabel] = useState("");
@@ -384,6 +390,19 @@ function SourcesView({ busy, locale, sources, onAdd, onRemove, onReconnect, onCo
           <Plus aria-hidden="true" size={18} />
         </button>
       </div>
+      {cliStatus === "installed" ? null : (
+        <div className="source-repair">
+          <AlertTriangle aria-hidden="true" size={18} />
+          <div>
+            <strong>{cliStatus === "missing" ? t.cliMissing : t.cliUpdateRequired}</strong>
+            <span>{cliStatus === "missing" ? t.cliMissingHelp : t.cliVersionMismatch(cliVersion ?? t.unknown, appVersion)}</span>
+          </div>
+          <button className="button button--secondary" disabled={busy} onClick={() => void onInstallCli()} type="button">
+            <Wrench aria-hidden="true" size={15} />
+            {cliStatus === "missing" ? t.installCli : t.updateCli}
+          </button>
+        </div>
+      )}
       <div className="source-list">
         {sources.map((source) => (
           <div className="source-manage-row" key={source.id}>

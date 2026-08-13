@@ -1,7 +1,7 @@
 import type { Preferences } from "./contracts";
 
 type Messages = {
-  [key: string]: string | ((...args: number[]) => string) | Record<string, string>;
+  [key: string]: string | ((...args: never[]) => string) | Record<string, string>;
   sounds: Record<"off" | "default" | "glass" | "ping" | "pop" | "hero", string>;
 };
 
@@ -65,6 +65,12 @@ const en = {
   clearConfirm: "Clear recent activity? Pending notifications will be kept.",
   configuredSources: "Configured sources",
   sourcesDescription: "Local and SSH readers report sanitized operational state.",
+  cliMissing: "Aizu CLI is not installed",
+  cliMissingHelp: "Install it to receive local Codex and Claude Code events.",
+  cliUpdateRequired: "Aizu CLI needs an update",
+  cliVersionMismatch: (installed: string, required: string) => `Installed ${installed}; this app requires ${required}.`,
+  installCli: "Install CLI",
+  updateCli: "Update CLI",
   addSshSource: "Add SSH source",
   sshAliasHelp: "Use an alias already configured in ~/.ssh/config.",
   sshAlias: "SSH config alias",
@@ -173,6 +179,12 @@ const ja = {
   clearConfirm: "最近の通知を消去しますか？未送信の通知は保持されます。",
   configuredSources: "接続元",
   sourcesDescription: "このMacとSSH接続先の状態を表示します。",
+  cliMissing: "Aizu CLIがインストールされていません",
+  cliMissingHelp: "ローカルのCodexとClaude Codeの通知を受け取るためにインストールします。",
+  cliUpdateRequired: "Aizu CLIの更新が必要です",
+  cliVersionMismatch: (installed: string, required: string) => `インストール済み ${installed} / 必要なバージョン ${required}`,
+  installCli: "CLIをインストール",
+  updateCli: "CLIを更新",
   addSshSource: "SSH接続先を追加",
   sshAliasHelp: "~/.ssh/configに設定済みのaliasを使用します。",
   sshAlias: "SSH config alias",

@@ -484,15 +484,25 @@ impl AppService {
         {
             return Err(DesktopError::RemoteSourceNotFound(host_alias.to_owned()));
         }
-        self.desktop
-            .release_source_identity(&format!("ssh:{host_alias}"))?;
+        let previous_settings = self.settings.clone();
         self.settings
             .remote_sources
             .retain(|source| source.host_alias != host_alias);
+        if let Err(error) = self.persist() {
+            self.settings = previous_settings;
+            return Err(error);
+        }
+        if let Err(error) = self
+            .desktop
+            .release_source_identity(&format!("ssh:{host_alias}"))
+        {
+            self.settings = previous_settings;
+            self.persist()?;
+            return Err(error.into());
+        }
         self.invalidate_remote_agent_snapshot(host_alias);
         self.running_agents
             .retain(|agent| agent.source_id != format!("ssh:{host_alias}"));
-        self.persist()?;
         self.sync_remote_source_views();
         Ok(self.view())
     }
@@ -1360,6 +1370,47 @@ mod tests {
             .collect();
         assert_eq!(generations["build-host"], 1);
         assert_eq!(generations["review-host"], 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_source_removal_keeps_settings_and_identity_pin() {
+        use std::os::unix::fs::symlink;
+
+        let notifier = FakeNotifier::with_permission(PermissionStatus::Granted);
+        let mut service = service(notifier);
+        service
+            .add_remote_source("mini-pc".to_owned(), "Mini PC".to_owned())
+            .expect("remote source should register");
+        let source_id = uuid::Uuid::new_v4();
+        service
+            .desktop
+            .pin_source("ssh:mini-pc", source_id)
+            .expect("identity should pin");
+
+        let settings_path = service.store.path.clone();
+        std::fs::remove_file(&settings_path).expect("settings should be removable");
+        symlink("missing-settings-target", &settings_path).expect("failure symlink should exist");
+
+        assert!(matches!(
+            service.remove_remote_source("mini-pc"),
+            Err(super::DesktopError::Store(_))
+        ));
+        assert!(
+            service
+                .remote_sources()
+                .iter()
+                .any(|source| source.host_alias == "mini-pc")
+        );
+        assert_eq!(
+            service
+                .desktop
+                .source("ssh:mini-pc")
+                .expect("source should load")
+                .expect("source should remain")
+                .pinned_source_id,
+            Some(source_id)
+        );
     }
 
     #[test]

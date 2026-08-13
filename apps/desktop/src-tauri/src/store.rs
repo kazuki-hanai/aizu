@@ -46,7 +46,7 @@ pub enum StoreError {
 }
 
 pub struct SettingsStore {
-    path: PathBuf,
+    pub(crate) path: PathBuf,
 }
 
 impl SettingsStore {
