@@ -82,10 +82,20 @@ mise trust
 mise install rust
 mise exec -- cargo build --locked --release -p aizu-cli
 install -d -m 700 "$HOME/.local/bin"
-install -m 755 target/release/aizu "$HOME/.local/bin/aizu"
+stage="$HOME/.local/bin/.aizu-install-$$"
+trap 'rm -f "$stage"' EXIT HUP INT TERM
+install -m 755 target/release/aizu "$stage"
+"$stage" version --json
+ln "$stage" "$HOME/.local/bin/aizu"
+rm -f "$stage"
+trap - EXIT HUP INT TERM
 "$HOME/.local/bin/aizu" version --json
 "$HOME/.local/bin/aizu" doctor --json
 ```
+
+The hard-link commit intentionally fails if anything already occupies the
+target path and never follows a destination symlink. Do not remove or overwrite
+that item until you have established who owns it.
 
 Generate and merge the first-party hooks on that same source machine:
 
@@ -135,13 +145,27 @@ replace only the Aizu-managed binary:
 cd /path/to/aizu
 git pull --ff-only
 mise exec -- cargo build --locked --release -p aizu-cli
-install -m 755 target/release/aizu "$HOME/.local/bin/aizu"
+target="$HOME/.local/bin/aizu"
+test -f "$target" && test ! -L "$target"
+"$target" version --json
+stage="$HOME/.local/bin/.aizu-update-$$"
+install -m 755 target/release/aizu "$stage"
+"$stage" version --json
+mv -f "$stage" "$target"
 "$HOME/.local/bin/aizu" version --json
 ```
 
-Re-run both `integration-config` commands after an Aizu or agent update and
-review the resulting fragments before merging them. Existing spooled events
-remain on the source and are delivered after the SSH connection resumes.
+Continue only if you installed the existing file using these Aizu instructions
+and both reports contain a valid compatibility record such as
+`{"application":"0.1.0","protocol":1,"event_schema":1,"database_schema":1,...}`.
+The `application` field is the Aizu CLI version. A successful version response
+checks compatibility; it is not cryptographic proof of ownership, so do not use
+this update procedure for an unfamiliar file. The staging file is created in
+the same directory so the final rename stays on one filesystem; a failed build
+or validation leaves the installed CLI untouched. Re-run both
+`integration-config` commands after an Aizu or agent update and review the
+resulting fragments before merging them. Existing spooled events remain on the
+source and are delivered after the SSH connection resumes.
 
 The **Running agents** list includes both this Mac and connected SSH sources.
 For a remote source, the desktop periodically runs the fixed
