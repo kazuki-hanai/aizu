@@ -7,10 +7,20 @@ const DOC_ONLY = /\.md$/u;
 const PACKAGING_INPUT = /^(?:Cargo\.(?:toml|lock)|package\.json|pnpm-lock\.yaml|mise\.(?:toml|lock)|\.github\/workflows\/ci\.yml|assets\/(?:audio|branding)\/|apps\/desktop\/(?:package\.json|src-tauri\/(?:Cargo\.toml|build\.rs|icons\/|resources\/|tauri\.conf\.json))|scripts\/(?:build-dev-dmg|install-dev-app|prepare-desktop-cli)\.sh|scripts\/ci\/verify-dev-dmg\.sh)/u;
 
 export function changedPaths(base, head, cwd = process.cwd()) {
-  return execFileSync("git", ["diff", "--name-only", `${base}...${head}`], {
+  const fields = execFileSync("git", ["diff", "--name-status", "-z", `${base}...${head}`], {
     cwd,
     encoding: "utf8",
-  }).trim().split("\n").filter(Boolean);
+  }).split("\0");
+  const paths = [];
+  for (let index = 0; index < fields.length && fields[index];) {
+    const status = fields[index++];
+    const pathCount = /^[RC]/u.test(status) ? 2 : 1;
+    for (let offset = 0; offset < pathCount; offset += 1) {
+      const path = fields[index++];
+      if (path) paths.push(path);
+    }
+  }
+  return [...new Set(paths)];
 }
 
 export function classifyChanges(paths) {

@@ -77,6 +77,22 @@ try {
   if (paths.join(",") !== "README.md" || classification.macosRequired) {
     errors.push(`PR changes must use the merge base; found ${paths.join(", ")}`);
   }
+
+  git("checkout", "--quiet", "-b", "rename-fixture", "pr-head");
+  mkdirSync(resolve(fixture, "scripts"));
+  writeFileSync(resolve(fixture, "scripts/build-dev-dmg.sh"), "#!/bin/sh\n");
+  git("add", ".");
+  git("commit", "--quiet", "-m", "add packaging script");
+  const renameBase = execFileSync("git", ["rev-parse", "HEAD"], { cwd: fixture, encoding: "utf8" }).trim();
+  mkdirSync(resolve(fixture, "docs"));
+  git("mv", "scripts/build-dev-dmg.sh", "docs/packaging.md");
+  git("commit", "--quiet", "-m", "rename packaging script");
+  const renameHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: fixture, encoding: "utf8" }).trim();
+  const renamedPaths = changedPaths(renameBase, renameHead, fixture);
+  const renamed = classifyChanges(renamedPaths);
+  if (!renamedPaths.includes("scripts/build-dev-dmg.sh") || !renamed.packageRequired) {
+    errors.push(`renamed packaging inputs must retain their original path; found ${renamedPaths.join(", ")}`);
+  }
 } finally {
   rmSync(fixture, { force: true, recursive: true });
 }
