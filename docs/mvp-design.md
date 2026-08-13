@@ -358,7 +358,7 @@ macOS の想定パス:
 - `emit` は短い transaction だけを行う。
 - 複数 hook の同時実行をテストする。
 - DB directory は `0700`、DB/WAL/SHM file は原則 `0600` とする。
-- spool は同一 host 上の local filesystem に限定する。network filesystem など WAL を安全に共有できない配置は `doctor` error とし、別 journal mode へ黙って fallback しない。
+- spool は同一 host 上の local filesystem に限定する。macOS は mount の local flag、Linux は明示的に対応する local filesystem type で fail-closed に判定する。network/FUSE/unknown filesystem など WAL を安全に共有できない配置は `doctor` error とし、別 journal mode へ黙って fallback しない。
 - migration 前に互換性を確認し、失敗時はイベントを書き換えない。
 - app/CLI は同じ `aizu-core` migration を使い、migration を exclusive transaction で serialize する。別 process が migration 中なら bounded retry し、hook を無期限 block しない。
 - binary が自分より新しい DB schema を検出した場合は read/write せず `incompatible_database` として終了する。app update は bundled CLI の install/version 確認後に local DB migration を行い、少なくとも直前 release の reader/writer compatibility を migration test する。

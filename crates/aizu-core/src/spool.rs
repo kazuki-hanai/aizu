@@ -743,7 +743,7 @@ fn ensure_local_filesystem(path: &Path) -> Result<(), SpoolError> {
                 .map_err(rustix_errno_to_spool_error)?
                 .f_type,
         );
-        if linux_filesystem_is_network(filesystem) {
+        if !linux_filesystem_is_supported_local(filesystem) {
             return Err(SpoolError::NetworkFilesystem(format!(
                 "magic 0x{filesystem:x}"
             )));
@@ -766,15 +766,17 @@ fn macos_filesystem_is_network(filesystem: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-const fn linux_filesystem_is_network(filesystem: i128) -> bool {
+const fn linux_filesystem_is_supported_local(filesystem: i128) -> bool {
     matches!(
         filesystem,
-        0x6573_5546 // FUSE, including fuse.sshfs
-            | 0x6969 // NFS
-            | 0xff53_4d42 // CIFS/SMB2
-            | 0x0102_1997 // 9P
-            | 0x7375_7245 // CODA
-            | 0x564c // NCP
+        0xef53 // ext2/3/4
+            | 0x5846_5342 // XFS
+            | 0x9123_683e // Btrfs
+            | 0x0102_1994 // tmpfs
+            | 0x794c_7630 // overlayfs
+            | 0x2fc1_2fc1 // ZFS
+            | 0x8584_58f6 // ramfs
+            | 0x2405_1905 // UBIFS
     )
 }
 
@@ -1320,9 +1322,30 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn classifies_linux_fuse_as_unsafe_for_wal() {
-        assert!(linux_filesystem_is_network(0x6573_5546));
-        assert!(!linux_filesystem_is_network(0xef53));
+    fn accepts_only_known_local_linux_filesystems_for_wal() {
+        for filesystem in [
+            0xef53,
+            0x5846_5342,
+            0x9123_683e,
+            0x0102_1994,
+            0x794c_7630,
+            0x2fc1_2fc1,
+            0x8584_58f6,
+            0x2405_1905,
+        ] {
+            assert!(linux_filesystem_is_supported_local(filesystem));
+        }
+        for filesystem in [
+            0x6573_5546, // FUSE, including fuse.sshfs
+            0x00c3_6400, // Ceph
+            0x5346_414f, // AFS
+            0x517b,      // SMB
+            0xfe53_4d42, // SMB2
+            0x6969,      // NFS
+            0xdead_beef, // unknown
+        ] {
+            assert!(!linux_filesystem_is_supported_local(filesystem));
+        }
     }
 
     #[test]

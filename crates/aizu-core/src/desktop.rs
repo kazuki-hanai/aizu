@@ -151,10 +151,10 @@ impl DesktopState {
         source_from_connection(&connection, source_key)
     }
 
-    /// Releases an inactive setting's identity ownership while preserving its history and dedup data.
+    /// Releases an inactive setting's identity ownership while preserving its replay checkpoint.
     ///
-    /// A later registration starts its cursor from zero. Existing events and tombstones prevent
-    /// replayed frames from producing duplicate notifications.
+    /// A later registration resumes from the retained source high-watermark. Recent exact replays
+    /// are also checked against bounded event tombstones.
     pub fn release_source_identity(&self, source_key: &str) -> Result<(), DesktopError> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1068,6 +1068,10 @@ fn apply_migration_v4(transaction: &Transaction<'_>) -> Result<(), DesktopError>
             SELECT source_id, sequence FROM desktop_event_tombstones
             UNION ALL
             SELECT source_id, lost_through_sequence AS sequence FROM desktop_gaps
+            UNION ALL
+            SELECT pinned_source_id AS source_id, cursor AS sequence
+            FROM desktop_sources
+            WHERE pinned_source_id IS NOT NULL AND cursor > 0
          ) GROUP BY source_id;
          CREATE INDEX desktop_event_tombstones_created_at
          ON desktop_event_tombstones(created_at);
@@ -1536,6 +1540,14 @@ mod tests {
                 "../../../tests/fixtures/desktop-schema-v1.sql"
             ))
             .expect("load version one fixture");
+        let source_id = Uuid::new_v4();
+        connection
+            .execute(
+                "UPDATE desktop_sources SET pinned_source_id = ?1, cursor = 100
+                 WHERE source_key = 'local'",
+                params![source_id.to_string()],
+            )
+            .expect("seed cursor-only prior state");
         drop(connection);
 
         let state = DesktopState::open(&path).expect("migrate previous release fixture");
@@ -1580,6 +1592,21 @@ mod tests {
         assert_eq!(version, DESKTOP_DATABASE_SCHEMA_VERSION);
         assert!(has_tombstones);
         assert!(has_checkpoints);
+        drop(connection);
+
+        let state = DesktopState::open(directory.path().join("desktop.sqlite3"))
+            .expect("reopen migrated fixture");
+        state
+            .release_source_identity("local")
+            .expect("release source identity");
+        state
+            .pin_source("local", source_id)
+            .expect("re-pin source identity");
+        assert_eq!(
+            state.source("local").unwrap().unwrap().cursor,
+            100,
+            "cursor-only prior state must not rewind during migration"
+        );
     }
 
     #[test]
