@@ -171,6 +171,7 @@ export function SwipeDismissBanner({
     <article
       className={classes}
       data-banner-id={banner.id}
+      data-text-size={banner.textSize}
       lang={banner.language === "system" ? undefined : banner.language}
       onMouseDown={(event) => {
         if (event.button === 0) begin("mouse", 0, event.clientX, event.clientY, event.target);

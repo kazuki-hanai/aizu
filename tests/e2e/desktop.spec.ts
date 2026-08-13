@@ -20,6 +20,7 @@ type View = {
   history: Array<{ title: string; deliveryStatus: string }>;
   preferences: {
     language: string;
+    textSize: string;
     completionEnabled: boolean;
     questionEnabled: boolean;
     agentDetailsEnabled: boolean;
@@ -40,6 +41,7 @@ type View = {
 type CapturedNotification = {
   title: string;
   body: string;
+  textSize: string;
 };
 
 const invokeView = async (command: string, args?: Record<string, unknown>): Promise<View> => {
@@ -108,11 +110,23 @@ describe("Aizu desktop MVP", () => {
     });
     expect(opened.onboardingComplete).toBe(true);
     await expect($("h1=Agents")).toBeDisplayed();
+    const standardHeadingSize = await browser.execute(() => {
+      const heading = document.querySelector(".topbar h1");
+      return heading instanceof HTMLElement ? Number.parseFloat(getComputedStyle(heading).fontSize) : 0;
+    });
 
     const systemPreferences = (await invokeView("get_app_view")).preferences;
     await invokeView("update_preferences", {
-      request: { ...systemPreferences, notificationDelivery: "aizuBanner" },
+      request: { ...systemPreferences, notificationDelivery: "aizuBanner", textSize: "large" },
     });
+    await browser.waitUntil(async () =>
+      (await browser.execute(() => document.documentElement.dataset.textSize)) === "large",
+    { timeout: 2_000, timeoutMsg: "text size preference was not applied to the main window" });
+    const largeHeadingSize = await browser.execute(() => {
+      const heading = document.querySelector(".topbar h1");
+      return heading instanceof HTMLElement ? Number.parseFloat(getComputedStyle(heading).fontSize) : 0;
+    });
+    expect(largeHeadingSize).toBeGreaterThan(standardHeadingSize);
     await invokeView("send_test_notification");
     const banners = await browser.tauri.execute(({ core }) =>
       core.invoke("get_banners")) as CapturedNotification[];
@@ -123,6 +137,7 @@ describe("Aizu desktop MVP", () => {
     await browser.switchToWindow("banner");
     await expect($("strong=Aizu test notification")).toBeDisplayed();
     await expect($("span=Aizu Banner is ready.")).toBeDisplayed();
+    await expect($(".aizu-banner[data-text-size=large]")).toBeDisplayed();
     const entranceMotion = await browser.execute(() => {
       const banner = document.querySelector(".aizu-banner");
       if (!(banner instanceof HTMLElement)) return null;
@@ -164,6 +179,7 @@ describe("Aizu desktop MVP", () => {
     const preferences = {
       ...resumed.preferences,
       language: "ja",
+      textSize: "large",
       agentDetailsEnabled: true,
       notificationSound: "hero",
       quietHours: {
@@ -176,16 +192,19 @@ describe("Aizu desktop MVP", () => {
     const updated = await invokeView("update_preferences", { request: preferences });
     expect(updated.preferences.notificationSound).toBe("hero");
     expect(updated.preferences.language).toBe("ja");
+    expect(updated.preferences.textSize).toBe("large");
     expect(updated.preferences.agentDetailsEnabled).toBe(true);
     await expect($("h1=エージェント")).toBeDisplayed();
     expect(await browser.execute(() => document.documentElement.lang)).toBe("ja");
+    expect(await browser.execute(() => document.documentElement.dataset.textSize)).toBe("large");
     expect((await invokeView("get_app_view")).preferences.quietHours.enabled).toBe(true);
     const persisted = JSON.parse(await readFile(path.join(stateRoot as string, "settings.json"), "utf8")) as {
-      preferences: { agentDetailsEnabled: boolean; language: string; notificationSound: string; quietHours: { enabled: boolean } };
+      preferences: { agentDetailsEnabled: boolean; language: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
     };
     expect(persisted.preferences.agentDetailsEnabled).toBe(true);
     expect(persisted.preferences.notificationSound).toBe("hero");
     expect(persisted.preferences.language).toBe("ja");
+    expect(persisted.preferences.textSize).toBe("large");
     expect(persisted.preferences.quietHours.enabled).toBe(true);
     await invokeView("update_preferences", {
       request: {

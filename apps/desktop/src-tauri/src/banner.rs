@@ -418,6 +418,7 @@ mod tests {
             sound: None,
             delivery: crate::model::NotificationDelivery::AizuBanner,
             language: crate::model::LanguagePreference::English,
+            text_size: crate::model::TextSize::Standard,
         }
     }
 

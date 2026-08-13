@@ -126,6 +126,7 @@ export const bannerBackend: BannerClient = {
 
 const defaultPreferences: Preferences = {
   language: "system",
+  textSize: "standard",
   completionEnabled: true,
   questionEnabled: true,
   agentDetailsEnabled: false,

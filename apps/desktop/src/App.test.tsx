@@ -423,26 +423,30 @@ describe("Aizu desktop shell", () => {
     await user.click(await screen.findByRole("button", { name: "Settings" }));
     expect(screen.queryByRole("button", { name: "Save settings" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Notification style" })).toHaveValue("aizuBanner");
+    expect(screen.getByRole("combobox", { name: "Text size" })).toHaveValue("standard");
     expect(screen.getByRole("combobox", { name: "Notification sound" }))
       .toHaveDisplayValue("Aizu Pop");
     await user.click(screen.getByRole("switch", { name: "Task completion" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification style" }), "system");
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification sound" }), "ping");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Text size" }), "large");
     await user.click(screen.getByText("Advanced"));
     await user.click(screen.getByRole("switch", { name: "Show agent details" }));
 
     await waitFor(async () => {
-      expect(updatePreferences).toHaveBeenCalledTimes(4);
+      expect(updatePreferences).toHaveBeenCalledTimes(5);
       await expect(backend.getView()).resolves.toMatchObject({
         preferences: {
           completionEnabled: false,
           agentDetailsEnabled: true,
           notificationDelivery: "system",
           notificationSound: "ping",
+          textSize: "large",
           quietHours: { questionsBypass: false },
         },
       });
     });
+    expect(document.documentElement).toHaveAttribute("data-text-size", "large");
   });
 
   it("persists the language and applies it immediately", async () => {

@@ -62,6 +62,7 @@ const notices: BannerNotification[] = [
     sound: "ping",
     delivery: "aizuBanner",
     language: "en",
+    textSize: "standard",
   },
   {
     id: 2,
@@ -70,6 +71,7 @@ const notices: BannerNotification[] = [
     sound: null,
     delivery: "aizuBanner",
     language: "en",
+    textSize: "standard",
   },
 ];
 
@@ -102,6 +104,16 @@ describe("Aizu Banner", () => {
     expect(container.querySelectorAll(".aizu-banner")).toHaveLength(2);
     expect(backend.dismiss).not.toHaveBeenCalled();
     await waitFor(() => expect(backend.resize).toHaveBeenCalled());
+  });
+
+  it("applies the persisted text size to each banner", async () => {
+    const backend = client();
+    const enlarged = { ...notices[0], textSize: "large" as const };
+    backend.getBanners = vi.fn(() => Promise.resolve([enlarged]));
+    const { container } = render(<BannerApp client={backend} />);
+
+    await screen.findByText("Codex task completed");
+    expect(container.querySelector(".aizu-banner")).toHaveAttribute("data-text-size", "large");
   });
 
   it("keeps notification content passive and dismisses from the close button", async () => {
