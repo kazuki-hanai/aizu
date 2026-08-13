@@ -1,34 +1,34 @@
 # Aizu
 
-Durable desktop notifications for terminal AI agents, without a central
-notification backend.
+Aizu sends Codex and Claude Code completion, question, and permission alerts to
+your Mac. Events are stored on the machine where the agent runs, then delivered
+locally or over your existing SSH connection. Aizu has no notification relay,
+account, or listening port.
 
-## Installation
+## What You Need
 
-Aizu currently ships from source. Choose the installation that matches the
-machine's role:
+| Role | Requirement |
+| --- | --- |
+| Receiving computer | macOS 12 or later |
+| Local agents | Codex or Claude Code on the receiving Mac |
+| Remote agents | Linux or macOS reachable through a system SSH alias |
 
-| Machine | Install | Supported in the MVP |
-| --- | --- | --- |
-| Receiving Mac | Aizu desktop app and bundled CLI | macOS 12 or later |
-| SSH source | `aizu` CLI and agent hooks | Linux or macOS |
-| Windows | None | Core/CLI compilation is checked, but Windows is not an installation target yet |
+Windows desktop installation is not supported yet.
 
-The desktop notification receiver is macOS-only. A Linux source machine runs
-only the CLI: it stores agent events in its local SQLite spool and the Mac
-retrieves them through system SSH. No daemon, web server, or listening port is
-installed on the source machine.
+Install [mise](https://mise.jdx.dev/getting-started.html) before using the
+source-build commands below. If every agent runs on the receiving Mac, complete
+only **Install on the Receiving Mac**. Continue to **Add an SSH Source** for
+each additional machine.
 
-### Receiving Mac: desktop app
+## Install on the Receiving Mac
 
-A Developer ID-signed and notarized GitHub Release is intentionally unavailable
-until the release branding and signing keys are approved. Building the desktop
-app requires macOS 12 or later and Xcode Command Line Tools. The development
-installer applies an ad-hoc signature so macOS can associate notification
-permission with Aizu's stable bundle identifier.
+A signed public release is not available yet. Build the development DMG from
+the repository:
 
 ```bash
-xcode-select --install # omit this if the tools are already installed
+xcode-select --install # Skip if Command Line Tools are already installed.
+git clone https://github.com/kazuki-hanai/aizu.git
+cd aizu
 mise trust
 mise install rust node pnpm
 mise exec -- pnpm install --frozen-lockfile
@@ -36,99 +36,85 @@ mise exec -- pnpm install --frozen-lockfile
 open target/debug/bundle/dmg/Aizu_*.dmg
 ```
 
-Drag **Aizu** onto **Applications** in the opened disk image, then launch
-`/Applications/Aizu.app`. Do not launch the bundle directly from `target/`:
-macOS notification permission, when **macOS Notifications** is selected, is tied
-to the installed, signed application identity. For automated local replacement,
-`./scripts/install-dev-app.sh` uses
-the same validation and moves an existing Aizu development bundle to a temporary
-backup before installing the new one.
+Drag **Aizu** to **Applications**, then open `/Applications/Aizu.app`.
 
-The bundle includes the matching `aizu` CLI. On first launch:
+Complete the first-run screen:
 
-1. Aizu Banner is ready without macOS notification permission. To use the
-   system notification center instead, select **Settings > Notification style >
-   macOS Notifications** and allow notifications when testing it.
-2. Select **Set up** under **Connect Codex and Claude Code**. Aizu atomically
-   installs the bundled CLI at `~/.local/bin/aizu` and merges the required
-   lifecycle hooks into both agent configuration files without deleting
-   existing hooks.
-3. Review the installed command hooks in Codex and select **Confirm approval**
-   in Aizu after approving them. Claude Code does not use this separate Codex
-   trust prompt.
-4. Choose whether Aizu should launch at login, then select **Open Aizu**.
+1. Select **Set up** under **Connect Codex and Claude Code**.
+2. Review the installed Codex hooks, approve them in Codex, then select
+   **Confirm approval** in Aizu. Claude Code does not require this extra step.
+3. Choose whether Aizu starts at login and select **Open Aizu**.
 
-The generated hooks use the absolute CLI path, so adding `~/.local/bin` to
-`PATH` is optional. It is useful for manual diagnostics:
+Setup installs the bundled CLI at `~/.local/bin/aizu` and merges the Aizu hooks
+without deleting unrelated agent settings. Completion notifications require
+these hooks; process monitoring alone is diagnostic and cannot determine when
+an agent task has completed.
+
+If Claude Code has `disableAllHooks` set to `true`, Aizu leaves that preference
+unchanged and setup stops. Enable hooks explicitly in Claude Code, then run
+setup again.
+
+### Check the Local Setup
+
+The CLI does not need to be on `PATH` for installed hooks. For manual checks:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
-aizu version --json
-aizu doctor --json
-aizu agents --json
-```
-
-To upgrade a source build, quit Aizu from its menu-bar menu, rebuild or replace
-`Aizu.app`, and launch it again. If the bundled CLI version changed, Aizu keeps
-the local spool read-only until you explicitly replace the Aizu-managed CLI
-from the setup screen. It never overwrites a symlink, a file owned by another
-user, or an unrelated binary at the install path.
-
-### Linux or macOS SSH source: CLI only
-
-Run these commands on every remote source. They install no desktop app and no
-background service. The repository must already be cloned on that machine:
-
-```bash
-cd /path/to/aizu
-mise trust
-mise install rust node
-mise exec -- cargo build --locked --release -p aizu-cli
-install -d -m 700 "$HOME/.local/bin"
-stage="$HOME/.local/bin/.aizu-install-$$"
-trap 'rm -f "$stage"' EXIT HUP INT TERM
-install -m 755 target/release/aizu "$stage"
-"$stage" version --json
-ln "$stage" "$HOME/.local/bin/aizu"
-rm -f "$stage"
-trap - EXIT HUP INT TERM
 "$HOME/.local/bin/aizu" version --json
 "$HOME/.local/bin/aizu" doctor --json
+"$HOME/.local/bin/aizu" agents --json
 ```
 
-The hard-link commit intentionally fails if anything already occupies the
-target path and never follows a destination symlink. Do not remove or overwrite
-that item until you have established who owns it.
+## Add an SSH Source
 
-Install the first-party hooks on that same source machine:
+Repeat this section on each Linux or macOS machine where an agent runs.
+
+### 1. Install the CLI on the Source
+
+Clone and build Aizu on the source machine:
+
+```bash
+(
+  set -eu
+  git clone https://github.com/kazuki-hanai/aizu.git
+  cd aizu
+  mise trust
+  mise install rust node
+  mise exec -- cargo build --locked --release -p aizu-cli
+  install -d -m 700 "$HOME/.local/bin"
+  stage="$HOME/.local/bin/.aizu-install-$$"
+  trap 'rm -f "$stage"' EXIT HUP INT TERM
+  install -m 755 target/release/aizu "$stage"
+  "$stage" version --json
+  ln "$stage" "$HOME/.local/bin/aizu"
+  rm -f "$stage"
+  trap - EXIT HUP INT TERM
+  "$HOME/.local/bin/aizu" version --json
+  "$HOME/.local/bin/aizu" doctor --json
+)
+```
+
+The hard-link step stops if anything already exists at the target path. Do not
+remove or replace that item until you know who owns it. Upgrades use a separate
+procedure in [Installation details](docs/installation.md).
+
+### 2. Connect Codex and Claude Code
 
 ```bash
 "$HOME/.local/bin/aizu" integration-install --json
+"$HOME/.local/bin/aizu" agents --json
 ```
 
-This command parses both existing JSON files, preserves unrelated settings and
-hook handlers, and atomically updates `~/.codex/hooks.json` and
-`~/.claude/settings.json`. It refuses malformed, oversized, externally linked,
-or unsafe configuration paths before changing either file. Concurrent Aizu
-installers are serialized with `~/.aizu/hooks.lock`; do not edit the agent
-configuration files concurrently because external editors do not use that
-lock. Codex requires explicit hook approval on that machine after installation.
-If an existing agent directory is writable by group or others, remove only
-those write bits and retry:
+Approve the new hooks in Codex on that source machine. If setup reports that an
+agent configuration directory is writable by other users, secure it and retry:
 
 ```bash
 chmod go-w "$HOME/.codex" "$HOME/.claude"
 "$HOME/.local/bin/aizu" integration-install --json
 ```
 
-Verify the source before configuring the receiving Mac:
+### 3. Add the Source to the Mac
 
-```bash
-"$HOME/.local/bin/aizu" agents --json
-```
-
-On the receiving Mac, add a normal system SSH alias to `~/.ssh/config`, verify
-it outside Aizu, then use **Sources > + > Test connection > Add source**:
+Create a normal system SSH alias on the receiving Mac:
 
 ```sshconfig
 Host remote-host
@@ -137,155 +123,94 @@ Host remote-host
   IdentityFile ~/.ssh/id_ed25519
 ```
 
+Replace the example values, then verify the connection outside Aizu:
+
 ```bash
 ssh remote-host '$HOME/.local/bin/aizu version --json'
 ```
 
-Replace the example address, user, and key with the existing SSH configuration
-for the source. Aizu invokes the receiving Mac's system `/usr/bin/ssh`; it does
-not copy or store private keys or passwords and never disables host-key
-verification.
+In Aizu, open **Sources**, select **+**, enter `remote-host`, then select
+**Test connection** and **Add source**.
 
-### Upgrading a source CLI
+Aizu uses `/usr/bin/ssh` and the Mac's existing SSH configuration. It does not
+copy private keys, store passwords, or disable host-key verification. Remote
+events remain in the source SQLite spool while the Mac is disconnected.
 
-Pull the desired Aizu revision on the Linux or macOS source, rebuild, and
-replace only the Aizu-managed binary:
+## Notifications
+
+- **Aizu Banner** is the default. It needs no macOS notification permission,
+  keeps up to three alerts visible, preserves safe line breaks, and closes only
+  from its close button.
+- **macOS Notifications** uses Notification Center. Select it under
+  **Settings > Notification style**, then use the test action to request system
+  permission.
+- **Aizu Pop** is the default sound. Change it or turn sound off under
+  **Settings > Notification sound**.
+- **Show agent details** is off by default. Enabling it adds a short filtered
+  completion or permission excerpt. Aizu still excludes raw commands, full
+  prompts, transcripts, secrets, and absolute paths.
+
+Settings are saved immediately. The interface can follow macOS or use Japanese
+or English under **Settings > Language**.
+
+## Troubleshooting
+
+### No completion notification
+
+1. Run `"$HOME/.local/bin/aizu" doctor --json` on the machine running the
+   agent.
+2. Run `"$HOME/.local/bin/aizu" integration-install --json` again after an
+   Aizu or agent update.
+3. Confirm the hooks in Codex. A configured hook is not active until Codex
+   trusts it.
+4. If Claude Code has `disableAllHooks` enabled, turn it off intentionally and
+   rerun `integration-install --json`; Aizu never overrides it automatically.
+5. For SSH sources, use **Test connection** and verify the source is
+   **Connected**.
+
+### `an agent configuration path is unsafe`
+
+Do not bypass this check. Verify that `~/.codex` and `~/.claude` belong to the
+current user, are not symlinks outside the home directory, and are not writable
+by group or others. For the common permissions case:
 
 ```bash
-(
-  set -eu
-  cd /path/to/aizu
-  git pull --ff-only
-  mise exec -- cargo build --locked --release -p aizu-cli
-  target="$HOME/.local/bin/aizu"
-  test -f "$target" && test ! -L "$target"
-  validate_report() {
-    "$1" version --json | mise exec -- node -e '
-      let input = "";
-      process.stdin.on("data", chunk => input += chunk);
-      process.stdin.on("end", () => {
-        const report = JSON.parse(input);
-        const version = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u;
-        if (!version.test(report.application)
-          || !Number.isInteger(report.protocol)
-          || !Number.isInteger(report.event_schema)
-          || !Number.isInteger(report.database_schema)
-          || typeof report.sqlite !== "string") process.exit(1);
-      });'
-  }
-  validate_report "$target"
-  stage="$HOME/.local/bin/.aizu-update-$$"
-  trap 'rm -f "$stage"' EXIT HUP INT TERM
-  install -m 755 target/release/aizu "$stage"
-  validate_report "$stage"
-  mv -f "$stage" "$target"
-  trap - EXIT HUP INT TERM
-  validate_report "$target"
-)
+chmod go-w "$HOME/.codex" "$HOME/.claude"
 ```
 
-Continue only if you installed the existing file using these Aizu instructions
-and both reports contain a valid compatibility record such as
-`{"application":"0.1.0","protocol":1,"event_schema":1,"database_schema":1,...}`.
-The `application` field is the Aizu CLI version. A successful version response
-checks compatibility; it is not cryptographic proof of ownership, so do not use
-this update procedure for an unfamiliar file. The staging file is created in
-the same directory so the final rename stays on one filesystem; a failed build
-or validation leaves the installed CLI untouched. Re-run
-`integration-install --json` after an Aizu or agent update, then review and
-approve changed hooks in Codex. Existing spooled events remain on the source
-and are delivered after the SSH connection resumes.
+Then rerun `integration-install --json`. See [Installation details](docs/installation.md)
+for ownership, symlink, and upgrade guidance.
 
-The **Running agents** list includes both this Mac and connected SSH sources.
-For a remote source, the desktop periodically runs the fixed
-`~/.local/bin/aizu agents --json` diagnostic over a separate short-lived SSH
-connection. The response contains only the supported agent kind and instance
-count; it contains no PID, command arguments, path, environment, prompt, or
-terminal output. A source that disconnects is removed from the running list
-until a fresh probe succeeds.
+### SSH connects but no event arrives
 
-For local SSH integration checks, use a dedicated system SSH alias such as
-`remote-host` as the real remote fixture. Install the current `aizu` CLI on that
-host before testing, verify
-`ssh remote-host '$HOME/.local/bin/aizu version --json'`, and run a Codex or
-Claude Code hook event there. A successful UI connection test alone is not
-sufficient: the event must traverse `aizu bridge` and appear in the Mac desktop
-history under the receiver-local source label.
+A successful connection test verifies the CLI and protocol only. Trigger a
+real Codex or Claude Code completion on the source, then check **Recent
+activity** on the Mac. Also verify directly:
 
-## Development setup
+```bash
+ssh remote-host '$HOME/.local/bin/aizu doctor --json'
+```
 
-[mise](https://mise.jdx.dev/) is the source of truth for the Rust, Node.js, and
-pnpm toolchain versions.
+## Development
+
+[mise](https://mise.jdx.dev/) pins Rust, Node.js, and pnpm.
 
 ```bash
 mise trust
 mise install rust node pnpm
+mise exec -- pnpm install --frozen-lockfile
 mise run check
 ```
 
-Useful tasks:
+Common tasks:
 
 ```bash
-mise tasks
 mise run build
 mise run cli:smoke
-mise run ci
-```
-
-Run an individual command inside the pinned environment with:
-
-```bash
-mise exec -- cargo test --workspace --all-features --locked
-```
-
-Start the desktop app in development mode:
-
-```bash
-mise exec -- pnpm install --frozen-lockfile
 mise exec -- pnpm tauri dev
+mise tasks
 ```
 
-## Agent hooks
-
-Codex and Claude Code are first-party integrations. The CLI converts their
-lifecycle hook JSON from stdin into the same durable local spool. Install both
-integrations for the current user with:
-
-```bash
-aizu integration-install --json
-```
-
-The command defaults to its own absolute executable path. Use
-`--agent codex` or `--agent claude-code` to update only one integration, and
-`--aizu-path /absolute/path/to/aizu` only when preparing configuration for a
-different installed CLI path. `integration-config` remains available as a
-read-only preview command.
-
-Codex requires reviewing and trusting a new or changed command hook in its
-hook UI before it will run. Aizu monitors Codex and Claude Code process
-presence for diagnostics only; completion and permission notifications come
-from verified lifecycle hooks, never terminal output scraping.
-
-To include a short completion message or the explicit question/permission
-description in an alert, open **Settings > Advanced** and enable **Show agent
-details**. This is off by default because notifications can appear on the lock
-screen. Aizu preserves line and paragraph breaks, limits the excerpt, rejects
-credential/path-like content, and does not copy raw commands, full prompts,
-transcripts, or tool input objects.
-
-The desktop interface can follow the macOS language or be set explicitly to
-Japanese or English under **Settings > Language**. Changes are persisted and
-applied immediately. Agent messages, SSH source labels, and event excerpts stay
-in their original language.
-
-Notification delivery defaults to **Aizu Banner**. It shows up to three alerts
-at the top right, preserves the complete privacy-filtered body, and keeps each
-alert visible while Aizu is running until its close button is used. Banner
-content is passive and does not open the app. Older alerts remain in Recent
-activity. Select **Settings > Notification style >
-macOS Notifications** to use Notification Center instead; the setting is saved
-immediately.
-
-The default notification sound is the short, two-note **Aizu Pop** cue. Select
-another macOS sound or turn notification sound off under **Settings >
-Notification sound**; changes apply immediately to both notification styles.
+Architecture and protocol details live in [MVP design](docs/mvp-design.md) and
+[Bridge protocol](docs/protocol.md). Development and PR rules are in
+[AGENTS.md](AGENTS.md).
