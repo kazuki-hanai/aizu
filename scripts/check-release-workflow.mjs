@@ -38,6 +38,9 @@ const publishJob = workflow.split(/^  publish:\s*$/mu)[1] ?? "";
 if (!/^\s{6}attestations: read\s*$/mu.test(publishJob)) {
   errors.push("release publication must have read access to provenance attestations");
 }
+if (!publishJob.includes("Check out release verification scripts")) {
+  errors.push("release publication must check out the repository before running verification scripts");
+}
 requireText("/commits/$GITHUB_SHA/pulls", "publish preflight must resolve the merged PR for a squash commit");
 requireText("head_sha=$pr_head", "publish preflight must verify CI for the merged PR head");
 requireText("name: cli-linux", "Linux CLI architectures must share one runner");
