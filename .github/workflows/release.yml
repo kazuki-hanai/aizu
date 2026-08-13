@@ -158,12 +158,6 @@ jobs:
           node-version: 24.19.0
       - name: Install frozen frontend dependencies
         run: corepack enable && pnpm install --frozen-lockfile
-      - name: Generate verified DMG background
-        run: |
-          mkdir -p target/release-inputs
-          sips -s format png assets/branding/dmg/background.svg --out target/release-inputs/dmg-background.png >/dev/null
-          test "$(sips -g pixelWidth target/release-inputs/dmg-background.png | awk '/pixelWidth:/ { print $2 }')" = 660
-          test "$(sips -g pixelHeight target/release-inputs/dmg-background.png | awk '/pixelHeight:/ { print $2 }')" = 400
       - name: Require protected signing configuration
         if: needs.preflight.outputs.publish == 'true'
         env:
@@ -317,8 +311,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           (cd release-assets && sha256sum --check SHA256SUMS)
-          gh attestation verify release-assets/* --repo "$GITHUB_REPOSITORY"
-      - name: Create immutable draft release
+          scripts/release/verify-attestations.sh release-assets "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+      - name: Create protected draft release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.preflight.outputs.tag }}

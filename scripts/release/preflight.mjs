@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+const STABLE_SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 function readJson(path) {
@@ -51,6 +52,9 @@ export function validateReleaseConfiguration({
   }
 
   if (mode === "publish") {
+    if (!STABLE_SEMVER.test(version)) {
+      errors.push(`public release version must be stable X.Y.Z SemVer: ${version}`);
+    }
     if (refType !== "tag" || refName !== `v${version}`) {
       errors.push(`publish must run from the exact v${version} tag`);
     }

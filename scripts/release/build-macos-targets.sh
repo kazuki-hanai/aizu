@@ -25,7 +25,7 @@ for spec in aarch64-apple-darwin:aarch64:arm64 x86_64-apple-darwin:x64:x86_64; d
   scripts/release/package-cli.sh "$target" macos "$arch" "$version" "$output_dir"
   if [[ $mode == publish ]]; then
     pnpm --filter @aizu/desktop exec tauri build --ci --target "$target" \
-      --config src-tauri/tauri.release.conf.json
+      --bundles app --config src-tauri/tauri.release.conf.json
   else
     pnpm --filter @aizu/desktop exec tauri build --ci --no-sign --target "$target" --bundles app
   fi
@@ -43,20 +43,23 @@ for spec in aarch64-apple-darwin:aarch64:arm64 x86_64-apple-darwin:x64:x86_64; d
     xcrun stapler validate "$app"
     spctl --assess --type execute --verbose=4 "$app"
     bundle="target/$target/release/bundle"
-    dmg=$(find "$bundle" -type f -name '*.dmg' -print -quit)
     updater=$(find "$bundle" -type f -name '*.app.tar.gz' -print -quit)
     updater_signature=$(find "$bundle" -type f -name '*.app.tar.gz.sig' -print -quit)
-    [[ -n $dmg && -n $updater && -n $updater_signature ]]
-    [[ $(find "$bundle" -type f -name '*.dmg' | wc -l | tr -d ' ') == 1 ]]
+    [[ -n $updater && -n $updater_signature ]]
     [[ $(find "$bundle" -type f -name '*.app.tar.gz' | wc -l | tr -d ' ') == 1 ]]
     [[ $(find "$bundle" -type f -name '*.app.tar.gz.sig' | wc -l | tr -d ' ') == 1 ]]
-    cp "$dmg" "$output_dir/Aizu_${version}_${arch}.dmg"
     cp "$updater" "$output_dir/Aizu_${version}_${arch}.app.tar.gz"
     cp "$updater_signature" "$output_dir/Aizu_${version}_${arch}.app.tar.gz.sig"
-    scripts/release/verify-macos-dmg.sh "$output_dir/Aizu_${version}_${arch}.dmg" "$mach_arch"
-    xcrun stapler validate "$output_dir/Aizu_${version}_${arch}.dmg"
+    dmg="$output_dir/Aizu_${version}_${arch}.dmg"
+    scripts/release/build-macos-dmg.sh "$app" "$version" "$arch" "$output_dir"
+    codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$dmg"
+    xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" \
+      --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+    xcrun stapler staple "$dmg"
+    xcrun stapler validate "$dmg"
     spctl --assess --type open --context context:primary-signature --verbose=4 \
-      "$output_dir/Aizu_${version}_${arch}.dmg"
+      "$dmg"
+    scripts/release/verify-macos-dmg.sh "$dmg" "$mach_arch"
   else
     codesign --force --deep --sign - "$app"
     codesign --verify --deep --strict "$app"

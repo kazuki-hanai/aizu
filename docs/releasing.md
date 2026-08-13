@@ -52,7 +52,7 @@ Public publishing is intentionally unavailable until all of these are true:
 
 Creating the tag starts the publish path. Signing/notarization and GitHub
 Release publication are separate protected-environment jobs. Artifacts are
-attested before publication, and publication creates an immutable **draft**
+attested before publication, and publication creates a protected **draft**
 release. A repository owner must inspect the draft assets, notarization,
 attestations, `latest.json`, checksums, and release notes before making it
 public.

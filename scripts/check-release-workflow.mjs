@@ -10,6 +10,9 @@ import { validateReleaseConfiguration } from "./release/preflight.mjs";
 const root = resolve(import.meta.dirname, "..");
 const workflow = readFileSync(resolve(root, ".github/workflows/release.yml"), "utf8");
 const packageCli = readFileSync(resolve(root, "scripts/release/package-cli.sh"), "utf8");
+const buildMacos = readFileSync(resolve(root, "scripts/release/build-macos-targets.sh"), "utf8");
+const releaseTauri = JSON.parse(readFileSync(resolve(root, "apps/desktop/src-tauri/tauri.release.conf.json"), "utf8"));
+const verifyAttestations = resolve(root, "scripts/release/verify-attestations.sh");
 const errors = [];
 
 function requireText(text, message) {
@@ -26,7 +29,10 @@ requireText("name: release-publish", "release publication must be a distinct job
 requireText("--draft --generate-notes", "release publication must create a draft first");
 requireText("published versions are immutable", "release publication must reject replacement releases");
 requireText("minisign -Vm", "updater archives must be verified with the checked-in public key");
-requireText("gh attestation verify release-assets/*", "publish must verify provenance after downloading artifacts");
+requireText(
+  'scripts/release/verify-attestations.sh release-assets "$GITHUB_REPOSITORY" "$GITHUB_SHA"',
+  "publish must verify each downloaded artifact's provenance",
+);
 requireText("sha256sum --check SHA256SUMS", "publish must verify checksums after downloading artifacts");
 const publishJob = workflow.split(/^  publish:\s*$/mu)[1] ?? "";
 if (!/^\s{6}attestations: read\s*$/mu.test(publishJob)) {
@@ -36,9 +42,14 @@ requireText("/commits/$GITHUB_SHA/pulls", "publish preflight must resolve the me
 requireText("head_sha=$pr_head", "publish preflight must verify CI for the merged PR head");
 requireText("name: cli-linux", "Linux CLI architectures must share one runner");
 requireText("name: macos-universal-release-set", "macOS release architectures must share one runner");
-const buildMacos = readFileSync(resolve(root, "scripts/release/build-macos-targets.sh"), "utf8");
 if (!buildMacos.includes("AIZU_BUNDLED_CLI_TARGET=$target")) {
   errors.push("macOS app bundles must embed the matching CLI architecture");
+}
+for (const expected of ["scripts/release/build-macos-dmg.sh", "xcrun notarytool submit", "xcrun stapler staple"]) {
+  if (!buildMacos.includes(expected)) errors.push(`macOS publication is missing canonical packaging step: ${expected}`);
+}
+if (releaseTauri.bundle?.targets?.join(",") !== "app") {
+  errors.push("Tauri release bundling must leave DMG creation to the canonical Finder-alias builder");
 }
 if (!packageCli.includes("gzip -9n")) errors.push("standalone CLI archives must omit variable gzip timestamps");
 if (/^\s{4}(?:cli|macos):[\s\S]*?^\s{4}strategy:/mu.test(workflow)) {
@@ -94,6 +105,21 @@ if (!malformedKey.some((error) => error.includes("updater public key"))) {
 if (!validateReleaseConfiguration({ ...fixture, version: "1.2" }).some((error) => error.includes("SemVer"))) {
   errors.push("release preflight must reject non-SemVer versions");
 }
+for (const version of ["1.2.3-rc.1", "1.2.3+build.1"]) {
+  const unstableErrors = validateReleaseConfiguration({
+    ...readyPublish,
+    mode: "publish",
+    version,
+    refType: "tag",
+    refName: `v${version}`,
+    cargo: { "aizu-core": version, "aizu-cli": version, "aizu-desktop": version },
+    desktopPackage: { version },
+    tauri: { ...readyPublish.tauri, version },
+  });
+  if (!unstableErrors.some((error) => error.includes("stable X.Y.Z"))) {
+    errors.push(`release preflight must reject unstable public version ${version}`);
+  }
+}
 
 const directory = mkdtempSync(resolve(tmpdir(), "aizu-release-contract-"));
 try {
@@ -122,6 +148,39 @@ try {
   }
 } finally {
   rmSync(directory, { force: true, recursive: true });
+}
+
+const attestationDirectory = mkdtempSync(resolve(tmpdir(), "aizu-release-attestations-"));
+const mockBin = mkdtempSync(resolve(tmpdir(), "aizu-release-gh-"));
+try {
+  writeFileSync(resolve(attestationDirectory, "first artifact"), "first\n");
+  writeFileSync(resolve(attestationDirectory, "second-artifact"), "second\n");
+  const mockGh = resolve(mockBin, "gh");
+  writeFileSync(
+    mockGh,
+    `#!/usr/bin/env bash
+set -euo pipefail
+[[ $# -eq 9 && $1 == attestation && $2 == verify && $4 == --repo && $5 == example/aizu ]] || exit 64
+[[ $6 == --signer-workflow && $7 == example/aizu/.github/workflows/release.yml ]] || exit 65
+[[ $8 == --source-digest && $9 == 0123456789abcdef0123456789abcdef01234567 ]] || exit 66
+printf '%s\\n' "$3" >> "$AIZU_ATTESTATION_LOG"
+`,
+  );
+  chmodSync(mockGh, 0o755);
+  const log = resolve(mockBin, "calls.log");
+  execFileSync(verifyAttestations, [attestationDirectory, "example/aizu", "0123456789abcdef0123456789abcdef01234567"], {
+    env: { ...process.env, AIZU_ATTESTATION_LOG: log, PATH: `${mockBin}:${process.env.PATH ?? ""}` },
+    stdio: "ignore",
+  });
+  const calls = readFileSync(log, "utf8").trim().split("\n");
+  if (calls.length !== 2 || !calls.every((call) => call.startsWith(`${attestationDirectory}/`))) {
+    errors.push("release publication must verify every artifact with one gh invocation per file");
+  }
+} catch {
+  errors.push("release attestation verification contract failed");
+} finally {
+  rmSync(attestationDirectory, { force: true, recursive: true });
+  rmSync(mockBin, { force: true, recursive: true });
 }
 
 const packageDirectory = mkdtempSync(resolve(tmpdir(), "aizu-release-package-"));
