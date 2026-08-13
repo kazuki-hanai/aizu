@@ -136,9 +136,22 @@ describe("Aizu desktop MVP", () => {
     await invokeView("update_preferences", {
       request: { ...bannerPreferences, textSize: "large" },
     });
-    await browser.waitUntil(async () =>
-      (await browser.execute(() => document.documentElement.dataset.textSize)) === "large",
-    { timeout: 2_000, timeoutMsg: "text size preference was not applied to the main window" });
+    await browser.waitUntil(async () => {
+      const presentation = await browser.execute(() => {
+        const heading = document.querySelector(".topbar h1");
+        return {
+          textSize: document.documentElement.dataset.textSize,
+          headingSize: heading instanceof HTMLElement
+            ? Number.parseFloat(getComputedStyle(heading).fontSize)
+            : 0,
+        };
+      });
+      return presentation.textSize === "large"
+        && presentation.headingSize > standardHeadingSize;
+    }, {
+      timeout: 2_000,
+      timeoutMsg: "large text size was not rendered in the main window",
+    });
     const largeHeadingSize = await browser.execute(() => {
       const heading = document.querySelector(".topbar h1");
       return heading instanceof HTMLElement ? Number.parseFloat(getComputedStyle(heading).fontSize) : 0;
