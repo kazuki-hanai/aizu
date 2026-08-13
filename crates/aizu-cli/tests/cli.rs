@@ -1111,6 +1111,32 @@ fn integration_install_validates_every_configuration_before_writing() {
 
 #[cfg(unix)]
 #[test]
+fn integration_install_explains_how_to_secure_a_writable_agent_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = TempDir::new().unwrap();
+    let codex_directory = home.path().join(".codex");
+    fs::create_dir(&codex_directory).unwrap();
+    fs::set_permissions(&codex_directory, fs::Permissions::from_mode(0o775)).unwrap();
+    let executable = test_executable(home.path());
+
+    aizu()
+        .env("HOME", home.path())
+        .args([
+            "integration-install",
+            "--aizu-path",
+            executable.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "the ~/.codex directory is writable by group or others; run `chmod go-w ~/.codex` and retry",
+        ));
+}
+
+#[cfg(unix)]
+#[test]
 fn integration_install_rejects_a_dangling_configuration_symlink() {
     use std::os::unix::fs::symlink;
 
