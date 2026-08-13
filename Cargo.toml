@@ -1,0 +1,32 @@
+[workspace]
+members = ["crates/aizu-core", "crates/aizu-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/kazuki-hanai/aizu"
+rust-version = "1.97"
+
+[workspace.dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4.6.6", features = ["derive"] }
+directories = "6.0.0"
+hostname = "0.4.2"
+rusqlite = { version = "0.40.2", features = ["backup", "bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+thiserror = "2.0.20"
+uuid = { version = "1.24.0", features = ["serde", "v4", "v7"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

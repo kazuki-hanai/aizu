@@ -1,0 +1,14 @@
+{
+  "session_id": "thread-123",
+  "turn_id": "turn-456",
+  "transcript_path": "/Users/example/.codex/sessions/example.jsonl",
+  "cwd": "/Users/example/work/aizu",
+  "hook_event_name": "PermissionRequest",
+  "model": "fixture-model",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "fixture command must never be copied into an Aizu event",
+    "description": "Install the verified CLI on the remote host?"
+  }
+}

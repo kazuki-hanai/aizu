@@ -143,7 +143,8 @@ non-goal を「ついでに」実装しない。必要なら別 issue と Design
 ├── Cargo.lock
 ├── package.json
 ├── pnpm-lock.yaml
-└── rust-toolchain.toml
+├── mise.toml
+└── mise.lock
 ```
 
 責務:
@@ -164,11 +165,11 @@ business logic を frontend component や Tauri command handler に埋め込ま�
 
 ### 5.1 Toolchain policy
 
-- Rust toolchain は `rust-toolchain.toml` で pin する。
-- Node.js version は repository の version file で pin する。
-- package manager は `pnpm` に統一し、`package.json#packageManager` で version を固定する。
+- 開発toolchainの正本は `mise.toml` と `mise.lock` とする。Rust、Node.js、pnpmをexact versionでpinする。
+- package manager は `pnpm` に統一し、frontend scaffold後は`package.json#packageManager`もmiseのpnpm versionと一致させる。
 - Rust と frontend の lockfile は commit する。
 - lockfile を手作業で編集しない。
+- setupは`mise trust && mise install rust node pnpm`、日常コマンドは`mise run <task>`を使う。
 - macOS desktop build には Xcode Command Line Tools を使う。
 - local/remote SSH test は system OpenSSH client を使う。
 
@@ -179,26 +180,29 @@ manifests や scripts がまだ存在しない段階で、存在しない comman
 workspace scaffold 後の標準 quality gate は次を基本とする。package scripts が追加されたら、直接の長い command より repository script を優先する。
 
 ```bash
-# Rust
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+# Setup
+mise trust
+mise install rust node pnpm
 
-# Frontend
-corepack pnpm install --frozen-lockfile
-corepack pnpm lint
-corepack pnpm typecheck
-corepack pnpm test
+# Rust / repository checks
+mise run check
+mise run build
+mise run ci
+mise run cli:smoke
 
-# Desktop development
-corepack pnpm tauri dev
+# Frontend（scaffold 後）
+mise exec -- pnpm install --frozen-lockfile
+mise exec -- pnpm lint
+mise exec -- pnpm typecheck
+mise exec -- pnpm test
+mise exec -- pnpm tauri dev
 
 # Branding assets
 ./scripts/generate-icons.sh   # source を変更した場合だけ実行
 ./scripts/check-icons.sh      # generated set と manifest を検証
 
-# Full repository verification; bootstrap 時に script を用意する
-./scripts/check.sh
+# Full repository verification
+mise run check
 ```
 
 新しい platform requirement、environment variable、setup command を導入したら、同じ PR で onboarding docs と CI を更新する。
@@ -796,7 +800,7 @@ CI 用 `sshd` は test fixture であり、本番 backend ではない。
 
 ## 13. Rust guidelines
 
-- stable Rust を使い、toolchain を pin する。
+- stable Rustを使い、toolchainは`mise.toml`/`mise.lock`でpinする。
 - `rustfmt` と clippy `-D warnings` を通す。
 - public API、protocol type、security-sensitive function に doc comment を付ける。
 - external input path で `unwrap()` / `expect()` / panic を使わない。

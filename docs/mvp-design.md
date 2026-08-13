@@ -105,9 +105,9 @@ SSH 切断中に発生したイベントはリモート側へ保存されるた�
 
 ### 5.3 エージェント連携
 
-エージェントの完了・質問を確実に判定するには、そのエージェントが提供する hook/notification 機構を利用する。画面出力の文字列解析は行わない。
+エージェントの完了・質問を確実に判定するには、そのエージェントが提供する hook/notification 機構を利用する。画面出力の文字列解析は行わない。MVP の first-party 対応対象は **Codex と Claude Code の両方**とする。
 
-MVP コアはエージェント非依存の CLI 契約を提供する。最初に正式対応するエージェントは実装開始前に一つ選ぶ。選定前でも、任意の hook から共通 JSON を渡す統合は可能とする。
+MVP コアはエージェント非依存の CLI 契約を提供する。Codex は `Stop` と `PermissionRequest`、Claude Code は `Stop`、`StopFailure`、`PermissionRequest` の lifecycle hook を first-party adapter で共通 event へ変換する。任意の hook から共通 JSON を渡す generic integration も維持する。
 
 通知保証は agent が hook を実行した event に限る。agent が crash/SIGKILL/host power loss 時に hook を発火しない場合、Aizu は terminal scraping や process supervisor を持たないため、その終了を検出できない。正式対応 agent の選定時は成功・失敗・キャンセル・質問/許可待ちの各 hook coverage を確認し、未対応状態を setup UI に明示する。
 
@@ -200,6 +200,7 @@ Primary commands:
 aizu emit <task.completed|agent.question> [options]
 aizu emit --stdin-json
 aizu hook --agent <agent-id> --event <agent-event>
+aizu integration-config --agent <codex|claude-code> --aizu-path <absolute-path>
 aizu bridge --protocol 1 --after <sequence> --follow
 aizu doctor [--json]
 aizu identity regenerate [--discard-events]
@@ -213,6 +214,7 @@ Responsibilities:
 - bridge protocolを標準出力へ出す
 - spoolのmigration・pruningを行う
 - 診断情報を機密情報なしで出力する
+- Codex / Claude Code の既存設定を上書きせず、明示的 merge 用 hook JSON を生成する
 
 `aizu identity regenerate` は cloned image/home directory により 2 host が同じ `source_id` を持った場合の recovery 用である。source を desktop で disable した状態の exclusive maintenance lock を要求し、lock を取得できなければ拒否する。既定では spool に event が残っていると拒否する。`--discard-events` は明示確認を要求し、既存 DB を backup してから retained event を破棄し、新しい `source_id` と sequence `0` で開始する。自動実行しない。
 
@@ -356,7 +358,7 @@ macOS の想定パス:
 - `emit` は短い transaction だけを行う。
 - 複数 hook の同時実行をテストする。
 - DB directory は `0700`、DB/WAL/SHM file は原則 `0600` とする。
-- spool は同一 host 上の local filesystem に限定する。network filesystem など WAL を安全に共有できない配置は `doctor` error とし、別 journal mode へ黙って fallback しない。
+- spool は同一 host 上の local filesystem に限定する。macOS は mount の local flag、Linux は明示的に対応する local filesystem type で fail-closed に判定する。network/FUSE/unknown filesystem など WAL を安全に共有できない配置は `doctor` error とし、別 journal mode へ黙って fallback しない。
 - migration 前に互換性を確認し、失敗時はイベントを書き換えない。
 - app/CLI は同じ `aizu-core` migration を使い、migration を exclusive transaction で serialize する。別 process が migration 中なら bounded retry し、hook を無期限 block しない。
 - binary が自分より新しい DB schema を検出した場合は read/write せず `incompatible_database` として終了する。app update は bundled CLI の install/version 確認後に local DB migration を行い、少なくとも直前 release の reader/writer compatibility を migration test する。
@@ -395,6 +397,7 @@ SQLite はプロセス間の変更通知機構を持たないため、デスク�
 - desktop history は既定 30 日、10,000 events、payload 論理合計 128 MiB のいずれかを超えた古い delivered event から削除する。
 - `pending` outbox は履歴 retention の対象外とし、delivered/suppressed/failed-terminal のいずれかへ遷移してから削除できる。
 - “Clear history” は表示 payload と completed outbox を削除するが、source cursor、pinned `source_id`、最小限の dedup state は保持する。履歴消去を再通知や cursor reset の契機にしない。
+- event payload 削除後の exact replay 検出に使う desktop tombstone も既定 30 日または 10,000 件で bounded prune する。source ごとの高水位 checkpoint は tombstone とは別に保持し、tombstone 削除後も source の再登録・再接続で cursor を巻き戻さない。
 - clear/prune 後は WAL checkpoint と bounded incremental vacuum を idle 時に行う。SQLite の page/WAL に残った過去 data の即時 secure erase は保証せず、その制約を privacy UI に明記する。
 
 ## 10. Bridge protocol
@@ -541,8 +544,18 @@ Requirements:
 - `aizu hook` は agent 本体を壊さない best-effort mode を既定とし、保存失敗を診断ログ/health state に記録したうえで原則 `0` を返す。CI や手動統合確認用の `--strict` では同じ失敗を non-zero で返す。
 - `task.completed` adapter は成功・失敗・キャンセルを同じ terminal event として扱い、判別できない場合も `outcome: unknown` を設定する。
 - secret らしい値、全文 prompt、全文 response を通知へコピーしない。
+- first-party adapter は公式 hook payload の `Stop.last_assistant_message` または
+  `PermissionRequest` の人間向け `tool_input.description` /
+  `questions[0].question` から、最大 240 Unicode scalar values の単一行 excerpt だけを
+  durable event に保存できる。desktop は notification details が明示的に有効な場合だけ
+  その excerpt を通知と activity に表示する。command、tool input 全体、transcript、絶対
+  path、credential marker を含む値は設定にかかわらず excerpt に採用しない。
 
-正式 MVP では、ユーザーが最初に必要とする一つのエージェントについて `task.completed` と `agent.question` の両方を fixture 付きで実装する。
+正式 MVP では、Codex と Claude Code の両方について `task.completed` と `agent.question` を fixture 付きで実装する。Codex/Claude Code の `Stop` は正常終了を保証する field を持たないため `outcome: unknown` とし、Claude Code の `StopFailure` だけを `outcome: failed` とする。
+
+agent process の存在、version、hook 設定状態、終了状態は desktop diagnostics で監視する。ただし interactive agent process は複数 turn を処理でき、process exit と task completion は一致しないため、process の終了だけから `task.completed` を合成しない。PID、full argv、environment、terminal output は保存せず、process monitoring は hook 配送の health 診断に限定する。
+
+登録済み SSH source は、desktop が5秒間隔で固定 command `exec "$HOME/.local/bin/aizu" agents --json` を短時間の system SSH child として実行し、接続先の Codex / Claude Code process 件数を取得する。CLI response と desktop IPC は agent kind と source label だけを保持し、PID、argv、executable path、cwd、environment は含めない。probe は source ごとに1本まで、全 source 数は既存上限内とし、失敗時は raw stdout/stderr を UI へ渡さない。bridge が切断・再接続状態になった source の process 行は直ちに消し、`Connected` 復帰後の成功した probe だけで再表示する。この probe は診断専用であり、通知 event や `task.completed` を生成しない。
 
 ## 12. Desktop UX
 
@@ -572,34 +585,28 @@ Menu bar icon は app icon の縮小版を使わず、menu bar 用に単純化�
 - **error:** 接続・通知権限・CLI 異常を示す alert variant
 
 色だけで状態を区別せず、tooltip と menu 先頭の status text でも同じ状態を伝える。animation、点滅、常時 badge count は MVP では使用しない。
+tray menu には、実行中 agent を agent 名とローカル source label で集約した表示専用 submenu と、各 source の接続状態を示す表示専用 submenu を置く。PID、process 引数、SSH diagnostic、prompt、response は表示しない。
 
 ### 12.2 Main window
 
 Sections:
 
-1. **Overview**
-   - notification permission
-   - local CLI version
-   - source status
-   - last event time
+1. **Agents**
+   - Codex / Claude Code hook and process state
+   - notification permission and source summary
+   - at most five recent normalized events with delivery state
 2. **Sources**
    - Local
    - Remote SSH sources
    - add/edit/disable/reconnect/test
-3. **Notifications**
+3. **Settings**
+   - language: system default / Japanese / English, persisted and applied immediately
    - completion on/off
    - question on/off
-   - sounds
-   - quiet hours
-   - privacy mode
-4. **History**
-   - recent normalized events
-   - delivery state
-   - no raw model output
-5. **Diagnostics**
-   - app/CLI/protocol versions
-   - SSH error category
-   - export redacted diagnostic bundle
+   - Off または 5 種類から選べる通知音
+   - launch at login と quiet hours は折りたたみ式 Advanced に置く
+
+専用 History / Diagnostics 画面は置かない。永続 history は retention、dedup、診断のため backend に保持するが、通常 UI は agent 一覧と直近 activity に限定し、raw model output は表示しない。
 
 Quiet hours は既定 disabled、受信 Mac の current timezone で評価する。日跨ぎと DST を timezone-aware clock で処理し、quiet/pause 中も ingest と history 保存は継続する。quiet hours 終了時は suppressed event を個別 flood せず summary を提示する。`agent.question` を quiet hours から除外する設定は明示的 opt-in とする。
 
@@ -654,7 +661,7 @@ trait Notifier {
 - 権限要求は初回起動直後ではなく、オンボーディング中の明示操作で行う。
 - 拒否された場合は System Settings への案内を表示する。
 - テストでは `FakeNotifier` を利用する。
-- 通知クリック時は History の該当 event を開く。
+- 通知クリック時は app を前面化し、Agents と直近 activity を表示する。event 固有の deep link は MVP では持たない。
 - question は音あり、completed は既定で音なしを推奨する。
 
 ### 13.3 Menu bar and startup
@@ -675,6 +682,7 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 - install 先が symlink、user 所有でない file、または user が配置した異なる binary の場合は無断で上書きしない
 - unmanaged/incompatible CLI が hook path に残る場合、共有 local spool を新 schema へ migrate せず local source を warning/read-only にし、CLI path の解決または明示的 install を要求する
 - hook 設定には絶対パスの利用を推奨
+- `aizu integration-config` は絶対 CLI path を検証し、Codex の `Stop` / `PermissionRequest` と Claude Code の `Stop` / `StopFailure` / `PermissionRequest` を 5 秒上限の同期 hook として出力する。既存 user hook は structured JSON merge で保持し、Codex の hook trust review は省略しない
 
 ### 13.5 App icon, tray icon, and branding assets
 
@@ -887,7 +895,8 @@ Unix domain socket を MVP の基盤にしないことで、Windows 対応時に
 ├── Cargo.lock
 ├── package.json
 ├── pnpm-lock.yaml
-└── rust-toolchain.toml
+├── mise.toml
+└── mise.lock
 ```
 
 protocol と event schema の初版は [`docs/protocol.md`](protocol.md) と [`docs/schemas/event-v1.schema.json`](schemas/event-v1.schema.json) に切り出してある。本 Design Doc とこれら 2 ファイルは常に同期させる（AGENTS.md §20）。
@@ -1304,7 +1313,8 @@ Metrics はローカル Diagnostics 画面だけで表示する。
 
 ### M3: Agent integration and hardening
 
-- first agent adapter
+- Codex and Claude Code first-party adapters
+- agent process and hook health diagnostics (without terminal output scraping)
 - privacy defaults
 - diagnostics
 - backlog aggregation
@@ -1368,17 +1378,16 @@ macOS MVP は作りやすいが、Windows/Linux 展開で UI shell とコアを�
 
 以下は architecture を止めないが、実装着手時に確定する。
 
-1. **最初に正式対応する agent**
-   - Codex CLI、Claude Code、Gemini CLI、その他のどれを優先するか。
-   - 推奨: 実際に最も使用する agent を一つ選び、完了と質問の両 hook fixture を最初に固定する。
-2. **リモート端末の OS/architecture**
+Codex と Claude Code は MVP の同時 first-party 対象として確定済みであり、open question ではない。
+
+1. **リモート端末の OS/architecture**
    - 推奨初期対象: Linux x86_64/arm64 と macOS arm64。
-3. **SSH 到達性**
+2. **SSH 到達性**
    - 本設計は Mac から remote へ既存 SSH alias で接続できる前提。
    - 到達できない環境を MVP 対象にするなら、Tailscale 等のユーザー管理ネットワークを optional prerequisite とするか、active SSH tunnel mode を追加する。
-4. **通知本文の privacy**
+3. **通知本文の privacy**
    - 推奨: generic 文言を既定にし、agent の質問要約は opt-in。
-5. **配布 identity**
+4. **配布 identity**
    - bundle identifier、Apple Developer Team、GitHub repository、正式 app name。
    - GitHub repository の visibility/plan を確認し、artifact attestation が使えない場合の dedicated release signing key 管理を確定する。
 6. **Visual identity / icon direction**
