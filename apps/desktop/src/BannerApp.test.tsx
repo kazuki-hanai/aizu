@@ -30,7 +30,7 @@ const notices: BannerNotification[] = [
   {
     id: 1,
     title: "Codex task completed",
-    body: "This complete safe notification body remains visible until it is dismissed.",
+    body: "This complete safe notification body\n\nremains visible until it is dismissed.",
     sound: "ping",
     delivery: "aizuBanner",
     language: "en",
@@ -60,7 +60,13 @@ describe("Aizu Banner", () => {
     const backend = client();
     const { container } = render(<BannerApp client={backend} />);
 
-    expect(await screen.findByText(notices[0].body)).toBeVisible();
+    expect(await screen.findByText("Codex task completed")).toBeVisible();
+    const formattedBody = container.querySelector(".aizu-banner__body");
+    expect(formattedBody).not.toBeNull();
+    expect(formattedBody).toHaveTextContent(notices[0].body, { normalizeWhitespace: false });
+    if (formattedBody) {
+      expect(window.getComputedStyle(formattedBody).whiteSpace).toBe("pre-wrap");
+    }
     expect(screen.getByText(notices[1].body)).toBeVisible();
     expect(container.querySelectorAll(".aizu-banner")).toHaveLength(2);
     expect(backend.dismiss).not.toHaveBeenCalled();

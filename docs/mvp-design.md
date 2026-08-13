@@ -548,8 +548,9 @@ Requirements:
 - secret らしい値、全文 prompt、全文 response を通知へコピーしない。
 - first-party adapter は公式 hook payload の `Stop.last_assistant_message` または
   `PermissionRequest` の人間向け `tool_input.description` /
-  `questions[0].question` から、最大 240 Unicode scalar values の単一行 excerpt だけを
-  durable event に保存できる。desktop は notification details が明示的に有効な場合だけ
+  `questions[0].question` から、最大 240 Unicode scalar values の excerpt だけを
+  durable event に保存できる。行内空白を正規化しつつ改行と段落区切りは保持する。
+  desktop は notification details が明示的に有効な場合だけ
   その excerpt を通知と activity に表示する。command、tool input 全体、transcript、絶対
   path、credential marker を含む値は設定にかかわらず excerpt に採用しない。
 
@@ -606,7 +607,7 @@ Sections:
    - completion on/off
    - question on/off
    - notification style: Aizu Banner / macOS Notifications（既定 Aizu Banner、即時保存）
-   - Off または 5 種類から選べる通知音
+   - Off または Aizu Pop（既定）を含む5種類から選べる通知音。Aizu Popは44.1kHz/16-bit mono、約440ms、-4dBFS peakのdeterministic generated assetとし、両通知方式で同じ音を使う
    - launch at login と quiet hours は折りたたみ式 Advanced に置く
 
 専用 History / Diagnostics 画面は置かない。永続 history は retention、dedup、診断のため backend に保持するが、通常 UI は agent 一覧と直近 activity に限定し、raw model output は表示しない。

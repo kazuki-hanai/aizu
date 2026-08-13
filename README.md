@@ -269,8 +269,9 @@ from verified lifecycle hooks, never terminal output scraping.
 To include a short completion message or the explicit question/permission
 description in an alert, open **Settings > Advanced** and enable **Show agent
 details**. This is off by default because notifications can appear on the lock
-screen. Aizu limits the excerpt, rejects credential/path-like content, and does
-not copy raw commands, full prompts, transcripts, or tool input objects.
+screen. Aizu preserves line and paragraph breaks, limits the excerpt, rejects
+credential/path-like content, and does not copy raw commands, full prompts,
+transcripts, or tool input objects.
 
 The desktop interface can follow the macOS language or be set explicitly to
 Japanese or English under **Settings > Language**. Changes are persisted and
@@ -283,3 +284,7 @@ alert visible while Aizu is running until it is dismissed or opened. Older
 alerts remain in Recent activity. Select **Settings > Notification style >
 macOS Notifications** to use Notification Center instead; the setting is saved
 immediately.
+
+The default notification sound is the short, two-note **Aizu Pop** cue. Select
+another macOS sound or turn notification sound off under **Settings >
+Notification sound**; changes apply immediately to both notification styles.

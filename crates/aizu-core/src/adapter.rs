@@ -211,10 +211,11 @@ fn permission_description(
     Ok(tool_name.map(|name| format!("Allow this {name} request?")))
 }
 
-/// Produces the bounded, single-line excerpt allowed in agent notifications and activity.
+/// Produces the bounded excerpt allowed in agent notifications and activity.
 ///
 /// Values containing credential markers, private absolute paths, or unusable control
-/// characters are rejected rather than partially redacted.
+/// characters are rejected rather than partially redacted. Horizontal whitespace is
+/// normalized while line and paragraph breaks are retained for the Aizu banner.
 #[must_use]
 pub fn safe_agent_excerpt(value: &str) -> Option<String> {
     if value
@@ -224,7 +225,7 @@ pub fn safe_agent_excerpt(value: &str) -> Option<String> {
         return None;
     }
 
-    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = normalize_excerpt(value);
     if normalized.is_empty() || looks_sensitive(&normalized) {
         return None;
     }
@@ -239,6 +240,21 @@ pub fn safe_agent_excerpt(value: &str) -> Option<String> {
         .take(NOTIFICATION_EXCERPT_MAX_CHARS - 3)
         .collect();
     Some(format!("{prefix}..."))
+}
+
+fn normalize_excerpt(value: &str) -> String {
+    let normalized_newlines = value.replace("\r\n", "\n").replace('\r', "\n");
+    let mut normalized = normalized_newlines
+        .split('\n')
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned();
+    while normalized.contains("\n\n\n") {
+        normalized = normalized.replace("\n\n\n", "\n\n");
+    }
+    normalized
 }
 
 fn looks_sensitive(value: &str) -> bool {
@@ -361,7 +377,7 @@ mod tests {
         assert_eq!(request.session_id.as_deref(), Some("session-123"));
         assert_eq!(
             request.body.as_deref(),
-            Some("Implemented SSH reconnect handling. All focused tests pass.")
+            Some("Implemented SSH reconnect handling.\nAll focused tests pass.")
         );
         assert_eq!(
             request.metadata,
@@ -492,13 +508,13 @@ mod tests {
     }
 
     #[test]
-    fn excerpts_are_single_line_and_capped() {
-        let long = format!("first line\n\t{}", "x".repeat(300));
+    fn excerpts_preserve_line_breaks_and_are_capped() {
+        let long = format!("first   line\r\n\r\n\r\n\t{}", "x".repeat(300));
         let excerpt = safe_agent_excerpt(&long).expect("safe excerpt");
         assert_eq!(excerpt.chars().count(), NOTIFICATION_EXCERPT_MAX_CHARS);
-        assert!(excerpt.starts_with("first line "));
+        assert!(excerpt.starts_with("first line\n\n"));
         assert!(excerpt.ends_with("..."));
-        assert!(!excerpt.contains('\n'));
+        assert!(!excerpt.contains("\n\n\n"));
     }
 
     #[test]
