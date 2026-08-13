@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "branding_status": "development-approved",
+  "release_approved": false,
+  "approval_scope": "development builds only",
+  "license": "MIT",
+  "provenance": "Original Aizu project artwork created 2026-08-12",
+  "canonical_canvas": {
+    "width": 1024,
+    "height": 1024
+  },
+  "color_profile": "sRGB",
+  "generator": {
+    "name": "scripts/generate-icons.mjs",
+    "version": "1.0.0",
+    "sha256": "b48401227ae5d06627fcc22d8b85ad13845367021793122a85c18b9e04ed25f6",
+    "runtime": "node 24.19.0",
+    "dependencies": "Node.js standard library only"
+  },
+  "source_digest_sha256": "fb6150f76daf6de766f2763b03aacff06179212bcc103ed0ada4b2b782f6e261",
+  "sources": {
+    "assets/branding/app-icon/layers/background.svg": "44d17098930c2ca3b3c0cd33fdf2b0a621379e2226bc5f56296e3ed5f62f23d3",
+    "assets/branding/app-icon/layers/foreground.svg": "9e89d0821acd84cd3cee3fab45ab30bdf421e2267851c961b0c828a939abda65",
+    "assets/branding/tray/tray-normal.svg": "f30f135d83408dacc77e2ae926e87425a154aca34bef79215dc331aeaf70b46d",
+    "assets/branding/tray/tray-attention.svg": "4237d346753368272547d4fa9db5873d39f9740dc0c0a73c1a8979525c0746ae",
+    "assets/branding/tray/tray-paused.svg": "2cdedea1057a9660fce51d8ab962c1bad6bc24d75d7ab277971d7ca4fa1da5d7",
+    "assets/branding/tray/tray-error.svg": "060cb8781a755a143b2524f93325a4bf80e3ae50fd214925829bcbd9e47059dc",
+    "assets/branding/dmg/background.svg": "a52a51240b9e88d500e24db27ef7bab65fdaf048fbfc71b90d294b0e935a2584"
+  },
+  "forbidden_default_icon_fingerprints": {
+    "source": "tauri-apps/create-tauri-app@0adb54c49e7284955f254783a78fff2cb9de6696",
+    "sha256": [
+      "d151f11e325f7502de0c739a2e51697aa569fd4701ae6e11fae1a3b4c7d5f157",
+      "1f3689f6374b0553996fdc99743799216703835070145d7f0e6ec11e6280139e",
+      "69194785eef4323955af73b0c03362ac0804db056c2424f9715076cabc0ed103",
+      "3dc10493b7de48a61de58f768f8a5708d3a44a068c148cedf0502b9b9b71ba5d",
+      "e38ca88e1d5490f3dcbc3c3fa525f7fcb7b80fff3cb2f3a4eb1b2d018c0915c1",
+      "b5d93c8ec365c08b11bd006e46a46e227c681d30bb295af3d017573bfc752a83"
+    ]
+  },
+  "outputs": [
+    {
+      "path": "assets/branding/app-icon/app-icon-1024.png",
+      "sha256": "830afd1fb7c0606aa8e7ee19709217b8f83bedbbecfd3d886aca1e9f99b03395",
+      "width": 1024,
+      "height": 1024,
+      "role": "app-icon"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/32x32.png",
+      "sha256": "dcf8e30c841842bec4fa54a2b95359d517fd6f3183ec750efe1df3d00f2354a0",
+      "width": 32,
+      "height": 32,
+      "role": "app-icon"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/128x128.png",
+      "sha256": "d202db92429dccc5d8d993316a8d2de5c65f4eba298f1240d6c0b0e94a722d5c",
+      "width": 128,
+      "height": 128,
+      "role": "app-icon"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/128x128@2x.png",
+      "sha256": "12733e07d2a8eedcf406c0ff3565e5a3da6e0d3ea4811082096795568914e41b",
+      "width": 256,
+      "height": 256,
+      "role": "app-icon"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/icon.icns",
+      "sha256": "4e5a70833e24f4b568992b228d5c89a2b174b531fe069e3c43e3845786b31ed4",
+      "role": "app-icon"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/icon.ico",
+      "sha256": "ad2e228c01c137e97ff19623d536e98fdcf1924e34162a653d6883668f8a4b28",
+      "role": "app-icon"
+    },
+    {
+      "path": "assets/branding/previews/development-preview.png",
+      "sha256": "be6b6df38af48aa23ac0aed2d9dec44845e8e8c631bf5d392102871f76105c2d",
+      "width": 800,
+      "height": 240,
+      "role": "review-evidence"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/tray/tray-normal.png",
+      "sha256": "89138050f7a2e95b7a6faff36434d101c5b51e892e9a2b2bc331a150d1d96e0e",
+      "width": 18,
+      "height": 18,
+      "role": "macos-template"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/tray/tray-normal@2x.png",
+      "sha256": "4bef7fbf2ffffb1b4d424073bf7b388e7123e23c0a2747abd6d9b982be4848aa",
+      "width": 36,
+      "height": 36,
+      "role": "macos-template"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/tray/tray-attention.png",
+      "sha256": "02ee0d16fc500374f585ccc88c8bc4203b8c3b45b026d637cd5729b6ca25e2bc",
+      "width": 18,
+      "height": 18,
+      "role": "macos-template"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/tray/tray-attention@2x.png",
+      "sha256": "39be5b6002e095b5123a67a3f19ef909dbbc65a5c46217bd17bed9ff987cf4a4",
+      "width": 36,
+      "height": 36,
+      "role": "macos-template"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/tray/tray-paused.png",
+      "sha256": "ea4ffeb5c089e4be6b7d936d2f885afe29fbc4d566d3ea84da9f9e614c7e7d44",
+      "width": 18,
+      "height": 18,
+      "role": "macos-template"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/tray/tray-paused@2x.png",
+      "sha256": "5c5d2f157614eb6bfa86ad7feba2ac6e7da4c8ef494b3d324c9ab2c9a2714e32",
+      "width": 36,
+      "height": 36,
+      "role": "macos-template"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/tray/tray-error.png",
+      "sha256": "4cfe95aa82101565e257e6991f2ffbfb03aa2ed6e45314105f0af1e3f976c3ab",
+      "width": 18,
+      "height": 18,
+      "role": "macos-template"
+    },
+    {
+      "path": "apps/desktop/src-tauri/icons/tray/tray-error@2x.png",
+      "sha256": "dbaadb614427610dc63126a49fe3d6de380561c98031aeff92c0d93ba6cefed4",
+      "width": 36,
+      "height": 36,
+      "role": "macos-template"
+    }
+  ]
+}
