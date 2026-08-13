@@ -16,7 +16,11 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 cd "$root"
-RUSTUP_TOOLCHAIN=1.97.1 mise exec -- pnpm --filter @aizu/desktop exec tauri build --debug --bundles app
+if command -v mise >/dev/null 2>&1; then
+  RUSTUP_TOOLCHAIN=1.97.1 mise exec -- pnpm --filter @aizu/desktop exec tauri build --debug --bundles app
+else
+  RUSTUP_TOOLCHAIN=1.97.1 pnpm --filter @aizu/desktop exec tauri build --debug --bundles app
+fi
 
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$source_app/Contents/Info.plist")
 identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$source_app/Contents/Info.plist")
