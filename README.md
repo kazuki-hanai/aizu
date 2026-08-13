@@ -5,10 +5,25 @@ notification backend.
 
 ## Installation
 
-Aizu currently ships as a source-built development application. A Developer
-ID-signed and notarized GitHub Release is intentionally unavailable until the
-release branding and signing keys are approved. Building the desktop app
-requires macOS 12 or later and Xcode Command Line Tools. The development
+Aizu currently ships from source. Choose the installation that matches the
+machine's role:
+
+| Machine | Install | Supported in the MVP |
+| --- | --- | --- |
+| Receiving Mac | Aizu desktop app and bundled CLI | macOS 12 or later |
+| SSH source | `aizu` CLI and agent hooks | Linux or macOS |
+| Windows | None | Core/CLI compilation is checked, but Windows is not an installation target yet |
+
+The desktop notification receiver is macOS-only. A Linux machine such as a
+mini-PC runs only the CLI: it stores agent events in its local SQLite spool and
+the Mac retrieves them through system SSH. No daemon, web server, or listening
+port is installed on the source machine.
+
+### Receiving Mac: desktop app
+
+A Developer ID-signed and notarized GitHub Release is intentionally unavailable
+until the release branding and signing keys are approved. Building the desktop
+app requires macOS 12 or later and Xcode Command Line Tools. The development
 installer applies an ad-hoc signature so macOS can associate notification
 permission with Aizu's stable bundle identifier.
 
@@ -56,22 +71,77 @@ the local spool read-only until you explicitly replace the Aizu-managed CLI
 from the setup screen. It never overwrites a symlink, a file owned by another
 user, or an unrelated binary at the install path.
 
-Remote sources require a platform-compatible `aizu` binary installed as
-`~/.local/bin/aizu` on the remote host, plus a working alias in the receiving
-Mac's `~/.ssh/config`. Build the CLI on that host with the pinned Rust toolchain:
+### Linux or macOS SSH source: CLI only
+
+Run these commands on every remote source. They install no desktop app and no
+background service. The repository must already be cloned on that machine:
 
 ```bash
+cd /path/to/aizu
 mise trust
 mise install rust
 mise exec -- cargo build --locked --release -p aizu-cli
 install -d -m 700 "$HOME/.local/bin"
 install -m 755 target/release/aizu "$HOME/.local/bin/aizu"
+"$HOME/.local/bin/aizu" version --json
+"$HOME/.local/bin/aizu" doctor --json
 ```
 
-Configure Codex and Claude Code hooks on the remote host using the commands in
-the [Agent hooks](#agent-hooks) section, then add its SSH config alias in Aizu.
-Aizu invokes the system `/usr/bin/ssh`; it does not store private keys or
-passwords and does not disable host-key verification.
+Generate and merge the first-party hooks on that same source machine:
+
+```bash
+"$HOME/.local/bin/aizu" integration-config \
+  --agent codex \
+  --aizu-path "$HOME/.local/bin/aizu"
+"$HOME/.local/bin/aizu" integration-config \
+  --agent claude-code \
+  --aizu-path "$HOME/.local/bin/aizu"
+```
+
+The commands print configuration fragments; merge them into
+`~/.codex/hooks.json` and `~/.claude/settings.json` without removing unrelated
+hooks. Codex requires explicit hook approval on that machine. Verify the source
+before configuring the receiving Mac:
+
+```bash
+"$HOME/.local/bin/aizu" agents --json
+```
+
+On the receiving Mac, add a normal system SSH alias to `~/.ssh/config`, verify
+it outside Aizu, then use **Sources > + > Test connection > Add source**:
+
+```sshconfig
+Host mini-pc
+  HostName 192.0.2.10
+  User your-user
+  IdentityFile ~/.ssh/id_ed25519
+```
+
+```bash
+ssh mini-pc '$HOME/.local/bin/aizu version --json'
+```
+
+Replace the example address, user, and key with the existing SSH configuration
+for the source. Aizu invokes the receiving Mac's system `/usr/bin/ssh`; it does
+not copy or store private keys or passwords and never disables host-key
+verification.
+
+### Upgrading a source CLI
+
+Pull the desired Aizu revision on the Linux or macOS source, rebuild, and
+replace only the Aizu-managed binary:
+
+```bash
+cd /path/to/aizu
+git pull --ff-only
+mise exec -- cargo build --locked --release -p aizu-cli
+install -m 755 target/release/aizu "$HOME/.local/bin/aizu"
+"$HOME/.local/bin/aizu" version --json
+```
+
+Re-run both `integration-config` commands after an Aizu or agent update and
+review the resulting fragments before merging them. Existing spooled events
+remain on the source and are delivered after the SSH connection resumes.
 
 The **Running agents** list includes both this Mac and connected SSH sources.
 For a remote source, the desktop periodically runs the fixed
