@@ -47,6 +47,8 @@ jobs:
           node-version: 24.19.0
       - name: Validate branding sources and generated assets
         run: ./scripts/check-icons.sh
+      - name: Validate deterministic notification audio
+        run: node scripts/generate-notification-sound.mjs --check
 
   rust-quality:
     name: rust-quality

@@ -423,6 +423,8 @@ describe("Aizu desktop shell", () => {
     await user.click(await screen.findByRole("button", { name: "Settings" }));
     expect(screen.queryByRole("button", { name: "Save settings" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Notification style" })).toHaveValue("aizuBanner");
+    expect(screen.getByRole("combobox", { name: "Notification sound" }))
+      .toHaveDisplayValue("Aizu Pop");
     await user.click(screen.getByRole("switch", { name: "Task completion" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification style" }), "system");
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification sound" }), "ping");
