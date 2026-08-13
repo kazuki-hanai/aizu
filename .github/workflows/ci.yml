@@ -119,6 +119,7 @@ jobs:
       - name: Build and install isolated remote CLI
         run: |
           cargo build --locked -p aizu-cli
+          install -d -m 700 "$HOME/.ssh"
           sudo useradd --create-home --shell /bin/bash aizu-ci
           sudo install -d -o aizu-ci -g aizu-ci -m 700 \
             /home/aizu-ci/.local/bin /home/aizu-ci/.ssh
@@ -295,7 +296,12 @@ jobs:
         run: cargo install cargo-audit --version 0.22.2 --locked && cargo audit
       - name: Enforce Rust license and source policy
         run: cargo install cargo-deny --version 0.20.2 --locked && cargo deny check advisories licenses sources
-      - name: Audit frontend dependencies
-        run: corepack enable && pnpm audit --audit-level high
+      - name: Audit frontend production dependencies
+        run: corepack enable && pnpm audit --prod --audit-level high
+      - name: Audit frontend development dependencies
+        # GHSA-jmr9-qjv8-65gv is confined to the WebDriver/Puppeteer test toolchain.
+        # No patched extract-zip release exists as of 2026-08-13. Keep the exact
+        # advisory visible here so any other high-severity dev advisory fails CI.
+        run: pnpm audit --dev --audit-level high --ignore GHSA-jmr9-qjv8-65gv
       - name: Reject committed credential material
         run: node scripts/check-secrets.mjs
