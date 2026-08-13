@@ -66,6 +66,8 @@ pub enum HookInstallError {
     ClaudeHooksDisabled,
     #[error("an agent configuration has an incompatible hook structure")]
     Integration(#[from] IntegrationError),
+    #[error("an agent configuration changed while Aizu was preparing the update")]
+    ConcurrentModification,
     #[error("could not allocate a temporary hook configuration file")]
     TemporaryFileExhausted,
     #[error("{operation} failed: {source}")]
@@ -90,11 +92,11 @@ pub fn install_agent_hooks(
     let mut updates = Vec::with_capacity(agents.len());
     for &agent in agents {
         let path = resolve_agent_configuration_path(home, agent)?;
-        let existed = path.try_exists().map_err(|source| HookInstallError::Io {
-            operation: "inspect an agent configuration",
-            source,
-        })?;
-        let existing = read_configuration(&path)?;
+        let ConfigurationSnapshot {
+            value: existing,
+            bytes: original_bytes,
+        } = read_configuration(&path)?;
+        let existed = original_bytes.is_some();
         if agent == AgentKind::ClaudeCode
             && existing
                 .get("disableAllHooks")
@@ -116,13 +118,18 @@ pub fn install_agent_hooks(
             agent,
             path,
             bytes,
+            original_bytes,
             outcome,
         });
     }
 
     for update in &updates {
         if update.outcome != HookInstallOutcome::AlreadyConfigured {
-            write_configuration(&update.path, &update.bytes)?;
+            write_configuration(
+                &update.path,
+                &update.bytes,
+                update.original_bytes.as_deref(),
+            )?;
         }
     }
 
@@ -185,6 +192,7 @@ struct PreparedUpdate {
     agent: AgentKind,
     path: PathBuf,
     bytes: Vec<u8>,
+    original_bytes: Option<Vec<u8>>,
     outcome: HookInstallOutcome,
 }
 
@@ -257,12 +265,31 @@ fn validate_existing_owner(home: &Path, path: &Path) -> Result<(), HookInstallEr
     Ok(())
 }
 
-fn read_configuration(path: &Path) -> Result<serde_json::Value, HookInstallError> {
+struct ConfigurationSnapshot {
+    value: serde_json::Value,
+    bytes: Option<Vec<u8>>,
+}
+
+fn read_configuration(path: &Path) -> Result<ConfigurationSnapshot, HookInstallError> {
+    let Some(bytes) = read_configuration_bytes(path)? else {
+        return Ok(ConfigurationSnapshot {
+            value: serde_json::json!({}),
+            bytes: None,
+        });
+    };
+    let value = parse_strict_json_value(&bytes, MAX_AGENT_CONFIG_BYTES)?;
+    Ok(ConfigurationSnapshot {
+        value,
+        bytes: Some(bytes),
+    })
+}
+
+fn read_configuration_bytes(path: &Path) -> Result<Option<Vec<u8>>, HookInstallError> {
     reject_symlink(path)?;
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(serde_json::json!({}));
+            return Ok(None);
         }
         Err(source) => {
             return Err(HookInstallError::Io {
@@ -281,10 +308,14 @@ fn read_configuration(path: &Path) -> Result<serde_json::Value, HookInstallError
     if bytes.len() > MAX_AGENT_CONFIG_BYTES {
         return Err(HookInstallError::TooLarge);
     }
-    parse_strict_json_value(&bytes, MAX_AGENT_CONFIG_BYTES).map_err(Into::into)
+    Ok(Some(bytes))
 }
 
-fn write_configuration(path: &Path, bytes: &[u8]) -> Result<(), HookInstallError> {
+fn write_configuration(
+    path: &Path,
+    bytes: &[u8],
+    original_bytes: Option<&[u8]>,
+) -> Result<(), HookInstallError> {
     let parent = path.parent().ok_or(HookInstallError::UnsafePath)?;
     let parent_existed = parent.exists();
     fs::create_dir_all(parent).map_err(|source| HookInstallError::Io {
@@ -306,6 +337,7 @@ fn write_configuration(path: &Path, bytes: &[u8]) -> Result<(), HookInstallError
     }
     validate_configuration_directory(parent)?;
     reject_symlink(path)?;
+    ensure_configuration_unchanged(path, original_bytes)?;
 
     let (temporary_path, mut temporary_file) = create_temporary(parent)?;
     let mut temporary = TemporaryFile::new(temporary_path);
@@ -324,6 +356,7 @@ fn write_configuration(path: &Path, bytes: &[u8]) -> Result<(), HookInstallError
             })?;
         drop(temporary_file);
         reject_symlink(path)?;
+        ensure_configuration_unchanged(path, original_bytes)?;
         fs::rename(temporary.path(), path).map_err(|source| HookInstallError::Io {
             operation: "replace an agent configuration",
             source,
@@ -342,6 +375,18 @@ fn write_configuration(path: &Path, bytes: &[u8]) -> Result<(), HookInstallError
         let _ = fs::remove_file(temporary.path());
     }
     result
+}
+
+fn ensure_configuration_unchanged(
+    path: &Path,
+    expected: Option<&[u8]>,
+) -> Result<(), HookInstallError> {
+    let current = read_configuration_bytes(path)?;
+    if current.as_deref() == expected {
+        Ok(())
+    } else {
+        Err(HookInstallError::ConcurrentModification)
+    }
 }
 
 fn serialize_configuration(configuration: &serde_json::Value) -> Result<Vec<u8>, HookInstallError> {
@@ -590,6 +635,29 @@ mod tests {
             Err(HookInstallError::StrictJson(_))
         ));
         assert_eq!(fs::read(path).expect("unchanged configuration"), original);
+    }
+
+    #[test]
+    fn stale_prepared_update_does_not_overwrite_a_concurrent_change() {
+        let home = tempfile::tempdir().expect("temporary home");
+        let directory = home.path().join(".codex");
+        fs::create_dir(&directory).expect("Codex directory");
+        let path = directory.join("hooks.json");
+        let original = b"{}\n";
+        fs::write(&path, original).expect("initial configuration");
+        let executable = executable(home.path());
+        let merged =
+            merge_hook_configuration(AgentKind::Codex, &serde_json::json!({}), &executable)
+                .expect("merge configuration");
+        let bytes = serialize_configuration(&merged).expect("serialize configuration");
+
+        let concurrent = br#"{"updatedByAgent":true}"#;
+        fs::write(&path, concurrent).expect("concurrent update");
+        assert!(matches!(
+            write_configuration(&path, &bytes, Some(original)),
+            Err(HookInstallError::ConcurrentModification)
+        ));
+        assert_eq!(fs::read(path).expect("preserved update"), concurrent);
     }
 
     #[cfg(unix)]
