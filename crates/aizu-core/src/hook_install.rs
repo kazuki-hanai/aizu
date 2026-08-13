@@ -1,7 +1,7 @@
 //! Safe installation of first-party agent hook configuration files.
 
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,6 +21,8 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 pub const MAX_AGENT_CONFIG_BYTES: usize = 128 * 1_024;
 
 const TEMP_CREATE_ATTEMPTS: usize = 128;
+const INSTALL_LOCK_DIRECTORY: &str = ".aizu";
+const INSTALL_LOCK_FILE: &str = "hooks.lock";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Result of installing hooks for one agent.
@@ -68,6 +70,8 @@ pub enum HookInstallError {
     Integration(#[from] IntegrationError),
     #[error("an agent configuration changed while Aizu was preparing the update")]
     ConcurrentModification,
+    #[error("another Aizu hook installation is already running")]
+    InstallBusy,
     #[error("could not allocate a temporary hook configuration file")]
     TemporaryFileExhausted,
     #[error("{operation} failed: {source}")]
@@ -80,17 +84,67 @@ pub enum HookInstallError {
 
 /// Installs first-party hooks for the selected agents beneath `home`.
 ///
-/// Every existing JSON document is parsed and merged before any file is
-/// changed. Each changed file is then replaced atomically from a private
+/// Every existing JSON document and target directory is validated before any
+/// agent configuration is changed. A per-user lock serializes cooperating Aizu
+/// installers, and each changed file is replaced atomically from a private
 /// same-directory staging file. Unrelated keys and hook handlers are retained.
+///
+/// Agent processes and editors do not participate in Aizu's lock. The installer
+/// re-reads all inputs while holding the lock and compares each file again just
+/// before replacement, but callers should still avoid editing these files while
+/// installation is running.
 pub fn install_agent_hooks(
     home: &Path,
     executable: &Path,
     agents: &[AgentKind],
 ) -> Result<Vec<HookInstallResult>, HookInstallError> {
     validate_executable(executable)?;
+    let canonical_home = canonical_home(home)?;
+
+    // Fail on malformed JSON and unsafe targets before creating even Aizu's
+    // installer lock directory.
+    let initial = prepare_updates(&canonical_home, executable, agents)?;
+    preflight_update_targets(&canonical_home, &initial)?;
+
+    let _lock = HookInstallLock::acquire(&canonical_home)?;
+    let updates = prepare_updates(&canonical_home, executable, agents)?;
+    preflight_update_targets(&canonical_home, &updates)?;
+    let mut created_directories = create_update_directories(&canonical_home, &updates)?;
+
+    for update in &updates {
+        if update.outcome != HookInstallOutcome::AlreadyConfigured {
+            write_configuration(
+                &canonical_home,
+                &update.path,
+                &update.bytes,
+                update.original_bytes.as_deref(),
+            )?;
+        }
+    }
+    created_directories.disarm();
+
+    Ok(updates
+        .into_iter()
+        .map(|update| HookInstallResult {
+            agent: update.agent,
+            outcome: update.outcome,
+        })
+        .collect())
+}
+
+fn prepare_updates(
+    home: &Path,
+    executable: &Path,
+    agents: &[AgentKind],
+) -> Result<Vec<PreparedUpdate>, HookInstallError> {
     let mut updates = Vec::with_capacity(agents.len());
     for &agent in agents {
+        if updates
+            .iter()
+            .any(|update: &PreparedUpdate| update.agent == agent)
+        {
+            continue;
+        }
         let path = resolve_agent_configuration_path(home, agent)?;
         let ConfigurationSnapshot {
             value: existing,
@@ -122,24 +176,7 @@ pub fn install_agent_hooks(
             outcome,
         });
     }
-
-    for update in &updates {
-        if update.outcome != HookInstallOutcome::AlreadyConfigured {
-            write_configuration(
-                &update.path,
-                &update.bytes,
-                update.original_bytes.as_deref(),
-            )?;
-        }
-    }
-
-    Ok(updates
-        .into_iter()
-        .map(|update| HookInstallResult {
-            agent: update.agent,
-            outcome: update.outcome,
-        })
-        .collect())
+    Ok(updates)
 }
 
 fn validate_executable(path: &Path) -> Result<(), HookInstallError> {
@@ -168,6 +205,12 @@ pub fn resolve_agent_configuration_path(
     home: &Path,
     agent: AgentKind,
 ) -> Result<PathBuf, HookInstallError> {
+    let canonical_home = canonical_home(home)?;
+    let requested = agent_configuration_path(&canonical_home, agent);
+    resolve_configuration_path(&canonical_home, &requested)
+}
+
+fn canonical_home(home: &Path) -> Result<PathBuf, HookInstallError> {
     let canonical_home = fs::canonicalize(home).map_err(|source| HookInstallError::Io {
         operation: "inspect the user home directory",
         source,
@@ -175,8 +218,7 @@ pub fn resolve_agent_configuration_path(
     if !canonical_home.is_dir() {
         return Err(HookInstallError::UnsafeHome);
     }
-    let requested = agent_configuration_path(&canonical_home, agent);
-    resolve_configuration_path(&canonical_home, &requested)
+    Ok(canonical_home)
 }
 
 /// Returns the fixed per-user configuration path for one supported agent.
@@ -194,6 +236,205 @@ struct PreparedUpdate {
     bytes: Vec<u8>,
     original_bytes: Option<Vec<u8>>,
     outcome: HookInstallOutcome,
+}
+
+fn preflight_update_targets(
+    home: &Path,
+    updates: &[PreparedUpdate],
+) -> Result<(), HookInstallError> {
+    for update in updates {
+        let parent = update.path.parent().ok_or(HookInstallError::UnsafePath)?;
+        preflight_configuration_directory(home, parent)?;
+        reject_symlink(&update.path)?;
+        validate_existing_owner(home, &update.path)?;
+    }
+    Ok(())
+}
+
+fn preflight_configuration_directory(
+    home: &Path,
+    directory: &Path,
+) -> Result<(), HookInstallError> {
+    if !directory.starts_with(home) || directory == home {
+        return Err(HookInstallError::UnsafePath);
+    }
+    if directory.exists() {
+        return validate_configuration_directory(home, directory);
+    }
+
+    let mut current = directory;
+    while current != home {
+        match fs::symlink_metadata(current) {
+            Ok(metadata) => {
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(HookInstallError::UnsafePath);
+                }
+                validate_existing_owner(home, current)?;
+                return Ok(());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                current = current.parent().ok_or(HookInstallError::UnsafePath)?;
+            }
+            Err(source) => {
+                return Err(HookInstallError::Io {
+                    operation: "inspect an agent configuration directory",
+                    source,
+                });
+            }
+        }
+    }
+    validate_existing_owner(home, home)
+}
+
+fn create_update_directories(
+    home: &Path,
+    updates: &[PreparedUpdate],
+) -> Result<CreatedDirectories, HookInstallError> {
+    let mut created = CreatedDirectories {
+        paths: Vec::new(),
+        armed: true,
+    };
+    for update in updates {
+        if update.outcome == HookInstallOutcome::AlreadyConfigured {
+            continue;
+        }
+        let parent = update.path.parent().ok_or(HookInstallError::UnsafePath)?;
+        if !parent.exists() {
+            create_private_directory(parent)?;
+            created.paths.push(parent.to_path_buf());
+        }
+    }
+    for update in updates {
+        if update.outcome != HookInstallOutcome::AlreadyConfigured {
+            validate_configuration_directory(
+                home,
+                update.path.parent().ok_or(HookInstallError::UnsafePath)?,
+            )?;
+        }
+    }
+    Ok(created)
+}
+
+fn create_private_directory(path: &Path) -> Result<(), HookInstallError> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(path)
+        .map_err(|source| HookInstallError::Io {
+            operation: "create an agent configuration directory",
+            source,
+        })?;
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|source| {
+        HookInstallError::Io {
+            operation: "secure an agent configuration directory",
+            source,
+        }
+    })?;
+    Ok(())
+}
+
+struct CreatedDirectories {
+    paths: Vec<PathBuf>,
+    armed: bool,
+}
+
+impl CreatedDirectories {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CreatedDirectories {
+    fn drop(&mut self) {
+        if self.armed {
+            for path in self.paths.iter().rev() {
+                let _ = fs::remove_dir(path);
+            }
+        }
+    }
+}
+
+struct HookInstallLock {
+    file: File,
+}
+
+impl HookInstallLock {
+    fn acquire(home: &Path) -> Result<Self, HookInstallError> {
+        let directory = home.join(INSTALL_LOCK_DIRECTORY);
+        reject_symlink(&directory)?;
+        if !directory.exists() {
+            create_private_directory(&directory)?;
+        }
+        validate_configuration_directory(home, &directory)?;
+
+        let path = directory.join(INSTALL_LOCK_FILE);
+        reject_symlink(&path)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            options
+                .mode(0o600)
+                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed());
+        }
+        let file = options.open(&path).map_err(|source| HookInstallError::Io {
+            operation: "open the hook installation lock",
+            source,
+        })?;
+        validate_lock_file(home, &file)?;
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|source| {
+            HookInstallError::Io {
+                operation: "secure the hook installation lock",
+                source,
+            }
+        })?;
+        file.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => HookInstallError::InstallBusy,
+            TryLockError::Error(source) => HookInstallError::Io {
+                operation: "lock hook installation",
+                source,
+            },
+        })?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for HookInstallLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn validate_lock_file(home: &Path, file: &File) -> Result<(), HookInstallError> {
+    let metadata = file.metadata().map_err(|source| HookInstallError::Io {
+        operation: "inspect the hook installation lock",
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(HookInstallError::UnsafePath);
+    }
+    #[cfg(unix)]
+    {
+        if metadata.nlink() != 1
+            || metadata.uid()
+                != fs::metadata(home)
+                    .map_err(|source| HookInstallError::Io {
+                        operation: "inspect the user home directory",
+                        source,
+                    })?
+                    .uid()
+        {
+            return Err(HookInstallError::UnsafePath);
+        }
+    }
+    Ok(())
 }
 
 fn resolve_configuration_path(home: &Path, path: &Path) -> Result<PathBuf, HookInstallError> {
@@ -312,30 +553,13 @@ fn read_configuration_bytes(path: &Path) -> Result<Option<Vec<u8>>, HookInstallE
 }
 
 fn write_configuration(
+    home: &Path,
     path: &Path,
     bytes: &[u8],
     original_bytes: Option<&[u8]>,
 ) -> Result<(), HookInstallError> {
     let parent = path.parent().ok_or(HookInstallError::UnsafePath)?;
-    let parent_existed = parent.exists();
-    fs::create_dir_all(parent).map_err(|source| HookInstallError::Io {
-        operation: "create an agent configuration directory",
-        source,
-    })?;
-    reject_symlink(parent)?;
-    if !parent.is_dir() {
-        return Err(HookInstallError::UnsafePath);
-    }
-    #[cfg(unix)]
-    if !parent_existed {
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).map_err(|source| {
-            HookInstallError::Io {
-                operation: "secure an agent configuration directory",
-                source,
-            }
-        })?;
-    }
-    validate_configuration_directory(parent)?;
+    validate_configuration_directory(home, parent)?;
     reject_symlink(path)?;
     ensure_configuration_unchanged(path, original_bytes)?;
 
@@ -412,7 +636,7 @@ fn configuration_permissions_need_update(_path: &Path) -> Result<bool, HookInsta
     Ok(false)
 }
 
-fn validate_configuration_directory(path: &Path) -> Result<(), HookInstallError> {
+fn validate_configuration_directory(home: &Path, path: &Path) -> Result<(), HookInstallError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| HookInstallError::Io {
         operation: "inspect an agent configuration directory",
         source,
@@ -421,8 +645,19 @@ fn validate_configuration_directory(path: &Path) -> Result<(), HookInstallError>
         return Err(HookInstallError::UnsafePath);
     }
     #[cfg(unix)]
-    if metadata.mode() & 0o022 != 0 {
-        return Err(HookInstallError::UnsafePath);
+    {
+        if metadata.mode() & 0o022 != 0 {
+            return Err(HookInstallError::UnsafePath);
+        }
+        let home_owner = fs::metadata(home)
+            .map_err(|source| HookInstallError::Io {
+                operation: "inspect the user home directory",
+                source,
+            })?
+            .uid();
+        if metadata.uid() != home_owner {
+            return Err(HookInstallError::UnsafePath);
+        }
     }
     Ok(())
 }
@@ -654,10 +889,84 @@ mod tests {
         let concurrent = br#"{"updatedByAgent":true}"#;
         fs::write(&path, concurrent).expect("concurrent update");
         assert!(matches!(
-            write_configuration(&path, &bytes, Some(original)),
+            write_configuration(home.path(), &path, &bytes, Some(original)),
             Err(HookInstallError::ConcurrentModification)
         ));
         assert_eq!(fs::read(path).expect("preserved update"), concurrent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_second_directory_does_not_modify_first_configuration() {
+        let home = tempfile::tempdir().expect("temporary home");
+        let codex_directory = home.path().join(".codex");
+        let claude_directory = home.path().join(".claude");
+        fs::create_dir(&codex_directory).expect("Codex directory");
+        fs::create_dir(&claude_directory).expect("Claude directory");
+        let codex_path = codex_directory.join("hooks.json");
+        let original = br#"{"existing":true}"#;
+        fs::write(&codex_path, original).expect("Codex configuration");
+        fs::write(claude_directory.join("settings.json"), b"{}\n").expect("Claude configuration");
+        fs::set_permissions(&claude_directory, fs::Permissions::from_mode(0o777))
+            .expect("unsafe Claude permissions");
+
+        let executable = executable(home.path());
+        assert!(matches!(
+            install_agent_hooks(
+                home.path(),
+                &executable,
+                &[AgentKind::Codex, AgentKind::ClaudeCode],
+            ),
+            Err(HookInstallError::UnsafePath)
+        ));
+        assert_eq!(
+            fs::read(codex_path).expect("unchanged Codex configuration"),
+            original
+        );
+        assert!(!home.path().join(INSTALL_LOCK_DIRECTORY).exists());
+    }
+
+    #[test]
+    fn malformed_second_configuration_creates_no_first_agent_directory() {
+        let home = tempfile::tempdir().expect("temporary home");
+        let claude_directory = home.path().join(".claude");
+        fs::create_dir(&claude_directory).expect("Claude directory");
+        fs::write(claude_directory.join("settings.json"), b"not json")
+            .expect("malformed Claude configuration");
+
+        let executable = executable(home.path());
+        assert!(matches!(
+            install_agent_hooks(
+                home.path(),
+                &executable,
+                &[AgentKind::Codex, AgentKind::ClaudeCode],
+            ),
+            Err(HookInstallError::StrictJson(_))
+        ));
+        assert!(!home.path().join(".codex").exists());
+        assert!(!home.path().join(INSTALL_LOCK_DIRECTORY).exists());
+    }
+
+    #[test]
+    fn concurrent_aizu_install_returns_busy_without_changing_configuration() {
+        let home = tempfile::tempdir().expect("temporary home");
+        let codex_directory = home.path().join(".codex");
+        fs::create_dir(&codex_directory).expect("Codex directory");
+        let path = codex_directory.join("hooks.json");
+        let original = b"{}\n";
+        fs::write(&path, original).expect("Codex configuration");
+        let executable = executable(home.path());
+        let canonical = canonical_home(home.path()).expect("canonical home");
+        let _lock = HookInstallLock::acquire(&canonical).expect("installation lock");
+
+        assert!(matches!(
+            install_agent_hooks(home.path(), &executable, &[AgentKind::Codex]),
+            Err(HookInstallError::InstallBusy)
+        ));
+        assert_eq!(
+            fs::read(path).expect("unchanged Codex configuration"),
+            original
+        );
     }
 
     #[cfg(unix)]

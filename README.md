@@ -106,9 +106,11 @@ Install the first-party hooks on that same source machine:
 This command parses both existing JSON files, preserves unrelated settings and
 hook handlers, and atomically updates `~/.codex/hooks.json` and
 `~/.claude/settings.json`. It refuses malformed, oversized, externally linked,
-or unsafe configuration paths. Codex requires explicit hook approval on that
-machine after installation. Verify the source before configuring the receiving
-Mac:
+or unsafe configuration paths before changing either file. Concurrent Aizu
+installers are serialized with `~/.aizu/hooks.lock`; do not edit the agent
+configuration files concurrently because external editors do not use that
+lock. Codex requires explicit hook approval on that machine after installation.
+Verify the source before configuring the receiving Mac:
 
 ```bash
 "$HOME/.local/bin/aizu" agents --json
