@@ -15,7 +15,7 @@ use aizu_core::{
     hook_configuration, install_agent_hooks, resolve_agent_configuration_path,
 };
 use chrono::Utc;
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_VERSION_BYTES: u64 = 4 * 1_024;
@@ -96,6 +96,9 @@ impl ProcessMonitor {
             .processes()
             .iter()
             .filter_map(|(pid, process)| {
+                if !agent_session_is_active(process, &self.system) {
+                    return None;
+                }
                 let agent = classify_agent_process(process.name(), process.exe())?;
                 Some(ObservedAgentProcess::running(
                     agent,
@@ -122,6 +125,28 @@ impl ProcessMonitor {
         self.previous = current;
         ProcessSnapshot::new(Utc::now(), processes)
     }
+}
+
+fn agent_session_is_active(process: &Process, system: &System) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        session_leader_is_present(
+            process.session_id().is_some(),
+            process
+                .session_id()
+                .is_some_and(|session_id| system.process(session_id).is_some()),
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (process, system);
+        true
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn session_leader_is_present(session_known: bool, leader_present: bool) -> bool {
+    !session_known || leader_present
 }
 
 fn agent_process_refresh_kind() -> ProcessRefreshKind {
@@ -259,6 +284,7 @@ mod tests {
     use super::{
         ProcessMonitor, agent_process_refresh_kind, classify_agent_executable,
         classify_agent_process, configuration_status, configure_hooks_at,
+        session_leader_is_present,
     };
 
     #[test]
@@ -312,6 +338,13 @@ mod tests {
     #[test]
     fn agent_process_refresh_excludes_linux_tasks() {
         assert!(!agent_process_refresh_kind().tasks());
+    }
+
+    #[test]
+    fn missing_linux_session_leader_is_not_an_active_agent_session() {
+        assert!(session_leader_is_present(false, false));
+        assert!(session_leader_is_present(true, true));
+        assert!(!session_leader_is_present(true, false));
     }
 
     #[test]

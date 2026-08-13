@@ -17,7 +17,7 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use serde_json::{Value, json};
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use sysinfo::{Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 const FOLLOW_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
@@ -883,12 +883,35 @@ fn running_agents() -> Vec<AgentProcessReport> {
     let mut agents: Vec<_> = system
         .processes()
         .values()
+        .filter(|process| agent_session_is_active(process, &system))
         .filter_map(|process| classify_agent_process(process.name(), process.exe()))
         .take(aizu_core::MAX_PROCESS_SNAPSHOT_ENTRIES)
         .map(|agent| AgentProcessReport { agent })
         .collect();
     agents.sort_by_key(|process| process.agent);
     agents
+}
+
+fn agent_session_is_active(process: &Process, system: &System) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        session_leader_is_present(
+            process.session_id().is_some(),
+            process
+                .session_id()
+                .is_some_and(|session_id| system.process(session_id).is_some()),
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (process, system);
+        true
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn session_leader_is_present(session_known: bool, leader_present: bool) -> bool {
+    !session_known || leader_present
 }
 
 fn agent_process_refresh_kind() -> ProcessRefreshKind {
@@ -1032,5 +1055,12 @@ mod tests {
     #[test]
     fn agent_process_refresh_excludes_linux_tasks() {
         assert!(!agent_process_refresh_kind().tasks());
+    }
+
+    #[test]
+    fn missing_linux_session_leader_is_not_an_active_agent_session() {
+        assert!(session_leader_is_present(false, false));
+        assert!(session_leader_is_present(true, true));
+        assert!(!session_leader_is_present(true, false));
     }
 }
