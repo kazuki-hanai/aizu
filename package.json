@@ -23,6 +23,7 @@
     "@wdio/spec-reporter": "9.29.1",
     "@wdio/tauri-service": "1.3.0",
     "@wdio/types": "9.29.1",
+    "ajv": "8.17.1",
     "typescript": "6.0.3",
     "webdriverio": "9.30.0"
   }
