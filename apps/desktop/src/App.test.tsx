@@ -345,6 +345,33 @@ describe("Aizu desktop shell", () => {
     expect(await screen.findByText("Aizu notification content verified")).toBeVisible();
   });
 
+  it("groups source and time as compact activity metadata", async () => {
+    const { container } = render(<App backend={makeBackend(makeView({
+      onboardingComplete: true,
+      notificationPermission: "granted",
+      history: [{
+        id: "event-1",
+        kind: "taskCompleted",
+        title: "Codex task completed",
+        summary: "A long but safe agent summary",
+        sourceName: "Ubuntu-vm1",
+        occurredAt: "2026-08-12T12:00:00Z",
+        deliveryStatus: "delivered",
+        outcome: "succeeded",
+      }],
+      preferences: { ...makeView().preferences, agentDetailsEnabled: true },
+    }))} />);
+
+    expect(await screen.findByText("Codex task completed")).toBeVisible();
+    const row = container.querySelector<HTMLElement>(".history-row");
+    const meta = row?.querySelector<HTMLElement>(".history-row__meta");
+    expect(meta).toContainElement(screen.getByText("Ubuntu-vm1"));
+    expect(meta?.querySelector("time")).toHaveAttribute("datetime", "2026-08-12T12:00:00Z");
+    expect(row?.querySelector(".history-row__summary")).toHaveAttribute("title", "A long but safe agent summary");
+    expect(row?.querySelector(".history-row__status")).not.toBeInTheDocument();
+    expect(row?.querySelector(".sr-only")).toHaveTextContent("Delivered");
+  });
+
   it("persists notification settings through the typed backend", async () => {
     const user = userEvent.setup();
     const backend = makeBackend(
