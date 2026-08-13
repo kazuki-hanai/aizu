@@ -121,7 +121,7 @@ const en = {
   sshTestError: "The SSH connection test could not be completed.",
   remoteAizu: "Remote Aizu",
   sendTestNotification: "Send test notification",
-  sounds: { off: "Off", default: "Default", glass: "Glass", ping: "Ping", pop: "Pop", hero: "Hero" },
+  sounds: { off: "Off", default: "Aizu Pop", glass: "Glass", ping: "Ping", pop: "Pop", hero: "Hero" },
 } satisfies Messages;
 
 const ja = {
@@ -240,7 +240,7 @@ const ja = {
   sshTestError: "SSH接続テストを完了できませんでした。",
   remoteAizu: "接続先のAizu",
   sendTestNotification: "テスト通知を送信",
-  sounds: { off: "オフ", default: "標準", glass: "Glass", ping: "Ping", pop: "Pop", hero: "Hero" },
+  sounds: { off: "オフ", default: "Aizu Pop", glass: "Glass", ping: "Ping", pop: "Pop", hero: "Hero" },
 } satisfies Messages;
 
 export type { Messages };

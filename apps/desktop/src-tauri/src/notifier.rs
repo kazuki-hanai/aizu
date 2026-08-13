@@ -170,6 +170,18 @@ fn show_system_notification(
         .map_err(|error| NotifyError::Scheduling(error.to_string()))
 }
 
+#[cfg(target_os = "macos")]
+const fn native_sound_name(sound: crate::model::NotificationSound) -> &'static str {
+    match sound {
+        crate::model::NotificationSound::Default => "aizu-pop.wav",
+        crate::model::NotificationSound::Glass => "Glass",
+        crate::model::NotificationSound::Ping => "Ping",
+        crate::model::NotificationSound::Pop => "Pop",
+        crate::model::NotificationSound::Hero => "Hero",
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 const fn native_sound_name(sound: crate::model::NotificationSound) -> &'static str {
     match sound {
         crate::model::NotificationSound::Default => "default",
@@ -282,6 +294,7 @@ mod tests {
 
     use super::{
         PermissionStatus, build_macos_notification, map_macos_permission, map_macos_settings,
+        native_sound_name,
     };
 
     #[test]
@@ -334,5 +347,13 @@ mod tests {
         let native = build_macos_notification(&notification);
 
         assert_eq!(native.timeout, notify_rust::Timeout::Default);
+    }
+
+    #[test]
+    fn default_macos_notification_uses_the_bundled_aizu_pop() {
+        assert_eq!(
+            native_sound_name(crate::model::NotificationSound::Default),
+            "aizu-pop.wav"
+        );
     }
 }

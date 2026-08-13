@@ -40,7 +40,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "resources/bin/aizu": "bin/aizu"
+      "resources/bin/aizu": "bin/aizu",
+      "../../../assets/audio/aizu-pop.wav": "aizu-pop.wav"
     },
     "macOS": {
       "minimumSystemVersion": "12.0"

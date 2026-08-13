@@ -28,7 +28,7 @@ use crate::{
     commands::{
         add_remote_source, clear_history, complete_onboarding, configure_agents,
         confirm_codex_hook_trust, confirm_remote_identity, dismiss_banner, get_app_view,
-        get_banners, install_cli, open_from_banner, reconnect_remote_source, remove_remote_source,
+        get_banners, install_cli, reconnect_remote_source, remove_remote_source,
         request_notification_permission, resize_banner, send_test_notification,
         set_notifications_paused, test_ssh_connection, update_preferences,
     },
@@ -141,7 +141,6 @@ pub fn run() {
             get_banners,
             dismiss_banner,
             resize_banner,
-            open_from_banner,
             get_app_view,
             complete_onboarding,
             request_notification_permission,

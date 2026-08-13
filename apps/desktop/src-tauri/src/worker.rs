@@ -173,6 +173,7 @@ fn run(app: &AppHandle<Wry>, stop: &AtomicBool) {
             }
             let _ = app.emit("aizu://view-changed", view);
         }
+        let _ = crate::banner::request_present(app);
         thread::sleep(POLL_INTERVAL);
     }
 }

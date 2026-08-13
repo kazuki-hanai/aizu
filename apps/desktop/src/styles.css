@@ -79,12 +79,10 @@ html[data-window="banner"] body {
 
 @keyframes aizu-banner-enter {
   from {
-    opacity: 0;
     transform: translateX(14px) scale(0.985);
   }
 
   to {
-    opacity: 1;
     transform: translateX(0) scale(1);
   }
 }
@@ -99,7 +97,6 @@ html[data-window="banner"] body {
   text-align: left;
   background: transparent;
   border: 0;
-  cursor: pointer;
 }
 
 .aizu-banner__mark {
