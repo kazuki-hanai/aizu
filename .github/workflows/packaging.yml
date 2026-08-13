@@ -6,8 +6,15 @@ on:
       - "README.md"
       - "assets/branding/dmg/**"
       - "apps/desktop/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "scripts/build-dev-dmg.sh"
       - "scripts/install-dev-app.sh"
+      - "scripts/prepare-desktop-cli.sh"
       - ".github/workflows/packaging.yml"
   push:
     branches: [main]
