@@ -54,7 +54,7 @@ jobs:
           test -f "$mount_point/Applications"
           attributes=$(GetFileInfo -a "$mount_point/Applications")
           case "$attributes" in
-            *a*) ;;
+            *A*) ;;
             *) echo "Applications item is not a Finder alias" >&2; exit 1 ;;
           esac
           test -s "$mount_point/Applications/..namedfork/rsrc"
