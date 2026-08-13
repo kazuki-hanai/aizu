@@ -650,20 +650,36 @@ fn validate_configuration_directory(home: &Path, path: &Path) -> Result<(), Hook
     }
     #[cfg(unix)]
     {
-        if metadata.mode() & 0o022 != 0 {
-            let directory =
-                configuration_directory_name(home, path).ok_or(HookInstallError::UnsafePath)?;
-            return Err(HookInstallError::InsecureDirectoryPermissions { directory });
-        }
         let home_owner = fs::metadata(home)
             .map_err(|source| HookInstallError::Io {
                 operation: "inspect the user home directory",
                 source,
             })?
             .uid();
-        if metadata.uid() != home_owner {
-            return Err(HookInstallError::UnsafePath);
-        }
+        validate_unix_directory_security(
+            configuration_directory_name(home, path),
+            metadata.mode(),
+            metadata.uid(),
+            home_owner,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_unix_directory_security(
+    directory: Option<&'static str>,
+    mode: u32,
+    owner: u32,
+    home_owner: u32,
+) -> Result<(), HookInstallError> {
+    if owner != home_owner {
+        return Err(HookInstallError::UnsafePath);
+    }
+    if mode & 0o022 != 0 {
+        return Err(HookInstallError::InsecureDirectoryPermissions {
+            directory: directory.ok_or(HookInstallError::UnsafePath)?,
+        });
     }
     Ok(())
 }
@@ -950,6 +966,21 @@ mod tests {
             original
         );
         assert!(!home.path().join(INSTALL_LOCK_DIRECTORY).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn foreign_owner_takes_precedence_over_writable_mode_diagnostic() {
+        assert!(matches!(
+            validate_unix_directory_security(Some(".codex"), 0o775, 0, 1_000),
+            Err(HookInstallError::UnsafePath)
+        ));
+        assert!(matches!(
+            validate_unix_directory_security(Some(".codex"), 0o775, 1_000, 1_000),
+            Err(HookInstallError::InsecureDirectoryPermissions {
+                directory: ".codex"
+            })
+        ));
     }
 
     #[test]
