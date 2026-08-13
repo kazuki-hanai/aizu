@@ -4,6 +4,7 @@ pub mod adapter;
 pub mod agent_monitor;
 pub mod desktop;
 pub mod event;
+pub mod hook_install;
 pub mod install;
 pub mod integration;
 pub mod notification;
@@ -29,6 +30,10 @@ pub use desktop::{
 };
 pub use event::{
     EmitRequest, EventKind, NormalizedEvent, Outcome, Source, Urgency, ValidationError,
+};
+pub use hook_install::{
+    HookInstallError, HookInstallOutcome, HookInstallResult, MAX_AGENT_CONFIG_BYTES,
+    agent_configuration_path, install_agent_hooks, resolve_agent_configuration_path,
 };
 pub use install::{InstallError, InstallOutcome, install_cli};
 pub use integration::{IntegrationError, hook_configuration, merge_hook_configuration};

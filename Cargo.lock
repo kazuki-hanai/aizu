@@ -25,6 +25,7 @@ dependencies = [
  "assert_cmd",
  "chrono",
  "clap",
+ "directories",
  "predicates",
  "serde",
  "serde_json",

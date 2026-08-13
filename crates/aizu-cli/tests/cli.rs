@@ -19,6 +19,18 @@ fn aizu() -> AssertCommand {
     AssertCommand::new(assert_cmd::cargo::cargo_bin!("aizu"))
 }
 
+fn test_executable(home: &std::path::Path) -> PathBuf {
+    let path = home.join(".local/bin/aizu");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, b"aizu test executable").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    path
+}
+
 #[test]
 fn agents_report_is_bounded_and_contains_no_process_details() {
     let output = aizu().args(["agents", "--json"]).output().unwrap();
@@ -984,4 +996,141 @@ fn integration_config_rejects_relative_executable_paths() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("must be absolute"));
+}
+
+#[test]
+fn integration_install_configures_both_agents_and_preserves_existing_hooks() {
+    let home = TempDir::new().unwrap();
+    fs::create_dir(home.path().join(".codex")).unwrap();
+    fs::write(
+        home.path().join(".codex/hooks.json"),
+        br#"{"existing":true,"hooks":{"Stop":[{"hooks":[{"type":"command","command":"other"}]}]}}"#,
+    )
+    .unwrap();
+    let executable = test_executable(home.path());
+
+    let output = aizu()
+        .env("HOME", home.path())
+        .args([
+            "integration-install",
+            "--aizu-path",
+            executable.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["integrations"][0]["agent"], "codex");
+    assert_eq!(report["integrations"][0]["status"], "updated");
+    assert_eq!(report["integrations"][0]["approval_required"], true);
+    assert_eq!(report["integrations"][1]["agent"], "claude-code");
+    assert_eq!(report["integrations"][1]["status"], "created");
+    assert_eq!(report["integrations"][1]["approval_required"], false);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(home.path().to_str().unwrap()));
+
+    let codex: Value =
+        serde_json::from_slice(&fs::read(home.path().join(".codex/hooks.json")).unwrap()).unwrap();
+    assert_eq!(codex["existing"], true);
+    assert_eq!(codex["hooks"]["Stop"].as_array().unwrap().len(), 2);
+    let claude: Value =
+        serde_json::from_slice(&fs::read(home.path().join(".claude/settings.json")).unwrap())
+            .unwrap();
+    assert!(claude["hooks"]["StopFailure"].is_array());
+
+    let repeated = aizu()
+        .env("HOME", home.path())
+        .args([
+            "integration-install",
+            "--aizu-path",
+            executable.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(repeated.status.success());
+    let report: Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    assert!(
+        report["integrations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|integration| integration["status"] == "already_configured")
+    );
+}
+
+#[test]
+fn integration_install_can_target_one_agent() {
+    let home = TempDir::new().unwrap();
+    aizu()
+        .env("HOME", home.path())
+        .args(["integration-install", "--agent", "claude-code"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Claude Code: created"));
+    assert!(!home.path().join(".codex/hooks.json").exists());
+    let installed: Value =
+        serde_json::from_slice(&fs::read(home.path().join(".claude/settings.json")).unwrap())
+            .unwrap();
+    let command = installed["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(command.contains(" hook --agent claude-code --event Stop"));
+    assert!(command.starts_with('\''));
+}
+
+#[test]
+fn integration_install_validates_every_configuration_before_writing() {
+    let home = TempDir::new().unwrap();
+    fs::create_dir(home.path().join(".codex")).unwrap();
+    fs::create_dir(home.path().join(".claude")).unwrap();
+    let codex_path = home.path().join(".codex/hooks.json");
+    let claude_path = home.path().join(".claude/settings.json");
+    let executable = test_executable(home.path());
+    fs::write(&codex_path, br#"{"existing":true}"#).unwrap();
+    fs::write(&claude_path, b"not json").unwrap();
+
+    aizu()
+        .env("HOME", home.path())
+        .args([
+            "integration-install",
+            "--aizu-path",
+            executable.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not valid JSON"));
+    assert_eq!(fs::read(&codex_path).unwrap(), br#"{"existing":true}"#);
+    assert_eq!(fs::read(&claude_path).unwrap(), b"not json");
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_install_rejects_a_dangling_configuration_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let home = TempDir::new().unwrap();
+    fs::create_dir(home.path().join(".codex")).unwrap();
+    let path = home.path().join(".codex/hooks.json");
+    symlink(home.path().join("missing.json"), &path).unwrap();
+    let executable = test_executable(home.path());
+
+    aizu()
+        .env("HOME", home.path())
+        .args([
+            "integration-install",
+            "--agent",
+            "codex",
+            "--aizu-path",
+            executable.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("path is unsafe"));
+    assert!(fs::symlink_metadata(path).unwrap().file_type().is_symlink());
 }

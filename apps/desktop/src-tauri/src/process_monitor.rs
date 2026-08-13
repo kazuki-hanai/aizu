@@ -1,26 +1,24 @@
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
-    io::{Read, Write},
+    fs,
+    io::Read,
     num::NonZeroU32,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
 
 use aizu_core::{
-    AgentKind, HookStatus, MAX_PROCESS_SNAPSHOT_ENTRIES, ObservedAgentProcess,
-    ProcessLifecycleState, ProcessSnapshot, ProcessSnapshotError, hook_configuration,
-    merge_hook_configuration,
+    AgentKind, HookInstallError, HookStatus, MAX_AGENT_CONFIG_BYTES, MAX_PROCESS_SNAPSHOT_ENTRIES,
+    ObservedAgentProcess, ProcessLifecycleState, ProcessSnapshot, ProcessSnapshotError,
+    hook_configuration, install_agent_hooks, resolve_agent_configuration_path,
 };
 use chrono::Utc;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-use thiserror::Error;
 
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_VERSION_BYTES: u64 = 4 * 1_024;
-const MAX_AGENT_CONFIG_BYTES: usize = 128 * 1_024;
 
 pub type AgentVersions = [(AgentKind, Option<String>); 2];
 pub type AgentHooks = [(AgentKind, HookStatus); 2];
@@ -162,24 +160,15 @@ pub fn inspect_hooks() -> AgentHooks {
     [AgentKind::Codex, AgentKind::ClaudeCode].map(|agent| (agent, inspect_agent_hooks(agent)))
 }
 
-pub fn configure_hooks() -> Result<AgentHooks, AgentHookInstallError> {
-    let base = directories::BaseDirs::new().ok_or(AgentHookInstallError::HomeUnavailable)?;
+pub fn configure_hooks() -> Result<AgentHooks, HookInstallError> {
+    let base = directories::BaseDirs::new().ok_or(HookInstallError::UnsafeHome)?;
     let executable = base.home_dir().join(".local/bin/aizu");
     configure_hooks_at(base.home_dir(), &executable)?;
     Ok(inspect_hooks())
 }
 
-fn configure_hooks_at(home: &Path, executable: &Path) -> Result<(), AgentHookInstallError> {
-    let mut updates = Vec::new();
-    for agent in [AgentKind::Codex, AgentKind::ClaudeCode] {
-        let path = resolve_configuration_path(home, &configuration_path(home, agent))?;
-        let existing = read_configuration(&path)?;
-        let merged = merge_hook_configuration(agent, &existing, executable)?;
-        updates.push((path, merged));
-    }
-    for (path, configuration) in updates {
-        write_configuration(&path, &configuration)?;
-    }
+fn configure_hooks_at(home: &Path, executable: &Path) -> Result<(), HookInstallError> {
+    install_agent_hooks(home, executable, &[AgentKind::Codex, AgentKind::ClaudeCode])?;
     Ok(())
 }
 
@@ -187,9 +176,7 @@ fn inspect_agent_hooks(agent: AgentKind) -> HookStatus {
     let Some(base) = directories::BaseDirs::new() else {
         return HookStatus::Missing;
     };
-    let Ok(path) =
-        resolve_configuration_path(base.home_dir(), &configuration_path(base.home_dir(), agent))
-    else {
+    let Ok(path) = resolve_agent_configuration_path(base.home_dir(), agent) else {
         return HookStatus::Missing;
     };
     let Ok(bytes) = fs::read(path) else {
@@ -242,139 +229,6 @@ fn configuration_status(
     } else {
         HookStatus::Missing
     }
-}
-
-fn configuration_path(home: &Path, agent: AgentKind) -> PathBuf {
-    match agent {
-        AgentKind::Codex => home.join(".codex/hooks.json"),
-        AgentKind::ClaudeCode => home.join(".claude/settings.json"),
-    }
-}
-
-fn resolve_configuration_path(home: &Path, path: &Path) -> Result<PathBuf, AgentHookInstallError> {
-    let canonical_home = fs::canonicalize(home)?;
-    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink())
-        && fs::metadata(path).is_err()
-    {
-        return Err(AgentHookInstallError::UnsafePath);
-    }
-    let resolved = match fs::canonicalize(path) {
-        Ok(resolved) => {
-            if !resolved.is_file() {
-                return Err(AgentHookInstallError::UnsafePath);
-            }
-            resolved
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let parent = path.parent().ok_or(AgentHookInstallError::UnsafePath)?;
-            match fs::canonicalize(parent) {
-                Ok(parent) => {
-                    parent.join(path.file_name().ok_or(AgentHookInstallError::UnsafePath)?)
-                }
-                Err(parent_error) if parent_error.kind() == std::io::ErrorKind::NotFound => {
-                    path.to_path_buf()
-                }
-                Err(parent_error) => return Err(AgentHookInstallError::Io(parent_error)),
-            }
-        }
-        Err(error) => return Err(AgentHookInstallError::Io(error)),
-    };
-    if !resolved.starts_with(&canonical_home) {
-        return Err(AgentHookInstallError::UnsafePath);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let owner = fs::metadata(&canonical_home)?.uid();
-        let owner_path = resolved
-            .ancestors()
-            .find(|ancestor| ancestor.exists())
-            .ok_or(AgentHookInstallError::UnsafePath)?;
-        if fs::metadata(owner_path)?.uid() != owner {
-            return Err(AgentHookInstallError::UnsafePath);
-        }
-    }
-    Ok(resolved)
-}
-
-fn read_configuration(path: &Path) -> Result<serde_json::Value, AgentHookInstallError> {
-    reject_symlink(path)?;
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(serde_json::json!({}));
-        }
-        Err(error) => return Err(AgentHookInstallError::Io(error)),
-    };
-    if bytes.len() > MAX_AGENT_CONFIG_BYTES {
-        return Err(AgentHookInstallError::TooLarge);
-    }
-    serde_json::from_slice(&bytes).map_err(AgentHookInstallError::Json)
-}
-
-fn write_configuration(
-    path: &Path,
-    configuration: &serde_json::Value,
-) -> Result<(), AgentHookInstallError> {
-    let parent = path.parent().ok_or(AgentHookInstallError::UnsafePath)?;
-    fs::create_dir_all(parent)?;
-    reject_symlink(parent)?;
-    if !parent.is_dir() {
-        return Err(AgentHookInstallError::UnsafePath);
-    }
-    let bytes = serde_json::to_vec_pretty(configuration)?;
-    if bytes.len() > MAX_AGENT_CONFIG_BYTES {
-        return Err(AgentHookInstallError::TooLarge);
-    }
-    let temporary = parent.join(format!(".aizu-hooks-{}.tmp", uuid::Uuid::new_v4()));
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temporary)?;
-    let result = (|| {
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        }
-        OpenOptions::new().read(true).open(parent)?.sync_all()
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result.map_err(AgentHookInstallError::Io)
-}
-
-fn reject_symlink(path: &Path) -> Result<(), AgentHookInstallError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(AgentHookInstallError::UnsafePath),
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(AgentHookInstallError::Io(error)),
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum AgentHookInstallError {
-    #[error("the user home directory is unavailable")]
-    HomeUnavailable,
-    #[error("an agent configuration path is unsafe")]
-    UnsafePath,
-    #[error("an agent configuration exceeds the size limit")]
-    TooLarge,
-    #[error("an agent configuration file could not be accessed")]
-    Io(#[from] std::io::Error),
-    #[error("an agent configuration is not valid JSON")]
-    Json(#[from] serde_json::Error),
-    #[error("an agent configuration has an incompatible hook structure")]
-    Integration(#[from] aizu_core::IntegrationError),
 }
 
 fn handlers(groups: &serde_json::Value) -> Vec<serde_json::Value> {
@@ -487,7 +341,18 @@ mod tests {
         .expect("write Codex settings");
         fs::write(&target, br#"{"existingClaude":true}"#).expect("write Claude settings");
 
-        configure_hooks_at(home.path(), &home.path().join(".local/bin/aizu"))
+        let executable = home.path().join(".local/bin/aizu");
+        fs::create_dir_all(executable.parent().expect("executable directory"))
+            .expect("create executable directory");
+        fs::write(&executable, b"aizu test executable").expect("write executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
+                .expect("set executable permissions");
+        }
+
+        configure_hooks_at(home.path(), &executable)
             .expect("safe linked settings should be merged");
 
         assert!(

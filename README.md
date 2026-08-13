@@ -97,21 +97,20 @@ The hard-link commit intentionally fails if anything already occupies the
 target path and never follows a destination symlink. Do not remove or overwrite
 that item until you have established who owns it.
 
-Generate and merge the first-party hooks on that same source machine:
+Install the first-party hooks on that same source machine:
 
 ```bash
-"$HOME/.local/bin/aizu" integration-config \
-  --agent codex \
-  --aizu-path "$HOME/.local/bin/aizu"
-"$HOME/.local/bin/aizu" integration-config \
-  --agent claude-code \
-  --aizu-path "$HOME/.local/bin/aizu"
+"$HOME/.local/bin/aizu" integration-install --json
 ```
 
-The commands print configuration fragments; merge them into
-`~/.codex/hooks.json` and `~/.claude/settings.json` without removing unrelated
-hooks. Codex requires explicit hook approval on that machine. Verify the source
-before configuring the receiving Mac:
+This command parses both existing JSON files, preserves unrelated settings and
+hook handlers, and atomically updates `~/.codex/hooks.json` and
+`~/.claude/settings.json`. It refuses malformed, oversized, externally linked,
+or unsafe configuration paths before changing either file. Concurrent Aizu
+installers are serialized with `~/.aizu/hooks.lock`; do not edit the agent
+configuration files concurrently because external editors do not use that
+lock. Codex requires explicit hook approval on that machine after installation.
+Verify the source before configuring the receiving Mac:
 
 ```bash
 "$HOME/.local/bin/aizu" agents --json
@@ -181,10 +180,10 @@ The `application` field is the Aizu CLI version. A successful version response
 checks compatibility; it is not cryptographic proof of ownership, so do not use
 this update procedure for an unfamiliar file. The staging file is created in
 the same directory so the final rename stays on one filesystem; a failed build
-or validation leaves the installed CLI untouched. Re-run both
-`integration-config` commands after an Aizu or agent update and review the
-resulting fragments before merging them. Existing spooled events remain on the
-source and are delivered after the SSH connection resumes.
+or validation leaves the installed CLI untouched. Re-run
+`integration-install --json` after an Aizu or agent update, then review and
+approve changed hooks in Codex. Existing spooled events remain on the source
+and are delivered after the SSH connection resumes.
 
 The **Running agents** list includes both this Mac and connected SSH sources.
 For a remote source, the desktop periodically runs the fixed
@@ -237,15 +236,18 @@ mise exec -- pnpm tauri dev
 ## Agent hooks
 
 Codex and Claude Code are first-party integrations. The CLI converts their
-lifecycle hook JSON from stdin into the same durable local spool. Generate a
-configuration fragment with the absolute installed CLI path, then merge it
-into `~/.codex/hooks.json` or `~/.claude/settings.json` without removing
-existing hooks:
+lifecycle hook JSON from stdin into the same durable local spool. Install both
+integrations for the current user with:
 
 ```bash
-aizu integration-config --agent codex --aizu-path "$HOME/.local/bin/aizu"
-aizu integration-config --agent claude-code --aizu-path "$HOME/.local/bin/aizu"
+aizu integration-install --json
 ```
+
+The command defaults to its own absolute executable path. Use
+`--agent codex` or `--agent claude-code` to update only one integration, and
+`--aizu-path /absolute/path/to/aizu` only when preparing configuration for a
+different installed CLI path. `integration-config` remains available as a
+read-only preview command.
 
 Codex requires reviewing and trusting a new or changed command hook in its
 hook UI before it will run. Aizu monitors Codex and Claude Code process

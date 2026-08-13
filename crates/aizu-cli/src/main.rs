@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 
 use aizu_core::{
     AgentAdapter, AgentKind as CoreAgentKind, BridgeFrame, ClaudeCodeAdapter, CodexAdapter,
-    EmitRequest, EventKind, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool, SpoolError,
-    StatePaths, Urgency, hook_configuration, parse_strict_json_value,
+    EmitRequest, EventKind, HookInstallOutcome, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool,
+    SpoolError, StatePaths, Urgency, hook_configuration, install_agent_hooks,
+    parse_strict_json_value,
 };
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -56,6 +57,8 @@ enum Command {
     Identity(IdentityArgs),
     /// Print a first-party agent hook configuration for explicit installation.
     IntegrationConfig(IntegrationConfigArgs),
+    /// Safely merge and install first-party agent hooks for this user.
+    IntegrationInstall(IntegrationInstallArgs),
     /// Print application and protocol versions.
     Version(VersionArgs),
     /// List running supported agents without exposing process details.
@@ -148,6 +151,19 @@ struct IntegrationConfigArgs {
     /// Absolute path agents will invoke for the installed Aizu CLI.
     #[arg(long, value_name = "PATH")]
     aizu_path: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct IntegrationInstallArgs {
+    /// Install only one agent integration. Omit to install both.
+    #[arg(long, value_enum)]
+    agent: Option<AgentArg>,
+    /// Absolute Aizu CLI path embedded in hooks. Defaults to this executable.
+    #[arg(long, value_name = "PATH")]
+    aizu_path: Option<PathBuf>,
+    /// Print a machine-readable result without configuration paths.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -259,6 +275,19 @@ struct AgentProcessesReport<'a> {
     agents: Vec<AgentProcessReport>,
 }
 
+#[derive(Serialize)]
+struct IntegrationInstallReport<'a> {
+    application: &'a str,
+    integrations: Vec<InstalledIntegration>,
+}
+
+#[derive(Serialize)]
+struct InstalledIntegration {
+    agent: CoreAgentKind,
+    status: &'static str,
+    approval_required: bool,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
@@ -298,6 +327,7 @@ fn run() -> Result<u8, Box<dyn Error>> {
             );
             Ok(0)
         }
+        Command::IntegrationInstall(args) => run_integration_install(args),
         command => {
             let spool = open_spool(&paths, cli.display_name)?;
             match command {
@@ -313,6 +343,7 @@ fn run() -> Result<u8, Box<dyn Error>> {
                 Command::Bridge(_)
                 | Command::Hook(_)
                 | Command::IntegrationConfig(_)
+                | Command::IntegrationInstall(_)
                 | Command::Agents(_)
                 | Command::Version(_) => {
                     unreachable!("handled above")
@@ -320,6 +351,55 @@ fn run() -> Result<u8, Box<dyn Error>> {
             }
         }
     }
+}
+
+fn run_integration_install(args: IntegrationInstallArgs) -> Result<u8, Box<dyn Error>> {
+    let base = directories::BaseDirs::new().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "the user home directory is unavailable",
+        )
+    })?;
+    let executable = args.aizu_path.unwrap_or(std::env::current_exe()?);
+    let selected: Vec<_> = match args.agent {
+        Some(agent) => vec![agent.into()],
+        None => vec![CoreAgentKind::Codex, CoreAgentKind::ClaudeCode],
+    };
+    let integrations = install_agent_hooks(base.home_dir(), &executable, &selected)?
+        .into_iter()
+        .map(|result| InstalledIntegration {
+            agent: result.agent,
+            status: match result.outcome {
+                HookInstallOutcome::Created => "created",
+                HookInstallOutcome::Updated => "updated",
+                HookInstallOutcome::AlreadyConfigured => "already_configured",
+            },
+            approval_required: result.agent == CoreAgentKind::Codex,
+        })
+        .collect::<Vec<_>>();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&IntegrationInstallReport {
+                application: env!("CARGO_PKG_VERSION"),
+                integrations,
+            })?
+        );
+    } else {
+        for integration in integrations {
+            let name = match integration.agent {
+                CoreAgentKind::Codex => "Codex",
+                CoreAgentKind::ClaudeCode => "Claude Code",
+            };
+            let approval = if integration.approval_required {
+                "; approve the command hooks in Codex"
+            } else {
+                ""
+            };
+            println!("{name}: {}{approval}", integration.status);
+        }
+    }
+    Ok(0)
 }
 
 fn open_spool(paths: &StatePaths, display_name: Option<String>) -> Result<Spool, SpoolError> {
