@@ -1,5 +1,5 @@
 import { AlertTriangle, RefreshCw, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AppShell } from "./components/AppShell";
 import { Onboarding } from "./components/Onboarding";
@@ -15,28 +15,39 @@ export function App({ backend = defaultBackend }: AppProps) {
   const [view, setView] = useState<AppView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const viewGeneration = useRef(0);
+
+  // Backend pushes can arrive while an IPC command is pending. A response
+  // started before that push must not replace the newer monitor state.
+  const applyView = useCallback((nextView: AppView) => {
+    viewGeneration.current += 1;
+    setView(nextView);
+  }, []);
 
   const load = useCallback(async () => {
     setError(null);
+    const generation = viewGeneration.current;
     try {
-      setView(await backend.getView());
+      const nextView = await backend.getView();
+      if (viewGeneration.current === generation) applyView(nextView);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : messages("system").appLoadError);
     }
-  }, [backend]);
+  }, [applyView, backend]);
 
   useEffect(() => {
     let active = true;
     let unsubscribe: (() => void) | undefined;
+    const initialGeneration = viewGeneration.current;
     void backend.getView().then((initialView) => {
-      if (active) setView(initialView);
+      if (active && viewGeneration.current === initialGeneration) applyView(initialView);
     }).catch((caught: unknown) => {
       if (active) {
         setError(caught instanceof Error ? caught.message : messages("system").appLoadError);
       }
     });
     void backend.subscribe((nextView) => {
-      if (active) setView(nextView);
+      if (active) applyView(nextView);
     }).then((unlisten) => {
       if (active) unsubscribe = unlisten;
       else unlisten();
@@ -46,7 +57,7 @@ export function App({ backend = defaultBackend }: AppProps) {
       active = false;
       unsubscribe?.();
     };
-  }, [backend]);
+  }, [applyView, backend]);
 
   useEffect(() => {
     if (error === null || view === null) return undefined;
@@ -62,8 +73,10 @@ export function App({ backend = defaultBackend }: AppProps) {
   const runActionResult = useCallback(async (action: () => Promise<AppView>) => {
     setBusy(true);
     setError(null);
+    const generation = viewGeneration.current;
     try {
-      setView(await action());
+      const nextView = await action();
+      if (viewGeneration.current === generation) applyView(nextView);
       return true;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : messages(view?.preferences.language ?? "system").actionError);
@@ -71,7 +84,7 @@ export function App({ backend = defaultBackend }: AppProps) {
     } finally {
       setBusy(false);
     }
-  }, [view?.preferences.language]);
+  }, [applyView, view?.preferences.language]);
   const runAction = useCallback(async (action: () => Promise<AppView>) => {
     await runActionResult(action);
   }, [runActionResult]);

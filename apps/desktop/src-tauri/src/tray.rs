@@ -35,9 +35,9 @@ impl TrayUi {
         let tray = self.tray.clone();
         let presentation = Arc::clone(&self.presentation);
         app.clone().run_on_main_thread(move || {
-            let view = match app.state::<DesktopState>().lock() {
-                Ok(state) => state.view(),
-                Err(_) => return,
+            let view = match app.state::<DesktopState>().try_lock() {
+                Ok(Some(state)) => state.view(),
+                Err(_) | Ok(None) => return,
             };
             let next = TrayPresentation::from_view(&view);
             let Ok(mut current) = presentation.lock() else {
@@ -306,7 +306,7 @@ fn handle_menu_event(app: &AppHandle<Wry>, event: &tauri::menu::MenuEvent) {
     match event.id.as_ref() {
         "open" => show_main_window(app),
         "test-notification" => {
-            if let Ok(mut state) = app.state::<DesktopState>().lock() {
+            if let Ok(Some(mut state)) = app.state::<DesktopState>().try_lock() {
                 let _ = state.send_test_notification();
             }
         }
@@ -318,10 +318,10 @@ fn handle_menu_event(app: &AppHandle<Wry>, event: &tauri::menu::MenuEvent) {
 }
 
 fn reconnect_all(app: &AppHandle<Wry>) {
-    let result = app
-        .state::<DesktopState>()
-        .lock()
-        .and_then(|mut state| state.reconnect_all_remote_sources());
+    let result = match app.state::<DesktopState>().try_lock() {
+        Ok(Some(mut state)) => state.reconnect_all_remote_sources(),
+        Ok(None) | Err(_) => return,
+    };
 
     if let Ok(view) = result {
         if let Some(tray) = app.try_state::<TrayUi>() {
@@ -339,10 +339,13 @@ pub fn show_main_window(app: &AppHandle<Wry>) {
 }
 
 fn toggle_pause(app: &AppHandle<Wry>) {
-    let result = app.state::<DesktopState>().lock().and_then(|mut state| {
-        let paused = !state.view().paused;
-        state.set_paused(paused)
-    });
+    let result = match app.state::<DesktopState>().try_lock() {
+        Ok(Some(mut state)) => {
+            let paused = !state.view().paused;
+            state.set_paused(paused)
+        }
+        Ok(None) | Err(_) => return,
+    };
 
     if let Ok(view) = result {
         if let Some(tray) = app.try_state::<TrayUi>() {

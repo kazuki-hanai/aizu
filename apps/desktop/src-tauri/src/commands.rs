@@ -190,15 +190,21 @@ pub fn install_cli(
 #[allow(clippy::needless_pass_by_value)]
 pub async fn configure_agents(app: AppHandle<Wry>) -> Result<AppView, DesktopError> {
     let worker_app = app.clone();
-    let view = run_agent_setup_task(move || {
+    run_agent_setup_task(move || {
         let source = bundled_cli_path(&worker_app)?;
         let state = worker_app.state::<DesktopState>();
         let mut state = state.lock()?;
         state.install_cli(&source)?;
-        state.configure_agent_hooks()
+        state.configure_agent_hooks()?;
+        Ok(())
     })
     .await?;
-    publish(&app, &view);
+    let state = app.state::<DesktopState>();
+    let state = state.lock()?;
+    let view = state.view();
+    let _ = app.emit("aizu://view-changed", &view);
+    drop(state);
+    sync_tray(&app);
     Ok(view)
 }
 
@@ -249,10 +255,14 @@ fn set_autostart(app: &AppHandle<Wry>, enabled: bool) -> Result<(), DesktopError
 }
 
 fn publish(app: &AppHandle<Wry>, view: &AppView) {
+    sync_tray(app);
+    let _ = app.emit("aizu://view-changed", view);
+}
+
+fn sync_tray(app: &AppHandle<Wry>) {
     if let Some(tray) = app.try_state::<TrayUi>() {
         let _ = tray.sync_from_state(app);
     }
-    let _ = app.emit("aizu://view-changed", view);
 }
 
 #[cfg(test)]

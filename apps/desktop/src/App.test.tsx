@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -56,6 +56,40 @@ describe("Aizu desktop shell", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Setup failed");
     await user.click(screen.getByRole("button", { name: "Dismiss error" }));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps a newer monitor update when agent setup finishes", async () => {
+    const user = userEvent.setup();
+    const initialView = makeView({ notificationPermission: "granted" });
+    const backend = makeBackend(initialView);
+    let publishView: ((view: AppView) => void) | undefined;
+    let resolveSetup: ((view: AppView) => void) | undefined;
+    backend.subscribe = (onView) => {
+      publishView = onView;
+      return Promise.resolve(() => undefined);
+    };
+    backend.configureAgents = () => new Promise<AppView>((resolve) => {
+      resolveSetup = resolve;
+    });
+    render(<App backend={backend} />);
+
+    await waitFor(() => expect(publishView).toBeTypeOf("function"));
+    await user.click(await screen.findByRole("button", { name: "Set up" }));
+    const newerView = makeView({
+      notificationPermission: "granted",
+      agentMonitors: initialView.agentMonitors.map((agent) => ({
+        ...agent,
+        hookStatus: agent.agent === "codex" ? "approvalRequired" : "configured",
+      })),
+    });
+    act(() => {
+      publishView?.(newerView);
+      resolveSetup?.(initialView);
+    });
+
+    expect(await screen.findByText("Hooks are installed; approve the commands in Codex.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Confirm approval" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Set up" })).not.toBeInTheDocument();
   });
 
   it("lists every running Codex and Claude Code process", async () => {
