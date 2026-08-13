@@ -8,6 +8,8 @@ type BannerAppProps = {
   client?: BannerClient;
 };
 
+const BANNER_RECONCILIATION_INTERVAL_MS = 500;
+
 export function BannerApp({ client = bannerBackend }: BannerAppProps) {
   const [banners, setBanners] = useState<BannerNotification[]>([]);
   const [unavailable, setUnavailable] = useState(false);
@@ -53,8 +55,11 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
   useEffect(() => {
     let active = true;
     let unsubscribe: (() => void) | undefined;
-    void client.subscribe(() => {
-      if (active) void refresh();
+    void client.subscribe((nextBanners) => {
+      if (!active) return;
+      refreshGeneration.current += 1;
+      setBanners(nextBanners);
+      setUnavailable(false);
     }).then((stop) => {
       if (active) {
         unsubscribe = stop;
@@ -67,9 +72,13 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
     queueMicrotask(() => {
       if (active) void refresh();
     });
+    const reconciliation = window.setInterval(() => {
+      if (active) void refresh();
+    }, BANNER_RECONCILIATION_INTERVAL_MS);
     return () => {
       active = false;
       refreshGeneration.current += 1;
+      window.clearInterval(reconciliation);
       unsubscribe?.();
     };
   }, [client, refresh]);

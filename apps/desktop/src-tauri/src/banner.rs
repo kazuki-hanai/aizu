@@ -13,7 +13,7 @@ use tauri::{
 };
 
 use crate::{
-    model::{Notification, NotificationSound},
+    model::{Notification, NotificationSound, TextSize},
     notifier::NotifyError,
 };
 
@@ -117,6 +117,33 @@ impl BannerState {
             .lock()
             .map(|banners| banners.iter().cloned().collect())
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))
+    }
+
+    fn update_text_size(&self, text_size: TextSize) -> Result<bool, NotifyError> {
+        let mut banners = self
+            .banners
+            .lock()
+            .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
+        if banners.is_empty() || banners.iter().all(|banner| banner.text_size == text_size) {
+            return Ok(false);
+        }
+        let mut pending_sound = self.pending_sound.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
+        })?;
+        let mut retry = self.retry.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner retry state is unavailable".to_owned())
+        })?;
+
+        for banner in &mut *banners {
+            banner.text_size = text_size;
+        }
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Some(pending) = pending_sound.as_mut() {
+            pending.generation = generation;
+        }
+        *retry = PresentationRetry::default();
+        self.dirty.store(true, Ordering::Release);
+        Ok(true)
     }
 
     fn begin_presentation(&self, now: Instant) -> Option<u64> {
@@ -288,8 +315,7 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     }
     let window = ensure_window(app)?;
     resize(app, MIN_BANNER_HEIGHT)?;
-    window
-        .emit("aizu://banners-changed", ())
+    app.emit_to(BANNER_WINDOW, "aizu://banners-changed", &snapshot)
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
     window
         .show()
@@ -302,6 +328,13 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
 
 pub fn banners(app: &AppHandle<Wry>) -> Result<Vec<Notification>, NotifyError> {
     app.state::<BannerState>().snapshot()
+}
+
+pub fn update_text_size(app: &AppHandle<Wry>, text_size: TextSize) -> Result<(), NotifyError> {
+    if app.state::<BannerState>().update_text_size(text_size)? {
+        request_present(app)?;
+    }
+    Ok(())
 }
 
 pub fn dismiss(app: &AppHandle<Wry>, id: i32) -> Result<(), NotifyError> {
@@ -590,5 +623,60 @@ mod tests {
                 .begin_presentation(now + Duration::from_mins(1))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn text_size_refreshes_visible_banners_without_replaying_sound() {
+        let state = BannerState::default();
+        let now = Instant::now();
+        let mut audible = notification(1, "visible");
+        audible.sound = Some(crate::model::NotificationSound::Default);
+        state.push(audible).expect("notification");
+        let visible_generation = state.begin_presentation(now).expect("presentation");
+        assert_eq!(
+            state
+                .take_pending_sound(visible_generation)
+                .expect("initial sound"),
+            Some(crate::model::NotificationSound::Default)
+        );
+        state.finish_presentation(visible_generation, true, now);
+
+        assert!(
+            state
+                .update_text_size(crate::model::TextSize::Large)
+                .expect("update text size")
+        );
+        let refreshed_generation = state.begin_presentation(now).expect("refresh presentation");
+        assert_ne!(visible_generation, refreshed_generation);
+        assert_eq!(
+            state.snapshot().expect("banner snapshot")[0].text_size,
+            crate::model::TextSize::Large
+        );
+        assert_eq!(
+            state
+                .take_pending_sound(refreshed_generation)
+                .expect("refresh sound"),
+            None
+        );
+    }
+
+    #[test]
+    fn text_size_invalidates_an_in_flight_banner_presentation() {
+        let state = BannerState::default();
+        let now = Instant::now();
+        state
+            .push(notification(1, "visible"))
+            .expect("notification");
+        let stale_generation = state.begin_presentation(now).expect("presentation");
+
+        assert!(
+            state
+                .update_text_size(crate::model::TextSize::Large)
+                .expect("update text size")
+        );
+        state.finish_presentation(stale_generation, true, now);
+
+        let refreshed_generation = state.begin_presentation(now).expect("refresh presentation");
+        assert_ne!(stale_generation, refreshed_generation);
     }
 }

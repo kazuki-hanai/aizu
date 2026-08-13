@@ -141,6 +141,10 @@ pub fn update_preferences(
     let view = state.lock()?.update_preferences(request)?;
     if delivery == NotificationDelivery::System {
         let _ = crate::banner::clear(&app);
+    } else {
+        // Preferences are already durably committed. Banner presentation is
+        // retried independently and must not turn that commit into an error.
+        let _ = crate::banner::update_text_size(&app, view.preferences.text_size);
     }
     publish(&app, &view);
     Ok(view)

@@ -17,7 +17,7 @@ export type BannerClient = {
   getBanners: () => Promise<BannerNotification[]>;
   dismiss: (id: number) => Promise<void>;
   resize: (height: number) => Promise<void>;
-  subscribe: (onChange: () => void) => Promise<UnlistenFn>;
+  subscribe: (onChange: (banners: BannerNotification[]) => void) => Promise<UnlistenFn>;
 };
 
 export type BackendClient = {
@@ -121,7 +121,9 @@ export const bannerBackend: BannerClient = {
     await invokeBackend("resize_banner", { height });
   },
   subscribe: async (onChange) =>
-    listen("aizu://banners-changed", onChange),
+    listen<unknown>("aizu://banners-changed", (event) => {
+      onChange(bannerNotificationSchema.array().parse(event.payload));
+    }),
 };
 
 const defaultPreferences: Preferences = {

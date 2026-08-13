@@ -117,16 +117,8 @@ describe("Aizu desktop MVP", () => {
 
     const systemPreferences = (await invokeView("get_app_view")).preferences;
     await invokeView("update_preferences", {
-      request: { ...systemPreferences, notificationDelivery: "aizuBanner", textSize: "large" },
+      request: { ...systemPreferences, notificationDelivery: "aizuBanner" },
     });
-    await browser.waitUntil(async () =>
-      (await browser.execute(() => document.documentElement.dataset.textSize)) === "large",
-    { timeout: 2_000, timeoutMsg: "text size preference was not applied to the main window" });
-    const largeHeadingSize = await browser.execute(() => {
-      const heading = document.querySelector(".topbar h1");
-      return heading instanceof HTMLElement ? Number.parseFloat(getComputedStyle(heading).fontSize) : 0;
-    });
-    expect(largeHeadingSize).toBeGreaterThan(standardHeadingSize);
     await invokeView("send_test_notification");
     const banners = await browser.tauri.execute(({ core }) =>
       core.invoke("get_banners")) as CapturedNotification[];
@@ -137,7 +129,35 @@ describe("Aizu desktop MVP", () => {
     await browser.switchToWindow("banner");
     await expect($("strong=Aizu test notification")).toBeDisplayed();
     await expect($("span=Aizu Banner is ready.")).toBeDisplayed();
-    await expect($(".aizu-banner[data-text-size=large]")).toBeDisplayed();
+    const banner = $(".aizu-banner");
+    expect(await banner.getAttribute("data-text-size")).toBe("standard");
+    await browser.switchToWindow("main");
+    const bannerPreferences = (await invokeView("get_app_view")).preferences;
+    await invokeView("update_preferences", {
+      request: { ...bannerPreferences, textSize: "large" },
+    });
+    await browser.waitUntil(async () =>
+      (await browser.execute(() => document.documentElement.dataset.textSize)) === "large",
+    { timeout: 2_000, timeoutMsg: "text size preference was not applied to the main window" });
+    const largeHeadingSize = await browser.execute(() => {
+      const heading = document.querySelector(".topbar h1");
+      return heading instanceof HTMLElement ? Number.parseFloat(getComputedStyle(heading).fontSize) : 0;
+    });
+    expect(largeHeadingSize).toBeGreaterThan(standardHeadingSize);
+    await browser.switchToWindow("banner");
+    await browser.waitUntil(async () => {
+      const queued = await browser.tauri.execute(({ core }) => core.invoke("get_banners")) as CapturedNotification[];
+      return queued[0]?.textSize === "large";
+    }, {
+      timeout: 2_000,
+      timeoutMsg: "queued Aizu Banner did not adopt the updated text size",
+    });
+    await browser.waitUntil(async () =>
+      (await $(".aizu-banner").getAttribute("data-text-size")) === "large",
+    {
+      timeout: 2_000,
+      timeoutMsg: "visible Aizu Banner did not adopt the updated text size",
+    });
     const entranceMotion = await browser.execute(() => {
       const banner = document.querySelector(".aizu-banner");
       if (!(banner instanceof HTMLElement)) return null;
@@ -150,7 +170,6 @@ describe("Aizu desktop MVP", () => {
     expect(entranceMotion?.animationName).toBe(
       entranceMotion?.reducedMotion ? "none" : "aizu-banner-enter",
     );
-    const banner = $(".aizu-banner");
     const swipeHandle = $(".aizu-banner__body");
     await browser.action("pointer", { parameters: { pointerType: "mouse" } })
       .move({ duration: 0, origin: swipeHandle, x: 0, y: 0 })
