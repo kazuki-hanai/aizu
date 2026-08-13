@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use aizu_core::{
     DesktopState as CoreDesktopState, EventKind as CoreEventKind, HistoryItem, NotificationPolicy,
@@ -61,6 +61,8 @@ pub enum DesktopError {
     CliInstall,
     #[error("Codex and Claude Code hooks could not be configured safely: {0}")]
     AgentConfiguration(String),
+    #[error("Codex and Claude Code setup stopped unexpectedly; restart Aizu before trying again")]
+    AgentSetupTask,
     #[error("Codex and Claude Code hooks and the Aizu CLI must be configured first")]
     AgentSetupIncomplete,
     #[error(
@@ -1102,6 +1104,14 @@ impl DesktopState {
     pub fn lock(&self) -> Result<MutexGuard<'_, AppService>, DesktopError> {
         self.0.lock().map_err(|_| DesktopError::Lock)
     }
+
+    pub fn try_lock(&self) -> Result<Option<MutexGuard<'_, AppService>>, DesktopError> {
+        match self.0.try_lock() {
+            Ok(state) => Ok(Some(state)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Poisoned(_)) => Err(DesktopError::Lock),
+        }
+    }
 }
 
 fn validate_preferences(preferences: &Preferences) -> Result<(), DesktopError> {
@@ -1146,8 +1156,8 @@ mod tests {
     };
 
     use super::{
-        AppService, PipelineNotifier, derive_agent_monitors, map_history_item, replace_managed_cli,
-        stable_notification_id,
+        AppService, DesktopState, PipelineNotifier, derive_agent_monitors, map_history_item,
+        replace_managed_cli, stable_notification_id,
     };
 
     fn service(notifier: Arc<FakeNotifier>) -> AppService {
@@ -1159,6 +1169,16 @@ mod tests {
         let store = SettingsStore::new(directory.join("settings.json"));
         AppService::new(notifier, store, &StatePaths::new(directory.join("state")))
             .expect("service should initialize")
+    }
+
+    #[test]
+    fn tray_access_does_not_wait_for_busy_desktop_state() {
+        let state = DesktopState::new(service(FakeNotifier::with_permission(
+            PermissionStatus::Granted,
+        )));
+        let _busy = state.lock().expect("desktop state lock");
+
+        assert!(state.try_lock().expect("non-blocking lock check").is_none());
     }
 
     #[test]

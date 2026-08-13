@@ -188,16 +188,34 @@ pub fn install_cli(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn configure_agents(
-    app: AppHandle<Wry>,
-    state: State<'_, DesktopState>,
-) -> Result<AppView, DesktopError> {
-    let source = bundled_cli_path(&app)?;
-    let mut state = state.lock()?;
-    state.install_cli(&source)?;
-    let view = state.configure_agent_hooks()?;
-    publish(&app, &view);
+pub async fn configure_agents(app: AppHandle<Wry>) -> Result<AppView, DesktopError> {
+    let worker_app = app.clone();
+    run_agent_setup_task(move || {
+        let source = bundled_cli_path(&worker_app)?;
+        let state = worker_app.state::<DesktopState>();
+        let mut state = state.lock()?;
+        state.install_cli(&source)?;
+        state.configure_agent_hooks()?;
+        Ok(())
+    })
+    .await?;
+    let state = app.state::<DesktopState>();
+    let state = state.lock()?;
+    let view = state.view();
+    let _ = app.emit("aizu://view-changed", &view);
+    drop(state);
+    sync_tray(&app);
     Ok(view)
+}
+
+async fn run_agent_setup_task<T, F>(task: F) -> Result<T, DesktopError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, DesktopError> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|_| DesktopError::AgentSetupTask)?
 }
 
 #[tauri::command]
@@ -237,8 +255,26 @@ fn set_autostart(app: &AppHandle<Wry>, enabled: bool) -> Result<(), DesktopError
 }
 
 fn publish(app: &AppHandle<Wry>, view: &AppView) {
+    sync_tray(app);
+    let _ = app.emit("aizu://view-changed", view);
+}
+
+fn sync_tray(app: &AppHandle<Wry>) {
     if let Some(tray) = app.try_state::<TrayUi>() {
         let _ = tray.sync_from_state(app);
     }
-    let _ = app.emit("aizu://view-changed", view);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn agent_setup_task_runs_off_the_calling_thread() {
+        let calling_thread = std::thread::current().id();
+        let worker_thread = tauri::async_runtime::block_on(super::run_agent_setup_task(|| {
+            Ok(std::thread::current().id())
+        }))
+        .expect("blocking setup task");
+
+        assert_ne!(calling_thread, worker_thread);
+    }
 }
