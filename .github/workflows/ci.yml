@@ -1,0 +1,313 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-contract:
+    name: docs-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.19.0
+      - name: Validate documentation contracts
+        run: node scripts/check-docs-contract.mjs
+
+  branding-assets:
+    name: branding-assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.19.0
+      - name: Validate branding sources and generated assets
+        run: ./scripts/check-icons.sh
+
+  rust-quality:
+    name: rust-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+      - name: Install Linux desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Prepare bundled CLI resource
+        run: |
+          cargo build --locked -p aizu-cli
+          install -D -m 755 target/debug/aizu apps/desktop/src-tauri/resources/bin/aizu
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Run Rust tests
+        run: cargo test --workspace --all-features --locked
+
+  frontend-quality:
+    name: frontend-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.19.0
+      - name: Enable pinned pnpm
+        run: corepack enable
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint frontend
+        run: pnpm lint
+      - name: Type-check frontend
+        run: pnpm typecheck
+      - name: Test frontend
+        run: pnpm test
+      - name: Build frontend
+        run: pnpm build
+
+  ssh-integration-linux:
+    name: ssh-integration-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.97.1
+      - name: Install OpenSSH server fixture
+        run: sudo apt-get update && sudo apt-get install --yes openssh-server
+      - name: Build and install isolated remote CLI
+        run: |
+          cargo build --locked -p aizu-cli
+          install -d -m 700 "$HOME/.ssh"
+          sudo useradd --create-home --shell /bin/bash aizu-ci
+          sudo passwd --delete aizu-ci
+          sudo install -d -o aizu-ci -g aizu-ci -m 700 \
+            /home/aizu-ci/.local/bin /home/aizu-ci/.local/state /home/aizu-ci/.ssh
+          sudo install -o aizu-ci -g aizu-ci -m 755 \
+            target/debug/aizu /home/aizu-ci/.local/bin/aizu
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/aizu-ci-key"
+          sudo install -o aizu-ci -g aizu-ci -m 600 \
+            "$RUNNER_TEMP/aizu-ci-key.pub" /home/aizu-ci/.ssh/authorized_keys
+      - name: Start isolated sshd and verify strict bridge transport
+        run: |
+          host_key="$RUNNER_TEMP/sshd-host-key"
+          config="$RUNNER_TEMP/sshd-config"
+          known_hosts="$RUNNER_TEMP/known_hosts"
+          ssh-keygen -q -t ed25519 -N '' -f "$host_key"
+          printf '%s\n' \
+            'Port 22222' \
+            'ListenAddress 127.0.0.1' \
+            "HostKey $host_key" \
+            'AuthorizedKeysFile .ssh/authorized_keys' \
+            'PubkeyAuthentication yes' \
+            'PasswordAuthentication no' \
+            'KbdInteractiveAuthentication no' \
+            'UsePAM no' \
+            'AllowUsers aizu-ci' \
+            'AllowTcpForwarding no' \
+            'X11Forwarding no' \
+            "PidFile $RUNNER_TEMP/sshd.pid" > "$config"
+          sudo mkdir -p /run/sshd
+          sudo /usr/sbin/sshd -f "$config" -E "$RUNNER_TEMP/sshd.log"
+          trap 'status=$?; if [ "$status" -ne 0 ]; then sudo cat "$RUNNER_TEMP/sshd.log"; fi; sudo kill -TERM "$(cat "$RUNNER_TEMP/sshd.pid")"; exit "$status"' EXIT
+          ssh-keyscan -p 22222 127.0.0.1 > "$known_hosts" 2>/dev/null
+          install -m 600 "$known_hosts" "$HOME/.ssh/known_hosts"
+          printf '%s\n' \
+            'Host aizu-ci' \
+            '  HostName 127.0.0.1' \
+            '  Port 22222' \
+            '  User aizu-ci' \
+            "  IdentityFile $RUNNER_TEMP/aizu-ci-key" > "$HOME/.ssh/config"
+          chmod 600 "$HOME/.ssh/config"
+          ssh -T -n \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ClearAllForwardings=yes \
+            aizu-ci \
+            'HOME=/home/aizu-ci XDG_STATE_HOME=/home/aizu-ci/.local/state exec /home/aizu-ci/.local/bin/aizu emit task.completed --title "SSH integration completed" --outcome succeeded --json' >/dev/null
+          output=$(ssh -T -n \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ClearAllForwardings=yes \
+            aizu-ci \
+            'HOME=/home/aizu-ci XDG_STATE_HOME=/home/aizu-ci/.local/state exec /home/aizu-ci/.local/bin/aizu bridge --protocol 1 --after 0')
+          printf '%s\n' "$output" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const frames = input.trim().split("\n").map(line => JSON.parse(line));
+              if (frames[0]?.type !== "hello" || frames[0]?.protocol_version !== 1) process.exit(1);
+              if (frames[1]?.type !== "event" || frames[1]?.event?.kind !== "task.completed") process.exit(1);
+            });'
+          mismatch_status=0
+          mismatch=$(ssh -T -n \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ClearAllForwardings=yes \
+            aizu-ci \
+            'HOME=/home/aizu-ci XDG_STATE_HOME=/home/aizu-ci/.local/state exec /home/aizu-ci/.local/bin/aizu bridge --protocol 999 --after 0') || mismatch_status=$?
+          if [ "$mismatch_status" -ne 2 ]; then
+            echo "protocol mismatch returned unexpected status: $mismatch_status"
+            exit 1
+          fi
+          printf '%s\n' "$mismatch" | node -e '
+            let input = "";
+            process.stdin.on("data", chunk => input += chunk);
+            process.stdin.on("end", () => {
+              const frame = JSON.parse(input.trim());
+              if (frame.type !== "error" || frame.code !== "incompatible_protocol") process.exit(1);
+            });'
+          sudo mv /home/aizu-ci/.local/bin/aizu /home/aizu-ci/.local/bin/aizu.disabled
+          if ssh -T -n \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ClearAllForwardings=yes \
+            aizu-ci \
+            'HOME=/home/aizu-ci XDG_STATE_HOME=/home/aizu-ci/.local/state exec /home/aizu-ci/.local/bin/aizu bridge --protocol 1 --after 0' \
+            >"$RUNNER_TEMP/missing-cli.stdout" 2>"$RUNNER_TEMP/missing-cli.stderr"; then
+            echo "missing remote CLI unexpectedly succeeded"
+            exit 1
+          fi
+          sudo mv /home/aizu-ci/.local/bin/aizu.disabled /home/aizu-ci/.local/bin/aizu
+
+  build-check-macos:
+    name: build-check-macos
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.97.1
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.19.0
+      - name: Enable pinned pnpm and install dependencies
+        run: corepack enable && pnpm install --frozen-lockfile
+      - name: Build unsigned macOS application
+        run: pnpm --filter @aizu/desktop exec tauri build --debug --bundles app
+
+  build-check-cross-platform:
+    name: build-check-cross-platform
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.97.1
+      - name: Check cross-platform core and CLI
+        run: cargo check --locked -p aizu-core -p aizu-cli --all-targets --all-features
+
+  desktop-e2e-macos:
+    name: desktop-e2e-macos
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.97.1
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.19.0
+      - name: Enable pinned pnpm and install dependencies
+        run: corepack enable && pnpm install --frozen-lockfile
+      - name: Type-check desktop E2E configuration
+        run: pnpm e2e:typecheck
+      - name: Build and run embedded WebDriver E2E
+        env:
+          AIZU_STATE_DIR: ${{ runner.temp }}/aizu-e2e-state
+          XDG_CONFIG_HOME: ${{ runner.temp }}/aizu-e2e-config
+        run: pnpm e2e:desktop
+
+  security:
+    name: security
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.97.1
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.19.0
+      - name: Audit Rust dependencies
+        run: cargo install cargo-audit --version 0.22.2 --locked && cargo audit
+      - name: Enforce Rust license and source policy
+        run: cargo install cargo-deny --version 0.20.2 --locked && cargo deny check advisories licenses sources
+      - name: Audit frontend production dependencies
+        run: corepack enable && pnpm audit --prod --audit-level high
+      - name: Audit frontend development dependencies
+        # GHSA-jmr9-qjv8-65gv is confined to the WebDriver/Puppeteer test toolchain.
+        # No patched extract-zip release exists as of 2026-08-13. Keep the exact
+        # advisory visible here so any other high-severity dev advisory fails CI.
+        run: pnpm audit --dev --audit-level high --ignore GHSA-jmr9-qjv8-65gv
+      - name: Reject committed credential material
+        run: node scripts/check-secrets.mjs
