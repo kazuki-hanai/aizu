@@ -693,7 +693,7 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 - app icon は Aizu の正式ブランド asset とし、Finder、Dock、通知、System Settings、About 画面で一貫して使う。
 - canonical artwork は 1024×1024 px の square canvas を基準にし、文字、小さすぎる terminal prompt、既存 AI/terminal 製品と誤認する logo を避ける。
 - Apple 向けには background と foreground の vector layer を保存し、Icon Composer で default/dark/clear/tinted appearance を preview できる構成にする。
-- Tauri package 用には canonical layer から lossless 1024×1024 PNG を deterministic に exportし、pinned Tauri CLI の `icon` command で `icon.icns`、`icon.ico`、Linux PNG 等を生成する。
+- Tauri package 用には canonical layer から lossless 1024×1024 PNG、`icon.icns`、`icon.ico`、Linux PNG 等を、pinned Node.js standard library のみを使う repository generator で deterministic に生成する。Tauri CLI の version や platform image tool の差に生成物を依存させず、manifest に generator 自身・source・全 output の hash を記録する。
 - macOS が corner mask と system effect を適用できるよう、source artwork に platform corner shape、drop shadow、gloss を焼き込まない。
 - notification ごとの custom icon は使わず、macOS が bundle app icon を表示する。event 種別は title/body/sound と tray status で区別する。
 

@@ -23,6 +23,7 @@ const sourcePaths = [
   "assets/branding/tray/tray-attention.svg",
   "assets/branding/tray/tray-paused.svg",
   "assets/branding/tray/tray-error.svg",
+  "assets/branding/dmg/background.svg",
 ];
 
 const forbiddenFingerprints = {
@@ -121,6 +122,20 @@ function parseSvg(relativePath) {
     throw new Error(`${relativePath}: unsupported or non-self-closing SVG geometry`);
   }
   return { width, height, shapes };
+}
+
+function validateDmgBackground() {
+  const relativePath = "assets/branding/dmg/background.svg";
+  const text = read(relativePath).toString("utf8");
+  const root = text.match(/<svg\b([^>]*)>/u);
+  if (!root || !text.includes("</svg>")) throw new Error(`${relativePath}: invalid SVG document`);
+  const attrs = attributes(root[1]);
+  if (number(attrs.width, "DMG width") !== 660 || number(attrs.height, "DMG height") !== 400) {
+    throw new Error(`${relativePath}: expected a 660x400 canvas`);
+  }
+  if (attrs.viewBox !== "0 0 660 400") {
+    throw new Error(`${relativePath}: expected viewBox 0 0 660 400`);
+  }
 }
 
 function contains(shape, x, y) {
@@ -228,6 +243,52 @@ function png(width, height, pixels) {
   ]);
 }
 
+function brandingPreview(appPixels, trayPixels) {
+  const width = 800;
+  const height = 240;
+  const pixels = Buffer.alloc(width * height * 4);
+
+  function fill(x, y, fillWidth, fillHeight, color) {
+    for (let row = y; row < y + fillHeight; row += 1) {
+      for (let column = x; column < x + fillWidth; column += 1) {
+        const offset = (row * width + column) * 4;
+        for (let channel = 0; channel < 4; channel += 1) pixels[offset + channel] = color[channel];
+      }
+    }
+  }
+
+  function composite(source, sourceWidth, sourceHeight, x, y, invert = false) {
+    for (let row = 0; row < sourceHeight; row += 1) {
+      for (let column = 0; column < sourceWidth; column += 1) {
+        const sourceOffset = (row * sourceWidth + column) * 4;
+        const alpha = source[sourceOffset + 3] / 255;
+        if (alpha === 0) continue;
+        const destinationOffset = ((y + row) * width + x + column) * 4;
+        for (let channel = 0; channel < 3; channel += 1) {
+          const value = invert ? 255 - source[sourceOffset + channel] : source[sourceOffset + channel];
+          pixels[destinationOffset + channel] = Math.round(
+            value * alpha + pixels[destinationOffset + channel] * (1 - alpha),
+          );
+        }
+        pixels[destinationOffset + 3] = 255;
+      }
+    }
+  }
+
+  fill(0, 0, width, height, [35, 41, 43, 255]);
+  fill(24, 24, 176, 192, [23, 33, 38, 255]);
+  fill(224, 70, 160, 100, [245, 246, 244, 255]);
+  fill(408, 70, 160, 100, [31, 35, 37, 255]);
+  fill(592, 70, 184, 100, [0, 0, 0, 255]);
+  fill(592, 70, 184, 3, [255, 255, 255, 255]);
+  fill(592, 167, 184, 3, [255, 255, 255, 255]);
+  composite(appPixels, 128, 128, 48, 56);
+  composite(trayPixels, 36, 36, 286, 102);
+  composite(trayPixels, 36, 36, 470, 102, true);
+  composite(trayPixels, 36, 36, 666, 102, true);
+  return png(width, height, pixels);
+}
+
 function icns(images) {
   const parts = images.map(([type, data]) => {
     const part = Buffer.alloc(8 + data.length);
@@ -265,10 +326,13 @@ function ico(images) {
 }
 
 const appLayers = sourcePaths.slice(0, 2).map(parseSvg);
+validateDmgBackground();
+const appPreviewPixels = render(appLayers, 128, 128);
 const appPngs = new Map();
 for (const size of [32, 128, 256, 512, 1024]) {
   appPngs.set(size, png(size, size, render(appLayers, size, size)));
 }
+const normalTrayPixels = render([parseSvg("assets/branding/tray/tray-normal.svg")], 36, 36);
 
 const generated = new Map([
   ["assets/branding/app-icon/app-icon-1024.png", appPngs.get(1024)],
@@ -292,6 +356,10 @@ const generated = new Map([
       [256, appPngs.get(256)],
     ]),
   ],
+  [
+    "assets/branding/previews/development-preview.png",
+    brandingPreview(appPreviewPixels, normalTrayPixels),
+  ],
 ]);
 
 for (const state of ["normal", "attention", "paused", "error"]) {
@@ -314,18 +382,25 @@ const outputMetadata = [...generated.entries()].map(([relativePath, data]) => {
   const sizeMatch = relativePath.match(/(?:^|\/)(\d+)x\d+(@2x)?\.png$/u);
   const canonicalMatch = relativePath.match(/app-icon-(\d+)\.png$/u);
   const trayMatch = relativePath.match(/tray-[a-z]+(@2x)?\.png$/u);
+  const previewMatch = relativePath.endsWith("/development-preview.png");
   const dimensions = sizeMatch
     ? [Number(sizeMatch[1]) * (sizeMatch[2] ? 2 : 1), Number(sizeMatch[1]) * (sizeMatch[2] ? 2 : 1)]
     : canonicalMatch
       ? [Number(canonicalMatch[1]), Number(canonicalMatch[1])]
     : trayMatch
       ? [trayMatch[1] ? 36 : 18, trayMatch[1] ? 36 : 18]
+    : previewMatch
+      ? [800, 240]
       : null;
   return {
     path: relativePath,
     sha256: sha256(data),
     ...(dimensions ? { width: dimensions[0], height: dimensions[1] } : {}),
-    role: relativePath.includes("/tray/") ? "macos-template" : "app-icon",
+    role: previewMatch
+      ? "review-evidence"
+      : relativePath.includes("/tray/")
+        ? "macos-template"
+        : "app-icon",
   };
 });
 

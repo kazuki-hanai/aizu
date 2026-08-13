@@ -9,6 +9,8 @@ on:
       - "scripts/generate-icons.mjs"
       - "scripts/generate-icons.sh"
       - "scripts/inspect-icons.mjs"
+      - "scripts/test-branding-integrity.sh"
+      - "scripts/verify-agent-assets.mjs"
       - ".github/workflows/branding.yml"
   push:
     branches: [main]
@@ -36,3 +38,5 @@ jobs:
           node-version: 24.19.0
       - name: Validate canonical and generated assets
         run: ./scripts/check-icons.sh
+      - name: Reject modified canonical assets
+        run: ./scripts/test-branding-integrity.sh
