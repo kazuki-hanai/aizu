@@ -8,17 +8,20 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use aizu_core::{
-    BridgeFrame, EmitRequest, EventKind, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool,
-    SpoolError, StatePaths, Urgency, parse_strict_json_value,
+    AgentAdapter, AgentKind as CoreAgentKind, BridgeFrame, ClaudeCodeAdapter, CodexAdapter,
+    EmitRequest, EventKind, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool, SpoolError,
+    StatePaths, Urgency, hook_configuration, parse_strict_json_value,
 };
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use serde_json::{Value, json};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 const FOLLOW_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const BRIDGE_PAGE_SIZE: usize = 256;
+const RESERVED_ADAPTER_METADATA_KEY: &str = "aizu_adapter";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -51,8 +54,12 @@ enum Command {
     Doctor(DoctorArgs),
     /// Inspect or regenerate the durable source identity.
     Identity(IdentityArgs),
+    /// Print a first-party agent hook configuration for explicit installation.
+    IntegrationConfig(IntegrationConfigArgs),
     /// Print application and protocol versions.
     Version(VersionArgs),
+    /// List running supported agents without exposing process details.
+    Agents(AgentsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -121,9 +128,26 @@ struct VersionArgs {
 }
 
 #[derive(Debug, Args)]
+struct AgentsArgs {
+    /// Print the bounded process report as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
 struct IdentityArgs {
     #[command(subcommand)]
     command: IdentityCommand,
+}
+
+#[derive(Debug, Args)]
+struct IntegrationConfigArgs {
+    /// First-party agent whose user hook configuration should be generated.
+    #[arg(long, value_enum)]
+    agent: AgentArg,
+    /// Absolute path agents will invoke for the installed Aizu CLI.
+    #[arg(long, value_name = "PATH")]
+    aizu_path: PathBuf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -183,6 +207,22 @@ enum UrgencyArg {
     High,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AgentArg {
+    Codex,
+    #[value(name = "claude-code")]
+    ClaudeCode,
+}
+
+impl From<AgentArg> for CoreAgentKind {
+    fn from(value: AgentArg) -> Self {
+        match value {
+            AgentArg::Codex => Self::Codex,
+            AgentArg::ClaudeCode => Self::ClaudeCode,
+        }
+    }
+}
+
 impl From<UrgencyArg> for Urgency {
     fn from(value: UrgencyArg) -> Self {
         match value {
@@ -208,6 +248,17 @@ struct VersionReport<'a> {
     sqlite: &'a str,
 }
 
+#[derive(Serialize)]
+struct AgentProcessReport {
+    agent: CoreAgentKind,
+}
+
+#[derive(Serialize)]
+struct AgentProcessesReport<'a> {
+    application: &'a str,
+    agents: Vec<AgentProcessReport>,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
@@ -231,8 +282,22 @@ fn run() -> Result<u8, Box<dyn Error>> {
             print_version(args.json)?;
             Ok(0)
         }
+        Command::Agents(args) => {
+            print_agents(args.json)?;
+            Ok(0)
+        }
         Command::Bridge(args) => run_bridge_command(&paths, cli.display_name, &args),
         Command::Hook(args) => run_hook_command(&paths, cli.display_name, args),
+        Command::IntegrationConfig(args) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&hook_configuration(
+                    args.agent.into(),
+                    &args.aizu_path
+                )?)?
+            );
+            Ok(0)
+        }
         command => {
             let spool = open_spool(&paths, cli.display_name)?;
             match command {
@@ -245,7 +310,11 @@ fn run() -> Result<u8, Box<dyn Error>> {
                     Ok(0)
                 }
                 Command::Identity(args) => run_identity(&spool, &args),
-                Command::Bridge(_) | Command::Hook(_) | Command::Version(_) => {
+                Command::Bridge(_)
+                | Command::Hook(_)
+                | Command::IntegrationConfig(_)
+                | Command::Agents(_)
+                | Command::Version(_) => {
                     unreachable!("handled above")
                 }
             }
@@ -287,6 +356,7 @@ fn run_emit(spool: &Spool, args: EmitArgs) -> Result<(), Box<dyn Error>> {
             args.kind.map(Into::into),
         )
     };
+    reject_reserved_metadata(&request)?;
     let persisted = spool.emit(request, default_kind)?;
     if args.json {
         println!(
@@ -313,26 +383,44 @@ fn run_hook_command(
     args: HookArgs,
 ) -> Result<u8, Box<dyn Error>> {
     let result = (|| -> Result<(), Box<dyn Error>> {
-        let kind = parse_hook_event(&args.event)?;
         let raw = read_optional_stdin_limited(MAX_FRAME_BYTES)?;
-        let mut request = if raw.is_empty() {
-            EmitRequest::default()
+        let requests = if args.agent == "claude-code" || args.agent == "codex" {
+            if raw.is_empty() {
+                return Err("first-party hook input is required on stdin".into());
+            }
+            if args.agent == "claude-code" {
+                ClaudeCodeAdapter.parse_hook(&args.event, &raw)?
+            } else {
+                CodexAdapter.parse_hook(&args.event, &raw)?
+            }
         } else {
-            serde_json::from_value::<EmitRequest>(parse_strict_json_value(&raw, MAX_FRAME_BYTES)?)?
+            let kind = parse_hook_event(&args.event)?;
+            let mut request = if raw.is_empty() {
+                EmitRequest::default()
+            } else {
+                serde_json::from_value::<EmitRequest>(parse_strict_json_value(
+                    &raw,
+                    MAX_FRAME_BYTES,
+                )?)?
+            };
+            request.kind = Some(kind);
+            request.agent = Some(args.agent);
+            if request.title.is_none() {
+                request.title = Some(
+                    match kind {
+                        EventKind::TaskCompleted => "Task completed",
+                        EventKind::AgentQuestion => "Agent is waiting for input",
+                    }
+                    .to_owned(),
+                );
+            }
+            reject_reserved_metadata(&request)?;
+            vec![request]
         };
-        request.kind = Some(kind);
-        request.agent = Some(args.agent);
-        if request.title.is_none() {
-            request.title = Some(
-                match kind {
-                    EventKind::TaskCompleted => "Task completed",
-                    EventKind::AgentQuestion => "Agent is waiting for input",
-                }
-                .to_owned(),
-            );
-        }
         let spool = open_spool(paths, display_name)?;
-        spool.emit(request, Some(kind))?;
+        for request in requests {
+            spool.emit(request, None)?;
+        }
         Ok(())
     })();
 
@@ -344,6 +432,20 @@ fn run_hook_command(
         }
         Err(error) => Err(error),
     }
+}
+
+fn reject_reserved_metadata(request: &EmitRequest) -> Result<(), String> {
+    if request
+        .metadata
+        .as_ref()
+        .and_then(Value::as_object)
+        .is_some_and(|metadata| metadata.contains_key(RESERVED_ADAPTER_METADATA_KEY))
+    {
+        return Err(format!(
+            "metadata key {RESERVED_ADAPTER_METADATA_KEY:?} is reserved for first-party adapters"
+        ));
+    }
+    Ok(())
 }
 
 fn parse_hook_event(raw: &str) -> Result<EventKind, String> {
@@ -673,6 +775,77 @@ fn print_version(json_output: bool) -> Result<(), Box<dyn Error>> {
         println!("aizu {}", env!("CARGO_PKG_VERSION"));
     }
     Ok(())
+}
+
+fn print_agents(json_output: bool) -> Result<(), Box<dyn Error>> {
+    let agents = running_agents();
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&AgentProcessesReport {
+                application: env!("CARGO_PKG_VERSION"),
+                agents,
+            })?
+        );
+    } else if agents.is_empty() {
+        println!("no supported agents running");
+    } else {
+        for process in agents {
+            println!("{}", process.agent.executable_name());
+        }
+    }
+    Ok(())
+}
+
+fn running_agents() -> Vec<AgentProcessReport> {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
+    );
+    let mut agents: Vec<_> = system
+        .processes()
+        .values()
+        .filter_map(|process| classify_agent_process(process.name(), process.exe()))
+        .take(aizu_core::MAX_PROCESS_SNAPSHOT_ENTRIES)
+        .map(|agent| AgentProcessReport { agent })
+        .collect();
+    agents.sort_by_key(|process| process.agent);
+    agents
+}
+
+fn classify_agent_process(
+    name: &std::ffi::OsStr,
+    executable: Option<&std::path::Path>,
+) -> Option<CoreAgentKind> {
+    if executable.is_some_and(|path| {
+        path.components().any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|component| component.to_ascii_lowercase().ends_with(".app"))
+        })
+    }) {
+        return None;
+    }
+    classify_agent_executable(name).or_else(|| {
+        executable
+            .and_then(std::path::Path::file_name)
+            .and_then(classify_agent_executable)
+    })
+}
+
+fn classify_agent_executable(name: &std::ffi::OsStr) -> Option<CoreAgentKind> {
+    let name = name.to_str()?;
+    let normalized = name.strip_suffix(".exe").unwrap_or(name);
+    if normalized.eq_ignore_ascii_case("codex") {
+        Some(CoreAgentKind::Codex)
+    } else if normalized.eq_ignore_ascii_case("claude") {
+        Some(CoreAgentKind::ClaudeCode)
+    } else {
+        None
+    }
 }
 
 fn read_stdin_limited(maximum: usize) -> Result<Vec<u8>, Box<dyn Error>> {

@@ -1,0 +1,11 @@
+{
+  "session_id": "session-123",
+  "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
+  "cwd": "/Users/example/work/aizu",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "Updated the notification pipeline and all checks pass.",
+  "background_tasks": [],
+  "session_crons": []
+}

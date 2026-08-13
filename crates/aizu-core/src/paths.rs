@@ -48,6 +48,11 @@ impl StatePaths {
     }
 
     #[must_use]
+    pub fn desktop_db(&self) -> PathBuf {
+        self.root.join("desktop.sqlite3")
+    }
+
+    #[must_use]
     pub fn identity_backup_dir(&self) -> PathBuf {
         self.root.join("backups")
     }

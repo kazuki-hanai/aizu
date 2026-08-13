@@ -1,0 +1,9 @@
+{
+  "session_id": "session-123",
+  "transcript_path": "/Users/example/.claude/projects/example/transcript.jsonl",
+  "cwd": "/Users/example/work/aizu",
+  "hook_event_name": "StopFailure",
+  "error": "rate_limit",
+  "error_details": "Fixture diagnostic must never be copied into an Aizu event.",
+  "last_assistant_message": "The task stopped before the requested change was complete."
+}
