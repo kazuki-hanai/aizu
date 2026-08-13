@@ -586,6 +586,24 @@ function SettingsView({ busy, muted, onChange, onMuteChange, preferences, onSend
         <SettingToggle checked={preferences.completionEnabled} disabled={busy} icon={ListChecks} label={t.taskCompletion} onChange={() => toggle("completionEnabled")} />
         <SettingToggle checked={preferences.questionEnabled} disabled={busy} icon={CircleHelp} label={t.agentQuestions} onChange={() => toggle("questionEnabled")} />
         <label className="setting-row setting-row--select">
+          <Bell aria-hidden="true" size={17} />
+          <span>{t.notificationStyle}</span>
+          <select
+            aria-label={t.notificationStyle}
+            disabled={busy}
+            value={preferences.notificationDelivery}
+            onChange={(event) => {
+              const notificationDelivery = event.target.value;
+              if (notificationDelivery === "aizuBanner" || notificationDelivery === "system") {
+                void onChange({ ...preferences, notificationDelivery });
+              }
+            }}
+          >
+            <option value="aizuBanner">{t.aizuBanner}</option>
+            <option value="system">{t.macosNotifications}</option>
+          </select>
+        </label>
+        <label className="setting-row setting-row--select">
           <Volume2 aria-hidden="true" size={17} />
           <span>{t.notificationSound}</span>
           <select

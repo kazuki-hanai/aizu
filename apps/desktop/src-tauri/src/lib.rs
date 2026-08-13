@@ -1,5 +1,6 @@
 #![cfg_attr(feature = "desktop-e2e", allow(dead_code, unused_imports))]
 
+mod banner;
 mod cli_diagnostic;
 mod commands;
 mod model;
@@ -26,9 +27,10 @@ use crate::commands::{get_e2e_notifications, set_e2e_remote_status};
 use crate::{
     commands::{
         add_remote_source, clear_history, complete_onboarding, configure_agents,
-        confirm_codex_hook_trust, confirm_remote_identity, get_app_view, install_cli,
-        reconnect_remote_source, remove_remote_source, request_notification_permission,
-        send_test_notification, set_notifications_paused, test_ssh_connection, update_preferences,
+        confirm_codex_hook_trust, confirm_remote_identity, dismiss_banner, get_app_view,
+        get_banners, install_cli, open_from_banner, reconnect_remote_source, remove_remote_source,
+        request_notification_permission, resize_banner, send_test_notification,
+        set_notifications_paused, test_ssh_connection, update_preferences,
     },
     state::{AppService, DesktopState},
     store::SettingsStore,
@@ -90,6 +92,7 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            banner::setup(app);
 
             let state_paths = aizu_core::StatePaths::discover()?;
             #[cfg(feature = "desktop-e2e")]
@@ -98,12 +101,13 @@ pub fn run() {
             let settings_path = app.path().app_config_dir()?.join("settings.json");
             let worker_lease = WorkerLease::acquire(state_paths.root())?;
             #[cfg(feature = "desktop-e2e")]
-            let notifier =
+            let notification_recorder =
                 notifier::FakeNotifier::with_permission(model::PermissionStatus::NotDetermined);
             #[cfg(not(feature = "desktop-e2e"))]
             let notifier = Arc::new(notifier::SystemNotifier::new(app.handle().clone()));
             #[cfg(feature = "desktop-e2e")]
-            let service_notifier: Arc<dyn notifier::Notifier> = notifier.clone();
+            let service_notifier: Arc<dyn notifier::Notifier> =
+                notifier::E2eNotifier::new(app.handle().clone(), notification_recorder.clone());
             #[cfg(not(feature = "desktop-e2e"))]
             let service_notifier: Arc<dyn notifier::Notifier> = notifier;
             let mut service = AppService::new(
@@ -117,7 +121,7 @@ pub fn run() {
             let initial_view = service.view();
             app.manage(DesktopState::new(service));
             #[cfg(feature = "desktop-e2e")]
-            app.manage(notifier);
+            app.manage(notification_recorder);
             app.manage(worker_lease);
             app.manage(tray::setup(app, &initial_view)?);
             app.manage(worker::LocalWorker::start(app.handle().clone())?);
@@ -134,6 +138,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_banners,
+            dismiss_banner,
+            resize_banner,
+            open_from_banner,
             get_app_view,
             complete_onboarding,
             request_notification_permission,

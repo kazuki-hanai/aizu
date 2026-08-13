@@ -116,12 +116,12 @@ MVP コアはエージェント非依存の CLI 契約を提供する。Codex �
 ### 6.1 ローカル通知
 
 1. ユーザーが Aizu を起動する。
-2. 「通知をテスト」を押し、macOS の通知権限を許可する。
+2. 既定の Aizu Banner をテストする。macOS 通知を選択した場合だけ、明示操作で通知権限を許可する。
 3. 「CLI をインストール」を押し、`~/.local/bin/aizu` を配置する。
 4. 使用するエージェントの hook に `aizu hook ...` を設定する。
 5. エージェントが完了または質問状態になる。
 6. CLI がローカル spool にイベントを追加する。
-7. Aizu がイベントを読み取り、macOS 通知を表示する。
+7. Aizu がイベントを読み取り、選択済みの Aizu Banner または macOS 通知を表示する。
 
 ### 6.2 リモート通知
 
@@ -131,7 +131,7 @@ MVP コアはエージェント非依存の CLI 契約を提供する。Codex �
 4. Aizu が system SSH client で疎通確認する。
 5. 接続後、Aizu が `aizu bridge --follow` を SSH 経由で起動する。
 6. リモートイベントが NDJSON として Mac に流れる。
-7. Aizu が重複排除・通知ポリシー適用後、macOS 通知を表示する。
+7. Aizu が重複排除・通知ポリシー適用後、選択済みの通知方式で表示する。
 
 ### 6.3 切断後の再配送
 
@@ -605,6 +605,7 @@ Sections:
    - language: system default / Japanese / English, persisted and applied immediately
    - completion on/off
    - question on/off
+   - notification style: Aizu Banner / macOS Notifications（既定 Aizu Banner、即時保存）
    - Off または 5 種類から選べる通知音
    - launch at login と quiet hours は折りたたみ式 Advanced に置く
 
@@ -648,7 +649,7 @@ Rust/TypeScript の責務境界:
 
 MVP は Mac App Store sandbox ではなく、Developer ID で署名・notarization した直接配布を対象とする。これにより user の `~/.ssh/config` と `/usr/bin/ssh` を利用する設計を明確にする。
 
-### 13.2 Native notifications
+### 13.2 Notification delivery
 
 通知 API は `Notifier` trait の背後に置く。
 
@@ -660,8 +661,10 @@ trait Notifier {
 }
 ```
 
-- 権限要求は初回起動直後ではなく、オンボーディング中の明示操作で行う。
-- 拒否された場合は System Settings への案内を表示する。
+- 既定は app-owned Aizu Banner とし、macOS 通知権限を要求しない。app 稼働中は右上へ最大3件を表示し、privacy filter 後の本文を省略せず、ユーザーが閉じるか開くまで自動消去しない。新規表示には短い enter animation を使い、OS の reduced-motion 設定時は無効化する。超過分および app 再起動後は Recent activity を確認経路とする。
+- Aizu Banner の透明な装飾なし WebView は Tauri の `macos-private-api` feature を使う。MVP は Mac App Store sandbox を対象外とする既存方針を維持し、この feature を notification window の透過だけに限定する。
+- macOS Notifications へ即時切替できる。権限要求は初回起動直後ではなく、テスト通知などの明示操作で行う。
+- macOS Notifications が拒否された場合は System Settings への案内を表示する。
 - テストでは `FakeNotifier` を利用する。
 - 通知クリック時は app を前面化し、Agents と直近 activity を表示する。event 固有の deep link は MVP では持たない。
 - question は音あり、completed は既定で音なしを推奨する。
@@ -1256,11 +1259,11 @@ Metrics はローカル Diagnostics 画面だけで表示する。
 
 ### 22.1 Functional
 
-- [ ] macOS で app を起動し、通知権限を取得できる。
+- [ ] macOS で app を起動し、Aizu Bannerを権限要求なしで利用できる。macOS Notifications選択時は明示操作で通知権限を取得できる。
 - [ ] Finder、Dock、Notification Center、System Settings に正式な Aizu app icon が表示され、Tauri default icon が残っていない。
 - [ ] menu bar icon が light/dark appearance へ template image として適応し、`normal` / `attention` / `paused` / `error` を色だけに依存せず区別できる。
 - [ ] bundled CLI をユーザー領域へインストールできる。
-- [ ] app が起動中・通知一時停止なし・permission granted の条件で、local `task.completed` の durable commit から OS notification scheduling API 成功まで 2 秒以内を目標とする（Focus/Do Not Disturb 等による OS 側表示遅延は除外）。
+- [ ] app が起動中・通知一時停止なしの条件で、local `task.completed` の durable commit から選択済み通知方式の scheduling 成功まで 2 秒以内を目標とする。macOS Notificationsでは permission grantedを追加条件とする（Focus/Do Not Disturb 等による OS 側表示遅延は除外）。
 - [ ] 成功・失敗・キャンセルの terminal event がそれぞれ `outcome` 付き `task.completed` として通知・履歴化される。
 - [ ] local `agent.question` が質問通知として区別される。
 - [ ] SSH config alias で remote source を追加できる。

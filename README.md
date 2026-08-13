@@ -38,14 +38,17 @@ open target/debug/bundle/dmg/Aizu_*.dmg
 
 Drag **Aizu** onto **Applications** in the opened disk image, then launch
 `/Applications/Aizu.app`. Do not launch the bundle directly from `target/`:
-macOS notification permission is tied to the installed, signed application
-identity. For automated local replacement, `./scripts/install-dev-app.sh` uses
+macOS notification permission, when **macOS Notifications** is selected, is tied
+to the installed, signed application identity. For automated local replacement,
+`./scripts/install-dev-app.sh` uses
 the same validation and moves an existing Aizu development bundle to a temporary
 backup before installing the new one.
 
 The bundle includes the matching `aizu` CLI. On first launch:
 
-1. Select **Allow** when Aizu requests notification permission.
+1. Aizu Banner is ready without macOS notification permission. To use the
+   system notification center instead, select **Settings > Notification style >
+   macOS Notifications** and allow notifications when testing it.
 2. Select **Set up** under **Connect Codex and Claude Code**. Aizu atomically
    installs the bundled CLI at `~/.local/bin/aizu` and merges the required
    lifecycle hooks into both agent configuration files without deleting
@@ -273,3 +276,10 @@ The desktop interface can follow the macOS language or be set explicitly to
 Japanese or English under **Settings > Language**. Changes are persisted and
 applied immediately. Agent messages, SSH source labels, and event excerpts stay
 in their original language.
+
+Notification delivery defaults to **Aizu Banner**. It shows up to three alerts
+at the top right, preserves the complete privacy-filtered body, and keeps each
+alert visible while Aizu is running until it is dismissed or opened. Older
+alerts remain in Recent activity. Select **Settings > Notification style >
+macOS Notifications** to use Notification Center instead; the setting is saved
+immediately.

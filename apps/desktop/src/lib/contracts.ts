@@ -86,10 +86,20 @@ export const preferencesSchema = z.object({
   questionEnabled: z.boolean(),
   agentDetailsEnabled: z.boolean().default(false),
   soundEnabled: z.boolean(),
+  notificationDelivery: z.enum(["aizuBanner", "system"]).default("aizuBanner"),
   notificationSound: z.enum(["default", "glass", "ping", "pop", "hero"]),
   privacyMode: z.literal("generic"),
   launchAtLogin: z.boolean(),
   quietHours: quietHoursSchema,
+});
+
+export const bannerNotificationSchema = z.object({
+  id: z.number().int(),
+  title: z.string(),
+  body: z.string(),
+  sound: z.enum(["default", "glass", "ping", "pop", "hero"]).nullable(),
+  delivery: z.enum(["aizuBanner", "system"]),
+  language: z.enum(["system", "ja", "en"]),
 });
 
 export const appViewSchema = z.object({
@@ -118,6 +128,7 @@ export type AgentMonitor = z.infer<typeof agentMonitorSchema>;
 export type RunningAgent = z.infer<typeof runningAgentSchema>;
 export type QuietHours = z.infer<typeof quietHoursSchema>;
 export type Preferences = z.infer<typeof preferencesSchema>;
+export type BannerNotification = z.infer<typeof bannerNotificationSchema>;
 export type AppView = z.infer<typeof appViewSchema>;
 
 export type CompleteOnboardingRequest = {

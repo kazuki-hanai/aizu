@@ -18,7 +18,10 @@ describe("Aizu desktop shell", () => {
 
   it("requests permission from an explicit onboarding action", async () => {
     const user = userEvent.setup();
-    render(<App backend={makeBackend(makeView())} />);
+    render(<App backend={makeBackend(makeView({
+      notificationPermission: "notDetermined",
+      preferences: { ...makeView().preferences, notificationDelivery: "system" },
+    }))} />);
 
     expect(await screen.findByRole("heading", { name: "Keep agent events within reach." })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Allow" }));
@@ -36,7 +39,10 @@ describe("Aizu desktop shell", () => {
   it("shows actionable copy when notification permission is denied", async () => {
     render(
       <App
-        backend={makeBackend(makeView({ notificationPermission: "denied" }))}
+        backend={makeBackend(makeView({
+          notificationPermission: "denied",
+          preferences: { ...makeView().preferences, notificationDelivery: "system" },
+        }))}
       />,
     );
 
@@ -416,17 +422,20 @@ describe("Aizu desktop shell", () => {
 
     await user.click(await screen.findByRole("button", { name: "Settings" }));
     expect(screen.queryByRole("button", { name: "Save settings" })).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Notification style" })).toHaveValue("aizuBanner");
     await user.click(screen.getByRole("switch", { name: "Task completion" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Notification style" }), "system");
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification sound" }), "ping");
     await user.click(screen.getByText("Advanced"));
     await user.click(screen.getByRole("switch", { name: "Show agent details" }));
 
     await waitFor(async () => {
-      expect(updatePreferences).toHaveBeenCalledTimes(3);
+      expect(updatePreferences).toHaveBeenCalledTimes(4);
       await expect(backend.getView()).resolves.toMatchObject({
         preferences: {
           completionEnabled: false,
           agentDetailsEnabled: true,
+          notificationDelivery: "system",
           notificationSound: "ping",
           quietHours: { questionsBypass: false },
         },
@@ -494,7 +503,8 @@ describe("Aizu desktop shell", () => {
     await user.selectOptions(await screen.findByRole("combobox", { name: "Language" }), "ja");
 
     expect(await screen.findByRole("heading", { name: "エージェントの完了を、すぐ手元に。" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "許可" })).toBeVisible();
+    expect(screen.getByText("Aizuバナーを利用できます。macOSの通知許可は不要です。")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "許可" })).not.toBeInTheDocument();
     await expect(backend.getView()).resolves.toMatchObject({ preferences: { language: "ja" } });
   });
 
