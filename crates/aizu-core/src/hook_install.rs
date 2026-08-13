@@ -56,6 +56,10 @@ pub enum HookInstallError {
     ExecutableIsSymlink,
     #[error("an agent configuration path is unsafe")]
     UnsafePath,
+    #[error(
+        "the ~/{directory} directory is writable by group or others; run `chmod go-w ~/{directory}` and retry"
+    )]
+    InsecureDirectoryPermissions { directory: &'static str },
     #[error("an agent configuration exceeds the size limit")]
     TooLarge,
     #[error("an agent configuration is not valid JSON")]
@@ -646,20 +650,50 @@ fn validate_configuration_directory(home: &Path, path: &Path) -> Result<(), Hook
     }
     #[cfg(unix)]
     {
-        if metadata.mode() & 0o022 != 0 {
-            return Err(HookInstallError::UnsafePath);
-        }
         let home_owner = fs::metadata(home)
             .map_err(|source| HookInstallError::Io {
                 operation: "inspect the user home directory",
                 source,
             })?
             .uid();
-        if metadata.uid() != home_owner {
-            return Err(HookInstallError::UnsafePath);
-        }
+        validate_unix_directory_security(
+            configuration_directory_name(home, path),
+            metadata.mode(),
+            metadata.uid(),
+            home_owner,
+        )?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn validate_unix_directory_security(
+    directory: Option<&'static str>,
+    mode: u32,
+    owner: u32,
+    home_owner: u32,
+) -> Result<(), HookInstallError> {
+    if owner != home_owner {
+        return Err(HookInstallError::UnsafePath);
+    }
+    if mode & 0o022 != 0 {
+        return Err(HookInstallError::InsecureDirectoryPermissions {
+            directory: directory.ok_or(HookInstallError::UnsafePath)?,
+        });
+    }
+    Ok(())
+}
+
+fn configuration_directory_name(home: &Path, path: &Path) -> Option<&'static str> {
+    if path == home.join(".codex") {
+        Some(".codex")
+    } else if path == home.join(".claude") {
+        Some(".claude")
+    } else if path == home.join(INSTALL_LOCK_DIRECTORY) {
+        Some(INSTALL_LOCK_DIRECTORY)
+    } else {
+        None
+    }
 }
 
 fn create_temporary(parent: &Path) -> Result<(PathBuf, File), HookInstallError> {
@@ -911,19 +945,42 @@ mod tests {
             .expect("unsafe Claude permissions");
 
         let executable = executable(home.path());
+        let error = install_agent_hooks(
+            home.path(),
+            &executable,
+            &[AgentKind::Codex, AgentKind::ClaudeCode],
+        )
+        .expect_err("unsafe Claude permissions");
         assert!(matches!(
-            install_agent_hooks(
-                home.path(),
-                &executable,
-                &[AgentKind::Codex, AgentKind::ClaudeCode],
-            ),
-            Err(HookInstallError::UnsafePath)
+            error,
+            HookInstallError::InsecureDirectoryPermissions {
+                directory: ".claude"
+            }
         ));
+        assert_eq!(
+            error.to_string(),
+            "the ~/.claude directory is writable by group or others; run `chmod go-w ~/.claude` and retry"
+        );
         assert_eq!(
             fs::read(codex_path).expect("unchanged Codex configuration"),
             original
         );
         assert!(!home.path().join(INSTALL_LOCK_DIRECTORY).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn foreign_owner_takes_precedence_over_writable_mode_diagnostic() {
+        assert!(matches!(
+            validate_unix_directory_security(Some(".codex"), 0o775, 0, 1_000),
+            Err(HookInstallError::UnsafePath)
+        ));
+        assert!(matches!(
+            validate_unix_directory_security(Some(".codex"), 0o775, 1_000, 1_000),
+            Err(HookInstallError::InsecureDirectoryPermissions {
+                directory: ".codex"
+            })
+        ));
     }
 
     #[test]

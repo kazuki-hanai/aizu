@@ -110,6 +110,14 @@ or unsafe configuration paths before changing either file. Concurrent Aizu
 installers are serialized with `~/.aizu/hooks.lock`; do not edit the agent
 configuration files concurrently because external editors do not use that
 lock. Codex requires explicit hook approval on that machine after installation.
+If an existing agent directory is writable by group or others, remove only
+those write bits and retry:
+
+```bash
+chmod go-w "$HOME/.codex" "$HOME/.claude"
+"$HOME/.local/bin/aizu" integration-install --json
+```
+
 Verify the source before configuring the receiving Mac:
 
 ```bash
