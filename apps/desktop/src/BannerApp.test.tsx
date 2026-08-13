@@ -74,9 +74,13 @@ const notices: BannerNotification[] = [
 ];
 
 function client(): BannerClient {
+  let queued = [...notices];
   return {
-    getBanners: vi.fn().mockResolvedValue(notices),
-    dismiss: vi.fn().mockResolvedValue(undefined),
+    getBanners: vi.fn(() => Promise.resolve(queued)),
+    dismiss: vi.fn((id: number) => {
+      queued = queued.filter((notice) => notice.id !== id);
+      return Promise.resolve();
+    }),
     resize: vi.fn().mockResolvedValue(undefined),
     subscribe: vi.fn().mockResolvedValue(() => undefined),
   };
@@ -146,6 +150,26 @@ describe("Aizu Banner", () => {
 
     expect(banner).toHaveClass("aizu-banner--dismiss-right");
     await waitFor(() => expect(backend.dismiss).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not start a second dismiss gesture while close is pending", async () => {
+    const pending = deferred<undefined>();
+    const backend = client();
+    vi.mocked(backend.dismiss).mockReturnValueOnce(pending.promise);
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const banner = container.querySelector<HTMLElement>('[data-banner-id="1"]');
+    expect(banner).not.toBeNull();
+    if (!banner) return;
+
+    fireEvent.click((await screen.findAllByRole("button", { name: "Dismiss notification" }))[0]);
+    fireEvent.pointerDown(banner, { button: 0, clientX: 140, clientY: 20, isPrimary: true, pointerId: 13 });
+    fireEvent.pointerMove(banner, { clientX: 40, clientY: 20, pointerId: 13 });
+    fireEvent.pointerUp(banner, { clientX: 40, clientY: 20, pointerId: 13 });
+
+    expect(backend.dismiss).toHaveBeenCalledTimes(1);
+    expect(banner).not.toHaveClass("aizu-banner--dismiss-left");
+    pending.resolve(undefined);
   });
 
   it("restores short swipes and ignores vertical drags", async () => {
@@ -237,6 +261,32 @@ describe("Aizu Banner", () => {
     stale.resolve(notices);
     await Promise.resolve();
 
+    expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument();
+  });
+
+  it("refreshes authoritatively after dismiss so a concurrent new banner remains visible", async () => {
+    const dismissPending = deferred<undefined>();
+    const concurrentRefresh = deferred<BannerNotification[]>();
+    const authoritativeRefresh = deferred<BannerNotification[]>();
+    const backend = client();
+    const newNotice = { ...notices[1], id: 3, title: "New remote question" };
+    render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    vi.mocked(backend.dismiss).mockReturnValueOnce(dismissPending.promise);
+    vi.mocked(backend.getBanners)
+      .mockImplementationOnce(() => concurrentRefresh.promise)
+      .mockImplementationOnce(() => authoritativeRefresh.promise);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: "Dismiss notification" }))[0]);
+    const [[subscription]] = vi.mocked(backend.subscribe).mock.calls;
+    subscription();
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(3));
+    dismissPending.resolve(undefined);
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(4));
+    concurrentRefresh.resolve([notices[1], newNotice]);
+    authoritativeRefresh.resolve([notices[1], newNotice]);
+
+    expect(await screen.findByText("New remote question")).toBeVisible();
     expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument();
   });
 });

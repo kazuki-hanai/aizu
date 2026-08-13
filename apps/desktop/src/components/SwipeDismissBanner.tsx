@@ -61,6 +61,11 @@ export function SwipeDismissBanner({
     swipe.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     setDragging(false);
+    if (dismissStarted.current) {
+      offset.current = 0;
+      setRenderedOffset(0);
+      return;
+    }
     if (cancelled || active.axis !== "horizontal" || Math.abs(offset.current) < DISMISS_THRESHOLD) {
       offset.current = 0;
       setRenderedOffset(0);
@@ -80,7 +85,7 @@ export function SwipeDismissBanner({
   }, [banner.id, onDismiss, reset]);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLElement>) => {
-    if (!event.isPrimary || event.button !== 0 || exitDirection !== null) return;
+    if (!event.isPrimary || event.button !== 0 || dismissStarted.current || exitDirection !== null) return;
     if (event.target instanceof Element && event.target.closest("button, .aizu-banner__body")) return;
     swipe.current = {
       axis: "pending",
@@ -94,7 +99,7 @@ export function SwipeDismissBanner({
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLElement>) => {
     const active = swipe.current;
-    if (active?.pointerId !== event.pointerId || exitDirection !== null) return;
+    if (active?.pointerId !== event.pointerId || dismissStarted.current || exitDirection !== null) return;
     const deltaX = event.clientX - active.startX;
     const deltaY = event.clientY - active.startY;
     if (active.axis === "pending") {

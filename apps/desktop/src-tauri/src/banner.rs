@@ -33,6 +33,7 @@ struct PresentationRetry {
 
 struct PendingSound {
     generation: u64,
+    notification_id: i32,
     sound: Option<NotificationSound>,
 }
 
@@ -62,6 +63,7 @@ impl BannerState {
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         *pending_sound = Some(PendingSound {
             generation,
+            notification_id: notification.id,
             sound: notification.sound,
         });
         *retry = PresentationRetry::default();
@@ -86,7 +88,27 @@ impl BannerState {
             .banners
             .lock()
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
+        let mut pending_sound = self.pending_sound.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
+        })?;
+        let mut retry = self.retry.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner retry state is unavailable".to_owned())
+        })?;
+        let previous_len = banners.len();
         banners.retain(|banner| banner.id != id);
+        if banners.len() != previous_len {
+            let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+            if pending_sound
+                .as_ref()
+                .is_some_and(|pending| pending.notification_id == id)
+            {
+                *pending_sound = None;
+            } else if let Some(pending) = pending_sound.as_mut() {
+                pending.generation = generation;
+            }
+            *retry = PresentationRetry::default();
+            self.dirty.store(true, Ordering::Release);
+        }
         Ok(banners.is_empty())
     }
 
@@ -235,6 +257,9 @@ pub fn request_present(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
             result.is_ok(),
             Instant::now(),
         );
+        // A push or dismiss can supersede this generation while it is presenting.
+        // Queue the current generation immediately instead of waiting for the worker tick.
+        let _ = request_present(&main_thread_app);
     }) {
         state.finish_presentation(generation, false, Instant::now());
         return Err(NotifyError::Scheduling(error.to_string()));
@@ -280,18 +305,9 @@ pub fn banners(app: &AppHandle<Wry>) -> Result<Vec<Notification>, NotifyError> {
 }
 
 pub fn dismiss(app: &AppHandle<Wry>, id: i32) -> Result<(), NotifyError> {
-    let empty = app.state::<BannerState>().dismiss(id)?;
-    let window = app
-        .get_webview_window(BANNER_WINDOW)
-        .ok_or_else(|| NotifyError::Scheduling("Aizu banner window is unavailable".to_owned()))?;
-    window
-        .emit("aizu://banners-changed", ())
-        .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
-    if empty {
-        window
-            .hide()
-            .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
-    }
+    app.state::<BannerState>().dismiss(id)?;
+    // Queue removal is the command result. Window presentation is retried independently.
+    let _ = request_present(app);
     Ok(())
 }
 
@@ -434,6 +450,39 @@ mod tests {
         assert!(!state.dismiss(1).expect("dismiss first"));
         assert_eq!(state.snapshot().expect("remaining banners").len(), 1);
         assert!(state.dismiss(2).expect("dismiss second"));
+    }
+
+    #[test]
+    fn dismiss_invalidates_an_in_flight_presentation() {
+        let state = BannerState::default();
+        let now = Instant::now();
+        state.push(notification(1, "first")).expect("queue banner");
+        let stale_generation = state.begin_presentation(now).expect("presentation");
+
+        assert!(state.dismiss(1).expect("dismiss banner"));
+        assert_ne!(state.generation.load(Ordering::Acquire), stale_generation);
+        state.finish_presentation(stale_generation, true, now);
+
+        let current_generation = state.begin_presentation(now).expect("empty presentation");
+        assert_ne!(current_generation, stale_generation);
+        assert!(state.snapshot().expect("banner snapshot").is_empty());
+    }
+
+    #[test]
+    fn dismissing_an_older_banner_preserves_the_newer_pending_sound() {
+        let state = BannerState::default();
+        let now = Instant::now();
+        state.push(notification(1, "first")).expect("first banner");
+        let mut second = notification(2, "second");
+        second.sound = Some(crate::model::NotificationSound::Default);
+        state.push(second).expect("second banner");
+
+        assert!(!state.dismiss(1).expect("dismiss first"));
+        let generation = state.begin_presentation(now).expect("presentation");
+        assert_eq!(
+            state.take_pending_sound(generation).expect("pending sound"),
+            Some(crate::model::NotificationSound::Default)
+        );
     }
 
     #[test]

@@ -42,12 +42,13 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
       refreshGeneration.current += 1;
       setBanners((current) => current.filter((banner) => banner.id !== id));
       setUnavailable(false);
+      await refresh();
       return true;
     } catch {
       setUnavailable(true);
       return false;
     }
-  }, [client]);
+  }, [client, refresh]);
 
   useEffect(() => {
     let active = true;
