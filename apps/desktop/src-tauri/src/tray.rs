@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use tauri::{
     App, AppHandle, Emitter, Manager, Wry,
@@ -23,111 +26,140 @@ const MAX_TRAY_AGENT_ROWS: usize = 24;
 
 pub struct TrayUi {
     tray: TrayIcon<Wry>,
+    presentation: Arc<Mutex<TrayPresentation>>,
 }
 
 impl TrayUi {
     pub fn sync_from_state(&self, app: &AppHandle<Wry>) -> tauri::Result<()> {
         let app = app.clone();
         let tray = self.tray.clone();
+        let presentation = Arc::clone(&self.presentation);
         app.clone().run_on_main_thread(move || {
             let view = match app.state::<DesktopState>().lock() {
                 Ok(state) => state.view(),
                 Err(_) => return,
             };
-            let state = view.tray_state;
-            let language = view.preferences.language;
-            let Ok(menu) = build_menu(&app, &view) else {
+            let next = TrayPresentation::from_view(&view);
+            let Ok(mut current) = presentation.lock() else {
                 return;
             };
-            let _ = tray.set_tooltip(Some(state.tooltip(language)));
-            let _ = icon_for(state).and_then(|icon| tray.set_icon(Some(icon)));
-            let _ = tray.set_menu(Some(menu));
+            if *current == next {
+                return;
+            }
+            let Ok(menu) = build_menu(&app, &next) else {
+                return;
+            };
+            let _ = tray.set_tooltip(Some(next.tooltip.as_str()));
+            let _ = icon_for(next.state).and_then(|icon| tray.set_icon(Some(icon)));
+            if tray.set_menu(Some(menu)).is_ok() {
+                *current = next;
+            }
         })
     }
 }
 
 pub fn setup(app: &App<Wry>, initial_view: &AppView) -> tauri::Result<TrayUi> {
-    let initial_state = initial_view.tray_state;
-    let language = initial_view.preferences.language;
-    let menu = build_menu(app, initial_view)?;
+    let presentation = TrayPresentation::from_view(initial_view);
+    let menu = build_menu(app, &presentation)?;
 
     let tray = TrayIconBuilder::with_id("aizu")
-        .icon(icon_for(initial_state)?)
+        .icon(icon_for(presentation.state)?)
         .icon_as_template(true)
-        .tooltip(initial_state.tooltip(language))
+        .tooltip(&presentation.tooltip)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| handle_menu_event(app, &event))
         .build(app)?;
 
-    Ok(TrayUi { tray })
+    Ok(TrayUi {
+        tray,
+        presentation: Arc::new(Mutex::new(presentation)),
+    })
 }
 
-fn build_menu<M: Manager<Wry>>(app: &M, view: &AppView) -> tauri::Result<Menu<Wry>> {
-    let language = view.preferences.language;
-    let status = MenuItem::with_id(
-        app,
-        "status",
-        view.tray_state.tooltip(language),
-        false,
-        None::<&str>,
-    )?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrayPresentation {
+    state: TrayState,
+    tooltip: String,
+    agents_title: String,
+    agent_lines: Vec<String>,
+    sources_title: String,
+    source_lines: Vec<String>,
+    test_label: &'static str,
+    open_label: &'static str,
+    paused_label: &'static str,
+    reconnect_label: &'static str,
+    quit_label: &'static str,
+}
+
+impl TrayPresentation {
+    fn from_view(view: &AppView) -> Self {
+        let language = view.preferences.language;
+        Self {
+            state: view.tray_state,
+            tooltip: view.tray_state.tooltip(language).to_owned(),
+            agents_title: format!(
+                "{} ({})",
+                label(language, "Agents", "エージェント"),
+                view.running_agents.len()
+            ),
+            agent_lines: agent_menu_lines(&view.running_agents, language),
+            sources_title: format!(
+                "{} ({})",
+                label(language, "Sources", "接続元"),
+                view.sources.len()
+            ),
+            source_lines: source_menu_lines(&view.sources, language),
+            test_label: label(language, "Test notification", "テスト通知"),
+            open_label: label(language, "Open Aizu", "Aizuを開く"),
+            paused_label: label(language, "Mute notifications", "通知をミュート"),
+            reconnect_label: label(language, "Reconnect all", "すべて再接続"),
+            quit_label: label(language, "Quit Aizu", "Aizuを終了"),
+        }
+    }
+}
+
+fn build_menu<M: Manager<Wry>>(
+    app: &M,
+    presentation: &TrayPresentation,
+) -> tauri::Result<Menu<Wry>> {
+    let status = MenuItem::with_id(app, "status", &presentation.tooltip, false, None::<&str>)?;
     let agents = submenu(
         app,
         "agents",
-        &format!(
-            "{} ({})",
-            label(language, "Agents", "エージェント"),
-            view.running_agents.len()
-        ),
-        &agent_menu_lines(&view.running_agents, language),
+        &presentation.agents_title,
+        &presentation.agent_lines,
     )?;
     let sources = submenu(
         app,
         "sources",
-        &format!(
-            "{} ({})",
-            label(language, "Sources", "接続元"),
-            view.sources.len()
-        ),
-        &source_menu_lines(&view.sources, language),
+        &presentation.sources_title,
+        &presentation.source_lines,
     )?;
     let test = MenuItem::with_id(
         app,
         "test-notification",
-        label(language, "Test notification", "テスト通知"),
+        presentation.test_label,
         true,
         None::<&str>,
     )?;
-    let open = MenuItem::with_id(
-        app,
-        "open",
-        label(language, "Open Aizu", "Aizuを開く"),
-        true,
-        None::<&str>,
-    )?;
+    let open = MenuItem::with_id(app, "open", presentation.open_label, true, None::<&str>)?;
     let paused = CheckMenuItem::with_id(
         app,
         "paused",
-        label(language, "Mute notifications", "通知をミュート"),
+        presentation.paused_label,
         true,
-        view.tray_state == TrayState::Paused,
+        presentation.state == TrayState::Paused,
         None::<&str>,
     )?;
     let reconnect = MenuItem::with_id(
         app,
         "reconnect",
-        label(language, "Reconnect all", "すべて再接続"),
+        presentation.reconnect_label,
         true,
         None::<&str>,
     )?;
-    let quit = MenuItem::with_id(
-        app,
-        "quit",
-        label(language, "Quit Aizu", "Aizuを終了"),
-        true,
-        None::<&str>,
-    )?;
+    let quit = MenuItem::with_id(app, "quit", presentation.quit_label, true, None::<&str>)?;
     Menu::with_items(
         app,
         &[
@@ -323,10 +355,43 @@ fn toggle_pause(app: &AppHandle<Wry>) {
 #[cfg(test)]
 mod tests {
     use crate::model::{
-        AgentKind, LanguagePreference, RunningAgentView, SourceKind, SourceStatus, SourceView,
+        AgentKind, AppView, CliStatus, LanguagePreference, PermissionStatus, Preferences,
+        RunningAgentView, SourceKind, SourceStatus, SourceView, TrayState,
     };
 
-    use super::{MAX_TRAY_AGENT_ROWS, agent_menu_lines, bounded_menu_text, source_menu_lines};
+    use super::{
+        MAX_TRAY_AGENT_ROWS, TrayPresentation, agent_menu_lines, bounded_menu_text,
+        source_menu_lines,
+    };
+
+    fn empty_view() -> AppView {
+        AppView {
+            onboarding_complete: true,
+            notification_permission: PermissionStatus::Granted,
+            cli_status: CliStatus::Installed,
+            cli_version: Some("0.1.0".to_owned()),
+            protocol_version: 1,
+            app_version: "0.1.0".to_owned(),
+            paused: false,
+            tray_state: TrayState::Normal,
+            sources: Vec::new(),
+            agent_monitors: Vec::new(),
+            running_agents: Vec::new(),
+            history: Vec::new(),
+            preferences: Preferences::default(),
+            last_event_at: None,
+        }
+    }
+
+    #[test]
+    fn unrelated_view_updates_do_not_replace_the_open_menu() {
+        let view = empty_view();
+        let initial = TrayPresentation::from_view(&view);
+        let mut updated = view;
+        updated.last_event_at = Some("2026-08-13T03:30:00Z".to_owned());
+
+        assert_eq!(TrayPresentation::from_view(&updated), initial);
+    }
 
     #[test]
     fn agent_menu_groups_instances_by_agent_and_source() {
