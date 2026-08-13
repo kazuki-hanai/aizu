@@ -66,6 +66,10 @@ jobs:
           sudo apt-get install --yes libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
       - name: Check formatting
         run: cargo fmt --all --check
+      - name: Prepare bundled CLI resource
+        run: |
+          cargo build --locked -p aizu-cli
+          install -D -m 755 target/debug/aizu apps/desktop/src-tauri/resources/bin/aizu
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Run Rust tests
@@ -115,10 +119,14 @@ jobs:
       - name: Build and install isolated remote CLI
         run: |
           cargo build --locked -p aizu-cli
-          install -d -m 700 "$HOME/.local/bin" "$HOME/.ssh"
-          install -m 755 target/debug/aizu "$HOME/.local/bin/aizu"
+          sudo useradd --create-home --shell /bin/bash aizu-ci
+          sudo install -d -o aizu-ci -g aizu-ci -m 700 \
+            /home/aizu-ci/.local/bin /home/aizu-ci/.ssh
+          sudo install -o aizu-ci -g aizu-ci -m 755 \
+            target/debug/aizu /home/aizu-ci/.local/bin/aizu
           ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/aizu-ci-key"
-          install -m 600 "$RUNNER_TEMP/aizu-ci-key.pub" "$HOME/.ssh/authorized_keys"
+          sudo install -o aizu-ci -g aizu-ci -m 600 \
+            "$RUNNER_TEMP/aizu-ci-key.pub" /home/aizu-ci/.ssh/authorized_keys
       - name: Start isolated sshd and verify strict bridge transport
         run: |
           host_key="$RUNNER_TEMP/sshd-host-key"
@@ -129,23 +137,25 @@ jobs:
             'Port 22222' \
             'ListenAddress 127.0.0.1' \
             "HostKey $host_key" \
-            "AuthorizedKeysFile $HOME/.ssh/authorized_keys" \
+            'AuthorizedKeysFile .ssh/authorized_keys' \
+            'PubkeyAuthentication yes' \
             'PasswordAuthentication no' \
             'KbdInteractiveAuthentication no' \
             'UsePAM no' \
+            'AllowUsers aizu-ci' \
             'AllowTcpForwarding no' \
             'X11Forwarding no' \
             "PidFile $RUNNER_TEMP/sshd.pid" > "$config"
           sudo mkdir -p /run/sshd
           sudo /usr/sbin/sshd -f "$config" -E "$RUNNER_TEMP/sshd.log"
-          trap 'sudo kill -TERM "$(cat "$RUNNER_TEMP/sshd.pid")"' EXIT
+          trap 'status=$?; if [ "$status" -ne 0 ]; then sudo cat "$RUNNER_TEMP/sshd.log"; fi; sudo kill -TERM "$(cat "$RUNNER_TEMP/sshd.pid")"; exit "$status"' EXIT
           ssh-keyscan -p 22222 127.0.0.1 > "$known_hosts" 2>/dev/null
           install -m 600 "$known_hosts" "$HOME/.ssh/known_hosts"
           printf '%s\n' \
             'Host aizu-ci' \
             '  HostName 127.0.0.1' \
             '  Port 22222' \
-            "  User $USER" \
+            '  User aizu-ci' \
             "  IdentityFile $RUNNER_TEMP/aizu-ci-key" > "$HOME/.ssh/config"
           chmod 600 "$HOME/.ssh/config"
           ssh -T -n \
@@ -181,7 +191,7 @@ jobs:
               const frame = JSON.parse(input.trim());
               if (frame.type !== "error" || frame.code !== "incompatible_protocol") process.exit(1);
             });'
-          mv "$HOME/.local/bin/aizu" "$HOME/.local/bin/aizu.disabled"
+          sudo mv /home/aizu-ci/.local/bin/aizu /home/aizu-ci/.local/bin/aizu.disabled
           if ssh -T -n \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
@@ -192,7 +202,7 @@ jobs:
             echo "missing remote CLI unexpectedly succeeded"
             exit 1
           fi
-          mv "$HOME/.local/bin/aizu.disabled" "$HOME/.local/bin/aizu"
+          sudo mv /home/aizu-ci/.local/bin/aizu.disabled /home/aizu-ci/.local/bin/aizu
 
   build-check-macos:
     name: build-check-macos
