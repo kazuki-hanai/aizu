@@ -53,6 +53,10 @@ run = "node scripts/generate-notification-sound.mjs --check"
 description = "Validate documentation and schema contracts"
 run = "node scripts/check-docs-contract.mjs"
 
+[tasks."ci:check"]
+description = "Validate the bounded GitHub Actions runner budget"
+run = "node scripts/check-ci-budget.mjs"
+
 [tasks.check]
 description = "Run the local CI-equivalent repository quality gates"
 run = [
@@ -60,6 +64,7 @@ run = [
   { task = "rust:clippy" },
   { task = "rust:test" },
   { task = "docs:check" },
+  { task = "ci:check" },
   { task = "branding:check" },
   { task = "audio:check" },
   { task = "frontend:check" },

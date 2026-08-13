@@ -1073,74 +1073,31 @@ coverage 数値だけで merge を判断せず、failure/reconnect/security path
 Triggers:
 
 - pull request
-- push to `main`
 
 Security:
 
 - default permissions は `contents: read`
 - fork PR へ release secrets を渡さない
 - third-party actions は full commit SHA で pin
-- duplicate workflow は concurrency group で cancel
+- superseded PR run は concurrency group で cancel
 
 Jobs:
 
-1. **docs-contract**
-   - Markdown structure/internal links
-   - JSON Schema validity
-   - Design Doc/protocol examples against schema
-   - NDJSON/frame-size consistency
-2. **branding-assets**
-   - `scripts/check-icons.sh`
-   - source hash/tool version/generated file consistency
-   - app icon dimensions/alpha/sRGB and tray template monochrome validation
-   - Tauri default icon fingerprint rejection
-3. **rust-quality**
-   - fmt
-   - clippy
-   - unit/integration tests
-4. **frontend-quality**
-   - frozen lockfile install
-   - lint
-   - typecheck
-   - unit tests
-5. **ssh-integration-linux**
-   - ephemeral sshd
-   - real SSH bridge tests
-6. **build-check-macos**
-   - macOS desktop unsigned build
-   - macOS core/CLI build
-7. **build-check-cross-platform**
-   - Windows/Linux で core/CLI compile
-8. **desktop-e2e-macos**
-   - `@wdio/tauri-service` の test-only embedded WebDriver build
-9. **security**
-   - dependency advisory
-   - license policy
-   - secret scanning は GitHub repository settings 側でも有効化
+1. **quality**（Ubuntu、全PR）
+   - docs/schema/protocol、branding/audio、Rust、frontend、real SSH、dependency/license、secretを1 runnerで順次検査
+   - docs-only PRではdocs/assets/secret以外をskip
+2. **macos**（code/package変更時）
+   - desktop Rust clippy/tests、test-only embedded WebDriver E2E
+   - packaging入力変更時だけdevelopment DMGとbundle payload
+   - docs-only PRではrunnerを起動しない
 
-PR の required checks は workflow/job の表示名と完全一致させ、次に固定する。
-
-- docs-contract
-- branding-assets
-- rust-quality
-- frontend-quality
-- ssh-integration-linux
-- build-check-macos
-- desktop-e2e-macos
-- security
-
-`build-check-cross-platform` も原則 green を要求する。matrix の一時的な platform 障害を理由に required check 名を頻繁に変更せず、必要なら固定名の aggregate job を置く。
+同一commitをmerge後の`main` pushで再実行しない。`quality`を固定required checkとし、code/package変更では`macos`もmerge gateにする。runner budgetは`mise run ci:check`でPR最大2、docs-only最大1を検証する。
 
 ### 19.2 `nightly.yml`
 
-- 全 OS compile matrix
-- 長時間 concurrency test
-- migration from previous released DB fixture
-- repeated reconnect/chaos test
-- dependency audit
-- release packaging dry run without signing
+deep checkは週1回、Linux/macOS/Windowsの3 runnerへ集約する。全platformのcore/CLI testsに加え、Linuxでconcurrency/reconnect/migration/dependency policy、macOSでdevelopment DMGを検証する。scheduled/manual runが重複した場合は古いrunをcancelする。
 
-nightly failure は issue または repository notification へ連携する。Aizu 自身の Slack/Discord sink は MVP 完成後に検討する。
+weekly failure は issue または repository notification へ連携する。Aizu 自身の Slack/Discord sink は MVP 完成後に検討する。
 
 ## 20. CD and release design
 

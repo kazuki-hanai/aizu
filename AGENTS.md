@@ -561,69 +561,34 @@ CI と independent review は PR 作成後に並行実行してよい。ただ�
 
 ### 10.1 Pull request CI
 
-`ci.yml` の target jobs:
+`ci.yml` は検査項目ごとではなくplatformごとのaggregate jobにする。
 
-1. **docs-contract**
-   - Markdown/internal links
-   - JSON Schema validity
-   - Design/protocol examples and size-limit consistency
-2. **branding-assets**
-   - deterministic app/tray icon generation check
-   - dimensions, alpha, sRGB, monochrome template validation
-   - source hash/tool version/expected output manifest
-   - Tauri default icon fingerprint rejection
-3. **rust-quality**
-   - `cargo fmt --all --check`
-   - clippy with `-D warnings`
-   - workspace unit/integration tests
-4. **frontend-quality**
-   - frozen lockfile install
-   - lint
-   - typecheck
-   - unit tests
-5. **ssh-integration-linux**
-   - ephemeral localhost `sshd`
-   - known_hosts validation
-   - real SSH bridge
-   - reconnect / missing CLI / protocol mismatch
-6. **build-check-macos**
-   - unsigned macOS desktop build
-   - macOS core/CLI build
-7. **build-check-cross-platform**
-   - Windows/Linux core/CLI compile matrix
-8. **desktop-e2e-macos**
-   - `@wdio/tauri-service` test-only embedded WebDriver
-   - onboarding、source status、history、backlog UI
-9. **security**
-   - dependency advisory
-   - license policy
-   - repository secret scanning
+1. **quality**（Ubuntu、全PRで1 runner）
+   - docs/schema/protocol、deterministic branding/audio
+   - Rust format、clippy `-D warnings`、workspace tests
+   - frontend frozen install、lint、typecheck、unit tests、build
+   - ephemeral `sshd`、known_hosts、bridge、reconnect、missing CLI、protocol mismatch
+   - dependency advisory、license/source policy、secret scan
+   - docs-only PRではRust/frontend/SSH/dependency auditをskipする
+2. **macos**（code/package変更時だけ1 runner）
+   - desktop Rust clippy/tests
+   - packaging入力変更時だけdevelopment DMG、Finder alias/background、bundle identity、bundled CLI/audio
+   - `@wdio/tauri-service` test-only embedded WebDriver E2E
+   - docs-only PRではrunnerを起動しない
 
-最低限、次を workflow/job の表示名と完全一致する branch protection required checks にする。
+同一commitをmerge後に再課金しないため通常CIは`pull_request`だけで起動し、`main` pushでは起動しない。superseded PR runはcancelする。branding専用workflowや検査項目ごとのjobを再追加せず、`mise run ci:check`でPR最大2 runnerのbudgetを検証する。
 
-- docs-contract
-- branding-assets
-- rust-quality
-- frontend-quality
-- ssh-integration-linux
-- build-check-macos
-- desktop-e2e-macos
-- security
+branch protectionの固定required checkは `quality` とする。code/package変更では `macos` のgreenもmerge checklistで必須、docs-only変更ではskipを許可する。workflow/job名を変更する場合はrepository rulesetと本節を同じPRで同期する。
 
-`build-check-cross-platform` も原則 green を要求し、必要なら固定名の aggregate check を置く。workflow が未実装の段階では「CI 完了」と記載せず、bootstrap work として明示する。
+### 10.2 Weekly deep checks
 
-### 10.2 Nightly CI
+`nightly.yml` はfilename互換性を保ったまま週1回起動し、Linux/macOS/Windowsの3 runnerへ集約する。
 
-`nightly.yml`:
+- 全platformでcore/CLI tests
+- Linuxでlong-running concurrency、reconnect replay、previous release migration、dependency/license audit
+- macOSでdevelopment DMG buildとpayload verification
 
-- macOS / Windows / Linux compile matrix
-- long-running concurrency tests
-- reconnect/chaos tests
-- previous release DB fixture からの migration
-- dependency/license audit
-- unsigned packaging dry run
-
-nightly failure は放置しない。owner と issue を割り当てる。
+日次実行や同一platformの複数jobへ戻さない。manual runとscheduled runが重なった場合は古いrunをcancelする。weekly failure は放置せず、owner と issue を割り当てる。
 
 ### 10.3 CI security
 
