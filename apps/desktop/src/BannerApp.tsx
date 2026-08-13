@@ -52,6 +52,9 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
     }).catch(() => {
       if (active) setUnavailable(true);
     });
+    queueMicrotask(() => {
+      if (active) void refresh();
+    });
     return () => {
       active = false;
       refreshGeneration.current += 1;

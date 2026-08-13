@@ -82,19 +82,11 @@ describe("Aizu Banner", () => {
     const older = deferred<BannerNotification[]>();
     const newer = deferred<BannerNotification[]>();
     const backend = client();
-    let notifyChange: (() => void) | undefined;
-    backend.subscribe = vi.fn((onChange: () => void) => {
-      notifyChange = onChange;
-      return Promise.resolve(() => undefined);
-    });
     vi.mocked(backend.getBanners)
       .mockImplementationOnce(() => older.promise)
       .mockImplementationOnce(() => newer.promise);
 
     render(<BannerApp client={backend} />);
-    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(1));
-    expect(notifyChange).toBeDefined();
-    notifyChange?.();
     await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
 
     newer.resolve([notices[1]]);
