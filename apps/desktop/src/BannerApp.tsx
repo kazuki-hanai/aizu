@@ -1,10 +1,8 @@
-import { X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { BrandMark } from "./components/BrandMark";
+import { SwipeDismissBanner } from "./components/SwipeDismissBanner";
 import { bannerBackend, type BannerClient } from "./lib/backend";
 import type { BannerNotification } from "./lib/contracts";
-import { messages } from "./lib/i18n";
 
 type BannerAppProps = {
   client?: BannerClient;
@@ -37,6 +35,19 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
       setUnavailable(true);
     }
   }, []);
+
+  const dismiss = useCallback(async (id: number) => {
+    try {
+      await client.dismiss(id);
+      refreshGeneration.current += 1;
+      setBanners((current) => current.filter((banner) => banner.id !== id));
+      setUnavailable(false);
+      return true;
+    } catch {
+      setUnavailable(true);
+      return false;
+    }
+  }, [client]);
 
   useEffect(() => {
     let active = true;
@@ -76,24 +87,7 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
     <main aria-label="Aizu notifications" className="banner-stack" ref={stackRef}>
       {unavailable ? <p className="banner-error">Aizu Banner is unavailable.</p> : null}
       {banners.map((banner) => (
-        <article className="aizu-banner" key={banner.id} lang={banner.language === "system" ? undefined : banner.language}>
-          <div className="aizu-banner__content">
-            <span className="aizu-banner__mark"><BrandMark small /></span>
-            <span className="aizu-banner__copy">
-              <strong>{banner.title}</strong>
-              {banner.body ? <span className="aizu-banner__body">{banner.body}</span> : null}
-            </span>
-          </div>
-          <button
-            aria-label={messages(banner.language).dismissNotification}
-            className="aizu-banner__dismiss"
-            onClick={() => void runAction(() => client.dismiss(banner.id))}
-            title={messages(banner.language).dismissNotification}
-            type="button"
-          >
-            <X aria-hidden="true" size={16} />
-          </button>
-        </article>
+        <SwipeDismissBanner banner={banner} key={banner.id} onDismiss={dismiss} />
       ))}
     </main>
   );

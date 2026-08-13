@@ -129,7 +129,14 @@ describe("Aizu desktop MVP", () => {
         ? window.getComputedStyle(banner).animationName
         : null;
     })).toBe("aizu-banner-enter");
-    await $('button[aria-label="Dismiss notification"]').click();
+    const banner = $(".aizu-banner");
+    await banner.dragAndDrop({ x: -120, y: 0 }, { duration: 240 });
+    await expect(banner).not.toBeExisting();
+    await browser.waitUntil(async () => {
+      const remaining = await browser.tauri.execute(({ core }) =>
+        core.invoke("get_banners")) as CapturedNotification[];
+      return remaining.length === 0;
+    }, { timeout: 2_000, timeoutMsg: "swiped banner remained in the backend queue" });
     await browser.switchToWindow("main");
     await expect($("h1=Agents")).toBeDisplayed();
     const paused = await invokeView("set_notifications_paused", { paused: true });

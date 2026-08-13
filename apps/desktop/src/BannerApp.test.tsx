@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -24,6 +24,34 @@ class TestResizeObserver {
 Object.defineProperty(window, "ResizeObserver", {
   configurable: true,
   value: TestResizeObserver,
+});
+Object.defineProperty(window, "matchMedia", {
+  configurable: true,
+  value: vi.fn().mockReturnValue({ matches: false }),
+});
+
+const pointerCaptures = new WeakMap<Element, Set<number>>();
+Object.defineProperties(HTMLElement.prototype, {
+  hasPointerCapture: {
+    configurable: true,
+    value(this: HTMLElement, pointerId: number) {
+      return pointerCaptures.get(this)?.has(pointerId) ?? false;
+    },
+  },
+  releasePointerCapture: {
+    configurable: true,
+    value(this: HTMLElement, pointerId: number) {
+      pointerCaptures.get(this)?.delete(pointerId);
+    },
+  },
+  setPointerCapture: {
+    configurable: true,
+    value(this: HTMLElement, pointerId: number) {
+      const captures = pointerCaptures.get(this) ?? new Set<number>();
+      captures.add(pointerId);
+      pointerCaptures.set(this, captures);
+    },
+  },
 });
 
 const notices: BannerNotification[] = [
@@ -72,7 +100,7 @@ describe("Aizu Banner", () => {
     await waitFor(() => expect(backend.resize).toHaveBeenCalled());
   });
 
-  it("keeps notification content passive and dismisses only from the close button", async () => {
+  it("keeps notification content passive and dismisses from the close button", async () => {
     const user = userEvent.setup();
     const backend = client();
     const { container } = render(<BannerApp client={backend} />);
@@ -82,6 +110,96 @@ describe("Aizu Banner", () => {
     expect(backend.dismiss).not.toHaveBeenCalled();
     await user.click((await screen.findAllByRole("button", { name: "Dismiss notification" }))[0]);
     expect(backend.dismiss).toHaveBeenCalledWith(1);
+  });
+
+  it("dismisses after a deliberate horizontal swipe", async () => {
+    const backend = client();
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const banner = container.querySelector<HTMLElement>('[data-banner-id="1"]');
+    expect(banner).not.toBeNull();
+    if (!banner) return;
+
+    fireEvent.pointerDown(banner, { button: 0, clientX: 140, clientY: 20, isPrimary: true, pointerId: 7 });
+    fireEvent.pointerMove(banner, { clientX: 42, clientY: 24, pointerId: 7 });
+    expect(banner).toHaveClass("aizu-banner--dragging");
+    expect(Number.parseInt(banner.style.getPropertyValue("--aizu-swipe-offset"), 10)).toBeLessThanOrEqual(-72);
+    fireEvent.pointerUp(banner, { clientX: 42, clientY: 24, pointerId: 7 });
+
+    expect(banner).toHaveClass("aizu-banner--dismiss-left");
+    await waitFor(() => expect(backend.dismiss).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(container.querySelector('[data-banner-id="1"]')).not.toBeInTheDocument());
+  });
+
+  it("supports a right swipe without sending dismiss twice", async () => {
+    const backend = client();
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const banner = container.querySelector<HTMLElement>('[data-banner-id="1"]');
+    expect(banner).not.toBeNull();
+    if (!banner) return;
+
+    fireEvent.pointerDown(banner, { button: 0, clientX: 20, clientY: 20, isPrimary: true, pointerId: 12 });
+    fireEvent.pointerMove(banner, { clientX: 120, clientY: 20, pointerId: 12 });
+    fireEvent.pointerUp(banner, { clientX: 120, clientY: 20, pointerId: 12 });
+    fireEvent.click((await screen.findAllByRole("button", { name: "Dismiss notification" }))[0]);
+
+    expect(banner).toHaveClass("aizu-banner--dismiss-right");
+    await waitFor(() => expect(backend.dismiss).toHaveBeenCalledTimes(1));
+  });
+
+  it("restores short swipes and ignores vertical drags", async () => {
+    const backend = client();
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const banner = container.querySelector<HTMLElement>('[data-banner-id="1"]');
+    expect(banner).not.toBeNull();
+    if (!banner) return;
+
+    fireEvent.pointerDown(banner, { button: 0, clientX: 100, clientY: 20, isPrimary: true, pointerId: 8 });
+    fireEvent.pointerMove(banner, { clientX: 60, clientY: 22, pointerId: 8 });
+    fireEvent.pointerUp(banner, { clientX: 60, clientY: 22, pointerId: 8 });
+    expect(banner.style.getPropertyValue("--aizu-swipe-offset")).toBe("0px");
+
+    fireEvent.pointerDown(banner, { button: 0, clientX: 100, clientY: 20, isPrimary: true, pointerId: 9 });
+    fireEvent.pointerMove(banner, { clientX: 90, clientY: 110, pointerId: 9 });
+    fireEvent.pointerUp(banner, { clientX: 90, clientY: 110, pointerId: 9 });
+    expect(backend.dismiss).not.toHaveBeenCalled();
+  });
+
+  it("preserves body text selection instead of starting a swipe", async () => {
+    const backend = client();
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const body = container.querySelector<HTMLElement>(".aizu-banner__body");
+    const banner = container.querySelector<HTMLElement>('[data-banner-id="1"]');
+    expect(body).not.toBeNull();
+    expect(banner).not.toBeNull();
+    if (!body || !banner) return;
+
+    fireEvent.pointerDown(body, { button: 0, clientX: 120, clientY: 40, isPrimary: true, pointerId: 10 });
+    fireEvent.pointerMove(banner, { clientX: 20, clientY: 40, pointerId: 10 });
+    fireEvent.pointerUp(banner, { clientX: 20, clientY: 40, pointerId: 10 });
+    expect(backend.dismiss).not.toHaveBeenCalled();
+    expect(banner.style.getPropertyValue("--aizu-swipe-offset")).toBe("0px");
+  });
+
+  it("restores a swiped banner when persistence fails", async () => {
+    const backend = client();
+    vi.mocked(backend.dismiss).mockRejectedValueOnce(new Error("unavailable"));
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const banner = container.querySelector<HTMLElement>('[data-banner-id="1"]');
+    expect(banner).not.toBeNull();
+    if (!banner) return;
+
+    fireEvent.pointerDown(banner, { button: 0, clientX: 140, clientY: 20, isPrimary: true, pointerId: 11 });
+    fireEvent.pointerMove(banner, { clientX: 40, clientY: 20, pointerId: 11 });
+    fireEvent.pointerUp(banner, { clientX: 40, clientY: 20, pointerId: 11 });
+
+    await waitFor(() => expect(backend.dismiss).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(banner).not.toHaveClass("aizu-banner--dismiss-left"));
+    expect(banner.style.getPropertyValue("--aizu-swipe-offset")).toBe("0px");
   });
 
   it("does not let an older banner snapshot replace a newer one", async () => {
@@ -102,5 +220,23 @@ describe("Aizu Banner", () => {
 
     expect(screen.queryByText(notices[0].body)).not.toBeInTheDocument();
     expect(screen.getByText(notices[1].body)).toBeVisible();
+  });
+
+  it("does not let an in-flight snapshot resurrect a dismissed banner", async () => {
+    const stale = deferred<BannerNotification[]>();
+    const backend = client();
+    render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    vi.mocked(backend.getBanners).mockImplementationOnce(() => stale.promise);
+    const [[subscription]] = vi.mocked(backend.subscribe).mock.calls;
+    subscription();
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(3));
+
+    await userEvent.setup().click((await screen.findAllByRole("button", { name: "Dismiss notification" }))[0]);
+    await waitFor(() => expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument());
+    stale.resolve(notices);
+    await Promise.resolve();
+
+    expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument();
   });
 });
