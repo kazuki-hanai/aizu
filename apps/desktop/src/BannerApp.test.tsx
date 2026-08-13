@@ -135,6 +135,24 @@ describe("Aizu Banner", () => {
     await waitFor(() => expect(container.querySelector('[data-banner-id="1"]')).not.toBeInTheDocument());
   });
 
+  it("supports a mouse-only drag when WebKit does not emit pointer events", async () => {
+    const backend = client();
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const banner = container.querySelector<HTMLElement>('[data-banner-id="1"]');
+    const handle = banner?.querySelector<HTMLElement>(".aizu-banner__mark");
+    expect(banner).not.toBeNull();
+    expect(handle).not.toBeNull();
+    if (!banner || !handle) return;
+
+    fireEvent.mouseDown(handle, { button: 0, clientX: 140, clientY: 20 });
+    fireEvent.mouseMove(window, { button: 0, clientX: 40, clientY: 20 });
+    fireEvent.mouseUp(window, { button: 0, clientX: 40, clientY: 20 });
+
+    expect(banner).toHaveClass("aizu-banner--dismiss-left");
+    await waitFor(() => expect(backend.dismiss).toHaveBeenCalledWith(1));
+  });
+
   it("supports a right swipe without sending dismiss twice", async () => {
     const backend = client();
     const { container } = render(<BannerApp client={backend} />);

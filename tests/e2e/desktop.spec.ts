@@ -130,7 +130,18 @@ describe("Aizu desktop MVP", () => {
         : null;
     })).toBe("aizu-banner-enter");
     const banner = $(".aizu-banner");
-    await banner.dragAndDrop({ x: -120, y: 0 }, { duration: 240 });
+    const swipeHandle = $(".aizu-banner__mark");
+    await browser.action("pointer", { parameters: { pointerType: "mouse" } })
+      .move({ duration: 0, origin: swipeHandle, x: 0, y: 0 })
+      .down({ button: 0 })
+      .pause(50)
+      .move({ duration: 240, origin: "pointer", x: -120, y: 0 })
+      .up({ button: 0 })
+      .perform();
+    await browser.waitUntil(async () => {
+      const state = await banner.getAttribute("class").catch(() => "");
+      return (state?.includes("aizu-banner--dismiss-left") ?? false) || !(await banner.isExisting());
+    }, { timeout: 1_000, timeoutMsg: "mouse actions did not start banner dismissal" });
     await expect(banner).not.toBeExisting();
     await browser.waitUntil(async () => {
       const remaining = await browser.tauri.execute(({ core }) =>

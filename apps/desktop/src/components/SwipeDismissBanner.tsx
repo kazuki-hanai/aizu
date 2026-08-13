@@ -14,6 +14,7 @@ import { BrandMark } from "./BrandMark";
 
 type SwipeState = {
   axis: "pending" | "horizontal";
+  input: "mouse" | "pointer";
   pointerId: number;
   startX: number;
   startY: number;
@@ -34,6 +35,7 @@ export function SwipeDismissBanner({
   banner: BannerNotification;
   onDismiss: (id: number) => Promise<boolean>;
 }) {
+  const bannerRef = useRef<HTMLElement>(null);
   const swipe = useRef<SwipeState | null>(null);
   const offset = useRef(0);
   const dismissTimer = useRef<number | null>(null);
@@ -55,11 +57,10 @@ export function SwipeDismissBanner({
     if (dismissTimer.current !== null) window.clearTimeout(dismissTimer.current);
   }, []);
 
-  const finish = useCallback((event: ReactPointerEvent<HTMLElement>, cancelled = false) => {
+  const finish = useCallback((input: SwipeState["input"], pointerId: number, cancelled = false) => {
     const active = swipe.current;
-    if (active?.pointerId !== event.pointerId) return;
+    if (active?.input !== input || active.pointerId !== pointerId) return;
     swipe.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     setDragging(false);
     if (dismissStarted.current) {
       offset.current = 0;
@@ -84,40 +85,70 @@ export function SwipeDismissBanner({
     }, delay);
   }, [banner.id, onDismiss, reset]);
 
-  const handlePointerDown = (event: ReactPointerEvent<HTMLElement>) => {
-    if (!event.isPrimary || event.button !== 0 || dismissStarted.current || exitDirection !== null) return;
-    if (event.target instanceof Element && event.target.closest("button, .aizu-banner__body")) return;
+  const begin = (
+    input: SwipeState["input"],
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+    target: EventTarget,
+  ) => {
+    if (swipe.current || dismissStarted.current || exitDirection !== null) return false;
+    if (target instanceof Element && target.closest("button, .aizu-banner__body")) return false;
     swipe.current = {
       axis: "pending",
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
+      input,
+      pointerId,
+      startX: clientX,
+      startY: clientY,
     };
     offset.current = 0;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    return true;
   };
 
-  const handlePointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+  const move = useCallback((
+    input: SwipeState["input"],
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+    preventDefault: () => void,
+  ) => {
     const active = swipe.current;
-    if (active?.pointerId !== event.pointerId || dismissStarted.current || exitDirection !== null) return;
-    const deltaX = event.clientX - active.startX;
-    const deltaY = event.clientY - active.startY;
+    if (
+      active?.input !== input ||
+      active.pointerId !== pointerId ||
+      dismissStarted.current ||
+      exitDirection !== null
+    ) return;
+    const deltaX = clientX - active.startX;
+    const deltaY = clientY - active.startY;
     if (active.axis === "pending") {
       if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < AXIS_THRESHOLD) return;
       if (Math.abs(deltaX) <= Math.abs(deltaY)) {
         swipe.current = null;
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
         return;
       }
       active.axis = "horizontal";
       window.getSelection()?.removeAllRanges();
       setDragging(true);
     }
-    event.preventDefault();
-    const width = Math.max(event.currentTarget.getBoundingClientRect().width, DISMISS_THRESHOLD);
+    preventDefault();
+    const width = Math.max(bannerRef.current?.getBoundingClientRect().width ?? 0, DISMISS_THRESHOLD);
     offset.current = Math.max(-width, Math.min(width, deltaX));
     setRenderedOffset(offset.current);
-  };
+  }, [exitDirection]);
+
+  useEffect(() => {
+    const handleMouseMove = (event: MouseEvent) => {
+      move("mouse", 0, event.clientX, event.clientY, () => event.preventDefault());
+    };
+    const handleMouseUp = () => finish("mouse", 0);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [finish, move]);
 
   const style: BannerStyle = {
     "--aizu-swipe-offset": `${String(renderedOffset)}px`,
@@ -141,13 +172,29 @@ export function SwipeDismissBanner({
       className={classes}
       data-banner-id={banner.id}
       lang={banner.language === "system" ? undefined : banner.language}
-      onPointerCancel={(event) => finish(event, true)}
-      onPointerDown={handlePointerDown}
-      onLostPointerCapture={() => {
-        if (swipe.current) reset();
+      onMouseDown={(event) => {
+        if (event.button === 0) begin("mouse", 0, event.clientX, event.clientY, event.target);
       }}
-      onPointerMove={handlePointerMove}
-      onPointerUp={(event) => finish(event)}
+      onPointerCancel={(event) => finish("pointer", event.pointerId, true)}
+      onPointerDown={(event) => {
+        if (
+          event.isPrimary &&
+          event.button === 0 &&
+          begin("pointer", event.pointerId, event.clientX, event.clientY, event.target)
+        ) event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onLostPointerCapture={() => {
+        if (swipe.current?.input === "pointer") reset();
+      }}
+      onPointerMove={(event) => {
+        move("pointer", event.pointerId, event.clientX, event.clientY, () => event.preventDefault());
+      }}
+      onPointerUp={(event: ReactPointerEvent<HTMLElement>) => {
+        const captured = event.currentTarget.hasPointerCapture(event.pointerId);
+        finish("pointer", event.pointerId);
+        if (captured) event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      ref={bannerRef}
       style={style}
     >
       <div className="aizu-banner__content">
