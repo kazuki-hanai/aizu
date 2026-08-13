@@ -7,6 +7,14 @@ import type { BannerClient } from "./lib/backend";
 import type { BannerNotification } from "./lib/contracts";
 import "./styles.css";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 class TestResizeObserver {
   observe() { return undefined; }
   disconnect() { return undefined; }
@@ -68,5 +76,33 @@ describe("Aizu Banner", () => {
     expect(backend.dismiss).toHaveBeenCalledWith(1);
     await user.click(screen.getAllByRole("button", { name: "Open Aizu" })[1]);
     expect(backend.open).toHaveBeenCalledWith(2);
+  });
+
+  it("does not let an older banner snapshot replace a newer one", async () => {
+    const older = deferred<BannerNotification[]>();
+    const newer = deferred<BannerNotification[]>();
+    const backend = client();
+    let notifyChange: (() => void) | undefined;
+    backend.subscribe = vi.fn((onChange: () => void) => {
+      notifyChange = onChange;
+      return Promise.resolve(() => undefined);
+    });
+    vi.mocked(backend.getBanners)
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise);
+
+    render(<BannerApp client={backend} />);
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(1));
+    expect(notifyChange).toBeDefined();
+    notifyChange?.();
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
+
+    newer.resolve([notices[1]]);
+    expect(await screen.findByText(notices[1].body)).toBeVisible();
+    older.resolve([notices[0]]);
+    await Promise.resolve();
+
+    expect(screen.queryByText(notices[0].body)).not.toBeInTheDocument();
+    expect(screen.getByText(notices[1].body)).toBeVisible();
   });
 });

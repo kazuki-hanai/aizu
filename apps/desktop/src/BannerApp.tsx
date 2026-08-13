@@ -14,12 +14,17 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
   const [banners, setBanners] = useState<BannerNotification[]>([]);
   const [unavailable, setUnavailable] = useState(false);
   const stackRef = useRef<HTMLElement>(null);
+  const refreshGeneration = useRef(0);
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
     try {
-      setBanners(await client.getBanners());
+      const nextBanners = await client.getBanners();
+      if (refreshGeneration.current !== generation) return;
+      setBanners(nextBanners);
       setUnavailable(false);
     } catch {
+      if (refreshGeneration.current !== generation) return;
       setUnavailable(true);
     }
   }, [client]);
@@ -39,19 +44,17 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
     void client.subscribe(() => {
       if (active) void refresh();
     }).then((stop) => {
-      if (active) unsubscribe = stop;
-      else stop();
-    }).catch(() => setUnavailable(true));
-    void client.getBanners().then((nextBanners) => {
       if (active) {
-        setBanners(nextBanners);
-        setUnavailable(false);
+        unsubscribe = stop;
+        void refresh();
       }
+      else stop();
     }).catch(() => {
       if (active) setUnavailable(true);
     });
     return () => {
       active = false;
+      refreshGeneration.current += 1;
       unsubscribe?.();
     };
   }, [client, refresh]);

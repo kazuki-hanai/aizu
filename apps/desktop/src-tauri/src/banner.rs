@@ -73,6 +73,7 @@ fn ensure_window(app: &AppHandle<Wry>) -> Result<tauri::WebviewWindow<Wry>, Noti
     .title("Aizu Banner")
     .inner_size(BANNER_WIDTH, MIN_BANNER_HEIGHT)
     .resizable(false)
+    .closable(false)
     .decorations(false)
     .transparent(true)
     .shadow(true)
