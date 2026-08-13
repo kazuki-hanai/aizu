@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/aizu-core", "crates/aizu-cli"]
+members = ["crates/aizu-core", "crates/aizu-cli", "apps/desktop/src-tauri"]
 resolver = "2"
 
 [workspace.package]

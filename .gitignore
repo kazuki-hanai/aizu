@@ -4,3 +4,9 @@
 *.sqlite3-shm
 *.sqlite3-wal
 .DS_Store
+/node_modules/
+/apps/desktop/dist/
+/apps/desktop/*.tsbuildinfo
+/apps/desktop/src-tauri/resources/bin/aizu
+/.playwright-mcp/
+/logs/

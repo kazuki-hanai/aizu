@@ -1,0 +1,11 @@
+packages:
+  - apps/desktop
+allowBuilds:
+  edgedriver: false
+  esbuild: true
+  geckodriver: false
+overrides:
+  serialize-javascript: 7.0.5
+minimumReleaseAgeExclude:
+  - '@testing-library/user-event@14.6.4'
+  - globals@17.11.0

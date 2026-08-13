@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "dev.aizu.desktop.e2e",
+  "build": {
+    "beforeBuildCommand": "VITE_DESKTOP_E2E=1 pnpm build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "e2e-window",
+          "description": "Test-only WebDriver permissions for the Aizu desktop E2E binary",
+          "windows": ["main"],
+          "permissions": [
+            "core:default",
+            "wdio:allow-execute",
+            "wdio:allow-get-window-states",
+            "wdio-webdriver:default"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

@@ -24,15 +24,40 @@ description = "Run all Rust tests with locked dependencies"
 run = "cargo test --workspace --all-features --locked"
 
 [tasks."rust:build"]
-description = "Build the optimized Rust workspace"
-run = "cargo build --workspace --release --all-features --locked"
+description = "Build optimized release binaries without test-only features"
+run = "cargo build --workspace --release --locked"
+
+[tasks."frontend:install"]
+description = "Install frontend dependencies from the frozen workspace lockfile"
+run = "pnpm install --frozen-lockfile"
+
+[tasks."frontend:check"]
+description = "Lint, type-check, test, and build the desktop presentation layer"
+depends = ["frontend:install"]
+run = [
+  "pnpm lint",
+  "pnpm typecheck",
+  "pnpm test",
+  "pnpm build",
+]
+
+[tasks."branding:check"]
+description = "Validate deterministic branding assets"
+run = "./scripts/check-icons.sh"
+
+[tasks."docs:check"]
+description = "Validate documentation and schema contracts"
+run = "node scripts/check-docs-contract.mjs"
 
 [tasks.check]
-description = "Run the local CI-equivalent Rust quality gates"
+description = "Run the local CI-equivalent repository quality gates"
 run = [
   { task = "rust:fmt" },
   { task = "rust:clippy" },
   { task = "rust:test" },
+  { task = "docs:check" },
+  { task = "branding:check" },
+  { task = "frontend:check" },
 ]
 
 [tasks.build]
