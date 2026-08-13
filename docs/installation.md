@@ -41,12 +41,12 @@ than replacing anything already present at the target path.
   mise exec -- cargo build --locked --release -p aizu-cli
   install -d -m 700 "$HOME/.local/bin"
   stage="$HOME/.local/bin/.aizu-install-$$"
-  trap 'rm -f "$stage"' EXIT
+  trap 'rm -f "$stage"' EXIT HUP INT TERM
   install -m 755 target/release/aizu "$stage"
   "$stage" version --json
   ln "$stage" "$HOME/.local/bin/aizu"
   rm -f "$stage"
-  trap - EXIT
+  trap - EXIT HUP INT TERM
   "$HOME/.local/bin/aizu" version --json
   "$HOME/.local/bin/aizu" doctor --json
 )
