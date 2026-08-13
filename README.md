@@ -79,7 +79,7 @@ background service. The repository must already be cloned on that machine:
 ```bash
 cd /path/to/aizu
 mise trust
-mise install rust
+mise install rust node
 mise exec -- cargo build --locked --release -p aizu-cli
 install -d -m 700 "$HOME/.local/bin"
 stage="$HOME/.local/bin/.aizu-install-$$"
@@ -142,17 +142,36 @@ Pull the desired Aizu revision on the Linux or macOS source, rebuild, and
 replace only the Aizu-managed binary:
 
 ```bash
-cd /path/to/aizu
-git pull --ff-only
-mise exec -- cargo build --locked --release -p aizu-cli
-target="$HOME/.local/bin/aizu"
-test -f "$target" && test ! -L "$target"
-"$target" version --json
-stage="$HOME/.local/bin/.aizu-update-$$"
-install -m 755 target/release/aizu "$stage"
-"$stage" version --json
-mv -f "$stage" "$target"
-"$HOME/.local/bin/aizu" version --json
+(
+  set -eu
+  cd /path/to/aizu
+  git pull --ff-only
+  mise exec -- cargo build --locked --release -p aizu-cli
+  target="$HOME/.local/bin/aizu"
+  test -f "$target" && test ! -L "$target"
+  validate_report() {
+    "$1" version --json | mise exec -- node -e '
+      let input = "";
+      process.stdin.on("data", chunk => input += chunk);
+      process.stdin.on("end", () => {
+        const report = JSON.parse(input);
+        const version = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u;
+        if (!version.test(report.application)
+          || !Number.isInteger(report.protocol)
+          || !Number.isInteger(report.event_schema)
+          || !Number.isInteger(report.database_schema)
+          || typeof report.sqlite !== "string") process.exit(1);
+      });'
+  }
+  validate_report "$target"
+  stage="$HOME/.local/bin/.aizu-update-$$"
+  trap 'rm -f "$stage"' EXIT HUP INT TERM
+  install -m 755 target/release/aizu "$stage"
+  validate_report "$stage"
+  mv -f "$stage" "$target"
+  trap - EXIT HUP INT TERM
+  validate_report "$target"
+)
 ```
 
 Continue only if you installed the existing file using these Aizu instructions
