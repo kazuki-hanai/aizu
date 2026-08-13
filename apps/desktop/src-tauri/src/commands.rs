@@ -148,7 +148,7 @@ pub fn update_preferences(
     let delivery = request.notification_delivery;
     let view = state.lock()?.update_preferences(request)?;
     if delivery == NotificationDelivery::System {
-        crate::banner::clear(&app)?;
+        let _ = crate::banner::clear(&app);
     }
     publish(&app, &view);
     Ok(view)

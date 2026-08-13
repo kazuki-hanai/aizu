@@ -48,7 +48,7 @@ html[data-window="banner"] #root {
   min-width: 0;
   min-height: 0;
   color: #f4f6f5;
-  background: #171a19;
+  background: transparent;
 }
 
 html[data-window="banner"] body {

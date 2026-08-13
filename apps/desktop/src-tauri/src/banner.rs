@@ -74,6 +74,7 @@ fn ensure_window(app: &AppHandle<Wry>) -> Result<tauri::WebviewWindow<Wry>, Noti
     .inner_size(BANNER_WIDTH, MIN_BANNER_HEIGHT)
     .resizable(false)
     .decorations(false)
+    .transparent(true)
     .shadow(true)
     .always_on_top(true)
     .visible_on_all_workspaces(true)
