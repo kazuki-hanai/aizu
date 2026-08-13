@@ -9,6 +9,7 @@ import { changedPaths, classifyChanges } from "./ci/classify-changes.mjs";
 const root = resolve(import.meta.dirname, "..");
 const ci = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
 const weekly = readFileSync(resolve(root, ".github/workflows/nightly.yml"), "utf8");
+const release = readFileSync(resolve(root, ".github/workflows/release.yml"), "utf8");
 const errors = [];
 
 function topLevelJobNames(workflow) {
@@ -42,6 +43,9 @@ const classifications = [
   { files: ["apps/desktop/package.json"], macos: true, package: true },
   { files: ["mise.toml"], macos: true, package: true },
   { files: [".github/workflows/ci.yml"], macos: true, package: true },
+  { files: [".github/workflows/release.yml"], macos: true, package: true },
+  { files: ["apps/desktop/src-tauri/tauri.release.conf.json"], macos: true, package: true },
+  { files: ["scripts/release/package-cli.sh"], macos: true, package: true },
 ];
 for (const expected of classifications) {
   const actual = classifyChanges(expected.files);
@@ -113,9 +117,20 @@ if (weeklyPlatforms.join(",") !== "linux,macos,windows") {
 }
 if (!weekly.includes("cancel-in-progress: true")) errors.push("weekly checks must not overlap");
 
+if (/^\s{2}pull_request:/mu.test(release)) errors.push("release workflow must never run for pull requests");
+if (!/^\s{2}workflow_dispatch:/mu.test(release)) errors.push("release rehearsals must be explicitly dispatched");
+if (!/^\s{2}push:/mu.test(release) || !release.includes('"v[0-9]+.[0-9]+.[0-9]+"')) {
+  errors.push("release publication must be limited to stable SemVer tags");
+}
+if (!release.includes("name: cli-linux") || !release.includes("name: macos-universal-release-set")) {
+  errors.push("release rehearsal must consolidate architectures onto one Linux and one macOS builder");
+}
+const releaseMatrixCount = [...release.matchAll(/^\s{4}strategy:\s*$/gmu)].length;
+if (releaseMatrixCount !== 0) errors.push("release workflow must not multiply runners with architecture matrices");
+
 if (errors.length > 0) {
   errors.forEach((error) => console.error(error));
   process.exitCode = 1;
 } else {
-  console.log("validated Actions budget: 2 PR runners, docs-only macOS skip, 3 weekly runners");
+  console.log("validated Actions budget: 2 PR runners, docs-only macOS skip, 3 weekly runners, 4-job release rehearsal");
 }

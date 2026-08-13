@@ -213,4 +213,5 @@ mise tasks
 
 Architecture and protocol details live in [MVP design](docs/mvp-design.md) and
 [Bridge protocol](docs/protocol.md). Development and PR rules are in
-[AGENTS.md](AGENTS.md).
+[AGENTS.md](AGENTS.md). Maintainers can run a no-secret release rehearsal and
+prepare protected signed releases using the [release guide](docs/releasing.md).
