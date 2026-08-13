@@ -54,7 +54,7 @@
         },
         "display_name": {
           "type": "string",
-          "description": "Human-readable source name shown in the UI.",
+          "description": "Human-readable source name supplied by the source. Remote values are untrusted candidates; desktop UI and notifications use the receiver's persisted local source label as the authoritative identity.",
           "minLength": 1,
           "maxLength": 200,
           "pattern": "^[^\\u0000-\\u001F\\u007F]*$"

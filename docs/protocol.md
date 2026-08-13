@@ -158,6 +158,7 @@ source 側で継続不能な状態を通知する。
 | `code` | 意味 |
 |---|---|
 | `incompatible_protocol` | desktop の要求 major version を source が扱えない |
+| `incompatible_database` | source の spool schema が現在の CLI と互換性を持たず、CLI 更新または明示的 recovery が必要 |
 | `spool_unavailable` | spool を開けない・読めない |
 | `cursor_ahead` | requested cursor が source high watermark より大きく、DB rollback/source rewind が疑われる |
 | `invalid_request` | protocol/cursor argument が不正 |
@@ -165,7 +166,7 @@ source 側で継続不能な状態を通知する。
 
 `message` は user-safe な固定文言とし、最大 512 Unicode scalar values。path、username、SQL、secret を含めない。詳細診断は redacted stderr へ出す。
 
-desktop は `error` を error category として分類し、必要に応じて再接続または更新案内を行う。`incompatible_protocol`、`cursor_ahead`、`invalid_request` は自動 retry しない。
+desktop は `error` を error category として分類し、必要に応じて再接続または更新案内を行う。`incompatible_protocol`、`incompatible_database`、`cursor_ahead`、`invalid_request` は自動 retry せず、user action があるまで停止する。
 
 ## 5. Delivery semantics
 
