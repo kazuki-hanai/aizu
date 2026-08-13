@@ -1,18 +1,15 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
+import Ajv2020 from "ajv/dist/2020.js";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const markdownPaths = [
-  "README.md",
-  "AGENTS.md",
-  ".github/PULL_REQUEST_TEMPLATE.md",
-  "assets/branding/README.md",
-  "assets/branding/app-icon/icon-composer/README.md",
-  "docs/mvp-design.md",
-  "docs/protocol.md",
-];
+const markdownPaths = execFileSync("git", ["ls-files", "*.md"], {
+  cwd: ROOT,
+  encoding: "utf8",
+}).trim().split("\n").filter(Boolean);
 const schemaPath = "docs/schemas/event-v1.schema.json";
 const errors = [];
 
@@ -138,6 +135,16 @@ function validateEvent(event, location) {
 }
 
 if (schema) {
+  try {
+    new Ajv2020({
+      strict: true,
+      strictRequired: false,
+      allErrors: true,
+      validateFormats: false,
+    }).compile(schema);
+  } catch (error) {
+    errors.push(`${schemaPath}: invalid Draft 2020-12 schema: ${error.message}`);
+  }
   if (schema.$schema !== "https://json-schema.org/draft/2020-12/schema") {
     errors.push(`${schemaPath}: must use JSON Schema draft 2020-12`);
   }
