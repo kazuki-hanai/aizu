@@ -17,7 +17,7 @@ desktop-e2e = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
 tauri-build = { version = "2.5.6", features = [] }
 
 [dependencies]
-aizu-core = { path = "../../../crates/aizu-core" }
+aizu-core = { version = "0.1.0", path = "../../../crates/aizu-core" }
 chrono = { workspace = true }
 directories = { workspace = true }
 nix = { version = "0.31.2", features = ["signal"] }

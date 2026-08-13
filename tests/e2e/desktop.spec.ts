@@ -123,13 +123,37 @@ describe("Aizu desktop MVP", () => {
     await browser.switchToWindow("banner");
     await expect($("strong=Aizu test notification")).toBeDisplayed();
     await expect($("span=Aizu Banner is ready.")).toBeDisplayed();
-    expect(await browser.execute(() => {
+    const entranceMotion = await browser.execute(() => {
       const banner = document.querySelector(".aizu-banner");
-      return banner instanceof HTMLElement
-        ? window.getComputedStyle(banner).animationName
-        : null;
-    })).toBe("aizu-banner-enter");
-    await $('button[aria-label="Dismiss notification"]').click();
+      if (!(banner instanceof HTMLElement)) return null;
+      return {
+        animationName: window.getComputedStyle(banner).animationName,
+        reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      };
+    });
+    expect(entranceMotion).not.toBeNull();
+    expect(entranceMotion?.animationName).toBe(
+      entranceMotion?.reducedMotion ? "none" : "aizu-banner-enter",
+    );
+    const banner = $(".aizu-banner");
+    const swipeHandle = $(".aizu-banner__body");
+    await browser.action("pointer", { parameters: { pointerType: "mouse" } })
+      .move({ duration: 0, origin: swipeHandle, x: 0, y: 0 })
+      .down({ button: 0 })
+      .pause(50)
+      .move({ duration: 240, origin: "pointer", x: -120, y: 0 })
+      .up({ button: 0 })
+      .perform();
+    await browser.waitUntil(async () => {
+      const state = await banner.getAttribute("class").catch(() => "");
+      return (state?.includes("aizu-banner--dismiss-left") ?? false) || !(await banner.isExisting());
+    }, { timeout: 1_000, timeoutMsg: "mouse actions did not start banner dismissal" });
+    await expect(banner).not.toBeExisting();
+    await browser.waitUntil(async () => {
+      const remaining = await browser.tauri.execute(({ core }) =>
+        core.invoke("get_banners")) as CapturedNotification[];
+      return remaining.length === 0;
+    }, { timeout: 2_000, timeoutMsg: "swiped banner remained in the backend queue" });
     await browser.switchToWindow("main");
     await expect($("h1=Agents")).toBeDisplayed();
     const paused = await invokeView("set_notifications_paused", { paused: true });

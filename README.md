@@ -140,7 +140,7 @@ events remain in the source SQLite spool while the Mac is disconnected.
 
 - **Aizu Banner** is the default. It needs no macOS notification permission,
   keeps up to three alerts visible, preserves safe line breaks, and closes only
-  from its close button.
+  from its close button or a horizontal click-drag/swipe.
 - **macOS Notifications** uses Notification Center. Select it under
   **Settings > Notification style**, then use the test action to request system
   permission.
