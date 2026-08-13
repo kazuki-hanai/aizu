@@ -61,6 +61,8 @@ pub enum DesktopError {
     CliInstall,
     #[error("Codex and Claude Code hooks could not be configured safely: {0}")]
     AgentConfiguration(String),
+    #[error("Codex and Claude Code setup stopped before it completed; try again")]
+    AgentSetupTask,
     #[error("Codex and Claude Code hooks and the Aizu CLI must be configured first")]
     AgentSetupIncomplete,
     #[error(
