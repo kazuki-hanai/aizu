@@ -578,7 +578,7 @@ CI と independent review は PR 作成後に並行実行してよい。ただ�
 
 同一commitをmerge後に再課金しないため通常CIは`pull_request`だけで起動し、`main` pushでは起動しない。superseded PR runはcancelする。branding専用workflowや検査項目ごとのjobを再追加せず、`mise run ci:check`でPR最大2 runnerのbudgetを検証する。
 
-branch protectionの固定required checkは `quality` とする。code/package変更では `macos` のgreenもmerge checklistで必須、docs-only変更ではskipを許可する。workflow/job名を変更する場合はrepository rulesetと本節を同じPRで同期する。
+branch protectionの固定required checksは `quality` と `macos` とする。code/package変更では両方のgreenが必須で、docs-only変更ではrunnerを起動しない`macos`のskip-successを許可する。workflow/job名を変更する場合はrepository rulesetと本節を同じPRで同期する。
 
 ### 10.2 Weekly deep checks
 

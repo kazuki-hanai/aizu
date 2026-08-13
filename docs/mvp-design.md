@@ -1091,7 +1091,7 @@ Jobs:
    - packaging入力変更時だけdevelopment DMGとbundle payload
    - docs-only PRではrunnerを起動しない
 
-同一commitをmerge後の`main` pushで再実行しない。`quality`を固定required checkとし、code/package変更では`macos`もmerge gateにする。runner budgetは`mise run ci:check`でPR最大2、docs-only最大1を検証する。
+同一commitをmerge後の`main` pushで再実行しない。`quality`と`macos`を固定required checksとし、docs-only変更ではrunnerを起動しない`macos`のskip-successを許可する。runner budgetは`mise run ci:check`でPR最大2、docs-only最大1を検証する。
 
 ### 19.2 `nightly.yml`
 
