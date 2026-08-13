@@ -512,14 +512,23 @@ function ActivityView({ busy, locale, onClear, t, view }: { busy: boolean; local
             </span>
             <div className="history-row__body">
               <strong>{event.title}</strong>
-              {view.preferences.agentDetailsEnabled && event.summary !== null ? <span>{event.summary}</span> : null}
-              <small>{event.sourceName}</small>
+              {view.preferences.agentDetailsEnabled && event.summary !== null ? <span className="history-row__summary" title={event.summary}>{event.summary}</span> : null}
+              <div className="history-row__meta">
+                <span>{event.sourceName}</span>
+                <span aria-hidden="true">·</span>
+                <time dateTime={event.occurredAt}>{formatTimestamp(event.occurredAt, locale, t.timeUnavailable)}</time>
+              </div>
             </div>
-            <time dateTime={event.occurredAt}>{formatTimestamp(event.occurredAt, locale, t.timeUnavailable)}</time>
-            <StatusBadge
-              label={localizedState(event.deliveryStatus, t)}
-              tone={event.deliveryStatus === "delivered" ? "success" : event.deliveryStatus === "failed" ? "danger" : event.deliveryStatus === "pending" ? "warning" : "muted"}
-            />
+            {event.deliveryStatus === "delivered" ? (
+              <span className="sr-only">{t.delivered}</span>
+            ) : (
+              <div className="history-row__status">
+                <StatusBadge
+                  label={localizedState(event.deliveryStatus, t)}
+                  tone={event.deliveryStatus === "failed" ? "danger" : event.deliveryStatus === "pending" ? "warning" : "muted"}
+                />
+              </div>
+            )}
           </article>
         ))}
       </div>
