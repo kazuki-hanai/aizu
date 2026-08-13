@@ -50,10 +50,11 @@ function client(): BannerClient {
 describe("Aizu Banner", () => {
   it("renders complete notification bodies without automatic dismissal", async () => {
     const backend = client();
-    render(<BannerApp client={backend} />);
+    const { container } = render(<BannerApp client={backend} />);
 
     expect(await screen.findByText(notices[0].body)).toBeVisible();
     expect(screen.getByText(notices[1].body)).toBeVisible();
+    expect(container.querySelectorAll(".aizu-banner")).toHaveLength(2);
     expect(backend.dismiss).not.toHaveBeenCalled();
     await waitFor(() => expect(backend.resize).toHaveBeenCalled());
   });

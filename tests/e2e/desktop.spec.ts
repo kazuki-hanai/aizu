@@ -123,6 +123,12 @@ describe("Aizu desktop MVP", () => {
     await browser.switchToWindow("banner");
     await expect($("strong=Aizu test notification")).toBeDisplayed();
     await expect($("span=Aizu Banner is ready.")).toBeDisplayed();
+    expect(await browser.execute(() => {
+      const banner = document.querySelector(".aizu-banner");
+      return banner instanceof HTMLElement
+        ? window.getComputedStyle(banner).animationName
+        : null;
+    })).toBe("aizu-banner-enter");
     await $('button[aria-label="Open Aizu"]').click();
     await browser.switchToWindow("main");
     await expect($("h1=Agents")).toBeDisplayed();

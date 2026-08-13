@@ -661,7 +661,7 @@ trait Notifier {
 }
 ```
 
-- 既定は app-owned Aizu Banner とし、macOS 通知権限を要求しない。app 稼働中は右上へ最大3件を表示し、privacy filter 後の本文を省略せず、ユーザーが閉じるか開くまで自動消去しない。超過分および app 再起動後は Recent activity を確認経路とする。
+- 既定は app-owned Aizu Banner とし、macOS 通知権限を要求しない。app 稼働中は右上へ最大3件を表示し、privacy filter 後の本文を省略せず、ユーザーが閉じるか開くまで自動消去しない。新規表示には短い enter animation を使い、OS の reduced-motion 設定時は無効化する。超過分および app 再起動後は Recent activity を確認経路とする。
 - Aizu Banner の透明な装飾なし WebView は Tauri の `macos-private-api` feature を使う。MVP は Mac App Store sandbox を対象外とする既存方針を維持し、この feature を notification window の透過だけに限定する。
 - macOS Notifications へ即時切替できる。権限要求は初回起動直後ではなく、テスト通知などの明示操作で行う。
 - macOS Notifications が拒否された場合は System Settings への案内を表示する。
