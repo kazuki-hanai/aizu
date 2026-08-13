@@ -153,6 +153,45 @@ describe("Aizu desktop shell", () => {
     expect(screen.getByRole("button", { name: "Update CLI" })).toBeEnabled();
   });
 
+  it("does not draw separators between configured source rows", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <App
+        backend={makeBackend(
+          makeView({
+            onboardingComplete: true,
+            sources: [
+              {
+                id: "local",
+                name: "This Mac",
+                kind: "local",
+                status: "connected",
+                detail: "Connected",
+                lastEventAt: null,
+                actionRequired: null,
+              },
+              {
+                id: "ssh:mini-pc",
+                name: "Mini PC",
+                kind: "remoteSsh",
+                status: "connected",
+                detail: "Connected",
+                lastEventAt: null,
+                actionRequired: null,
+              },
+            ],
+          }),
+        )}
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Sources" }));
+    const rows = container.querySelectorAll<HTMLElement>(".source-manage-row");
+    expect(rows).toHaveLength(2);
+    expect(getComputedStyle(rows[0]).borderBottomStyle).toBe("none");
+    expect(getComputedStyle(rows[1]).borderBottomStyle).toBe("none");
+  });
+
   it("requests notification permission before sending a test notification", async () => {
     const user = userEvent.setup();
     const backend = makeBackend(

@@ -474,8 +474,7 @@ p {
 }
 
 .sources-layout { display: flex; flex-direction: column; gap: 16px; }
-.source-manage-row { position: relative; border-bottom: 1px solid #e7e9e7; }
-.source-manage-row:last-child { border-bottom: 0; }
+.source-manage-row { position: relative; }
 .source-manage-row .source-row { padding-right: 132px; border-bottom: 0; }
 .source-actions { position: absolute; right: 15px; top: 14px; display: flex; align-items: center; gap: 7px; }
 .source-actions .icon-button { width: 30px; height: 30px; }
