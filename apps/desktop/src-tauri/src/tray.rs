@@ -413,15 +413,15 @@ mod tests {
             RunningAgentView {
                 agent: AgentKind::ClaudeCode,
                 label: "Claude Code".to_owned(),
-                source_id: "ssh:mini-pc".to_owned(),
-                source_name: "Mini PC".to_owned(),
+                source_id: "ssh:remote-host".to_owned(),
+                source_name: "Remote host".to_owned(),
                 source_kind: SourceKind::RemoteSsh,
             },
         ];
 
         assert_eq!(
             agent_menu_lines(&agents, LanguagePreference::English),
-            vec!["Claude Code - Mini PC", "Codex x2 - This Mac"]
+            vec!["Claude Code - Remote host", "Codex x2 - This Mac"]
         );
         assert_eq!(
             agent_menu_lines(&agents[..2], LanguagePreference::Japanese),
@@ -442,8 +442,8 @@ mod tests {
                 action_required: None,
             },
             SourceView {
-                id: "ssh:mini-pc".to_owned(),
-                name: "Mini PC".to_owned(),
+                id: "ssh:remote-host".to_owned(),
+                name: "Remote host".to_owned(),
                 kind: SourceKind::RemoteSsh,
                 status: SourceStatus::Reconnecting,
                 detail: "raw SSH error must not appear".to_owned(),
@@ -454,7 +454,7 @@ mod tests {
 
         assert_eq!(
             source_menu_lines(&sources, LanguagePreference::Japanese),
-            vec!["このMac - 接続済み", "Mini PC - 再接続中"]
+            vec!["このMac - 接続済み", "Remote host - 再接続中"]
         );
     }
 
