@@ -28,6 +28,10 @@ requireText("published versions are immutable", "release publication must reject
 requireText("minisign -Vm", "updater archives must be verified with the checked-in public key");
 requireText("gh attestation verify release-assets/*", "publish must verify provenance after downloading artifacts");
 requireText("sha256sum --check SHA256SUMS", "publish must verify checksums after downloading artifacts");
+const publishJob = workflow.split(/^  publish:\s*$/mu)[1] ?? "";
+if (!/^\s{6}attestations: read\s*$/mu.test(publishJob)) {
+  errors.push("release publication must have read access to provenance attestations");
+}
 requireText("/commits/$GITHUB_SHA/pulls", "publish preflight must resolve the merged PR for a squash commit");
 requireText("head_sha=$pr_head", "publish preflight must verify CI for the merged PR head");
 requireText("name: cli-linux", "Linux CLI architectures must share one runner");

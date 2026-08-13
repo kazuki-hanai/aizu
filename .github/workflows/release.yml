@@ -304,6 +304,7 @@ jobs:
     timeout-minutes: 20
     environment: release-publish
     permissions:
+      attestations: read
       contents: write
     steps:
       - name: Download verified release assets
