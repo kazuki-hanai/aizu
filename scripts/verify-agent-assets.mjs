@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CHECKSUMS = "assets/branding/agents/SHA256SUMS";
@@ -21,10 +21,17 @@ const entries = readFileSync(resolve(ROOT, CHECKSUMS), "utf8")
   });
 
 const listed = new Set(entries.map(({ path }) => path));
+function inventory(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) return inventory(path);
+    if (!entry.isFile()) throw new Error(`${relative(ROOT, path)}: unsupported vendor entry`);
+    return [relative(ROOT, path)];
+  });
+}
+
 const vendorFiles = ["anthropic", "openai"].flatMap((vendor) =>
-  readdirSync(resolve(ROOT, `assets/branding/agents/${vendor}`), { withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => `assets/branding/agents/${vendor}/${entry.name}`),
+  inventory(resolve(ROOT, `assets/branding/agents/${vendor}`)),
 );
 
 if (listed.size !== entries.length) throw new Error(`${CHECKSUMS}: duplicate path`);
