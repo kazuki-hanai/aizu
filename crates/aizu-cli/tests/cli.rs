@@ -396,7 +396,10 @@ fn hook_is_best_effort_unless_strict() {
         .assert()
         .success()
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains("was not persisted"));
+        .stderr(predicate::str::contains(
+            "notification event was not persisted (storage_error)",
+        ))
+        .stderr(predicate::str::contains(unsafe_state_path.to_str().unwrap()).not());
 
     aizu()
         .args([

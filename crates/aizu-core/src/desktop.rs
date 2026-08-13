@@ -12,7 +12,7 @@ use crate::NormalizedEvent;
 use crate::event::{ValidationError, format_timestamp, parse_utc_timestamp};
 use crate::notification::is_clock_skewed;
 
-pub const DESKTOP_DATABASE_SCHEMA_VERSION: i64 = 3;
+pub const DESKTOP_DATABASE_SCHEMA_VERSION: i64 = 4;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_PAGE_SIZE: usize = 100;
 const MAX_PAGE_SIZE: usize = 1_000;
@@ -20,6 +20,7 @@ const HISTORY_RETENTION_DAYS: i64 = 30;
 const MAX_HISTORY_EVENTS: i64 = 10_000;
 const MAX_DESKTOP_BYTES: i64 = 128 * 1024 * 1024;
 const MAINTENANCE_BATCH: i64 = 512;
+const MAX_TOMBSTONES: i64 = MAX_HISTORY_EVENTS;
 
 /// Durable desktop-side source, cursor, history, deduplication, and outbox state.
 #[derive(Clone, Debug)]
@@ -256,6 +257,7 @@ impl DesktopState {
         if changed != 1 {
             return Err(DesktopError::ConcurrentSourceChange);
         }
+        update_source_checkpoint(&transaction, pinned, sequence)?;
         transaction.execute(
             "INSERT INTO notification_outbox (
                 event_row_id, notification_identifier, state, reason, attempt_count,
@@ -348,6 +350,7 @@ impl DesktopState {
         if changed != 1 {
             return Err(DesktopError::ConcurrentSourceChange);
         }
+        update_source_checkpoint(&transaction, source_id, lost_through_sequence)?;
         transaction.commit()?;
         Ok(GapResult::Recorded { gap_row_id })
     }
@@ -554,11 +557,21 @@ impl DesktopState {
         &self,
         now: DateTime<Utc>,
     ) -> Result<HistoryMaintenanceReport, DesktopError> {
+        self.maintain_history_with_tombstone_clock(now, now)
+    }
+
+    fn maintain_history_with_tombstone_clock(
+        &self,
+        history_now: DateTime<Utc>,
+        tombstone_now: DateTime<Utc>,
+    ) -> Result<HistoryMaintenanceReport, DesktopError> {
         let mut connection = self.connection()?;
         let mut payload_bytes = history_payload_bytes(&connection)?;
         let over_bytes = payload_bytes > MAX_DESKTOP_BYTES;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let cutoff = format_timestamp(now - ChronoDuration::days(HISTORY_RETENTION_DAYS));
+        let cutoff = format_timestamp(history_now - ChronoDuration::days(HISTORY_RETENTION_DAYS));
+        let tombstone_cutoff =
+            format_timestamp(tombstone_now - ChronoDuration::days(HISTORY_RETENTION_DAYS));
         let mut statement = transaction.prepare(
             "SELECT e.id, e.source_id, e.sequence, e.event_id, e.payload_json,
                     LENGTH(CAST(e.payload_json AS BLOB)),
@@ -612,10 +625,18 @@ impl DesktopState {
             }
         }
         for (row_id, source_id, sequence, event_id, payload, _, _, _) in &selected {
+            update_source_checkpoint_text(&transaction, source_id, *sequence)?;
             transaction.execute(
                 "INSERT OR IGNORE INTO desktop_event_tombstones
-                 (source_id, sequence, event_id, payload_sha256) VALUES (?1, ?2, ?3, ?4)",
-                params![source_id, sequence, event_id, payload_digest(payload)],
+                 (source_id, sequence, event_id, payload_sha256, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    source_id,
+                    sequence,
+                    event_id,
+                    payload_digest(payload),
+                    format_timestamp(tombstone_now)
+                ],
             )?;
             transaction.execute("DELETE FROM desktop_events WHERE id = ?1", params![row_id])?;
         }
@@ -627,13 +648,16 @@ impl DesktopState {
              )",
             params![cutoff, MAX_HISTORY_EVENTS, MAINTENANCE_BATCH],
         )?;
+        let tombstones = prune_tombstones(&transaction, &tombstone_cutoff)?;
         transaction.commit()?;
         connection.execute_batch("PRAGMA incremental_vacuum(256);")?;
         Ok(HistoryMaintenanceReport {
             events_pruned: selected.len(),
             gaps_pruned: gaps,
+            tombstones_pruned: tombstones,
             remaining_work: more_event_candidates
-                || gaps == usize::try_from(MAINTENANCE_BATCH).unwrap_or(512),
+                || gaps == usize::try_from(MAINTENANCE_BATCH).unwrap_or(512)
+                || tombstones == usize::try_from(MAINTENANCE_BATCH).unwrap_or(512),
         })
     }
 
@@ -641,9 +665,13 @@ impl DesktopState {
     pub fn clear_history(&self) -> Result<HistoryMaintenanceReport, DesktopError> {
         let mut total = HistoryMaintenanceReport::default();
         loop {
-            let report = self.maintain_history(Utc::now() + ChronoDuration::days(36_500))?;
+            let report = self.maintain_history_with_tombstone_clock(
+                Utc::now() + ChronoDuration::days(36_500),
+                Utc::now(),
+            )?;
             total.events_pruned += report.events_pruned;
             total.gaps_pruned += report.gaps_pruned;
+            total.tombstones_pruned += report.tombstones_pruned;
             if !report.remaining_work {
                 return Ok(total);
             }
@@ -682,6 +710,9 @@ impl DesktopState {
         }
         if version.unwrap_or(0) < 3 {
             apply_migration_v3(&transaction)?;
+        }
+        if version.unwrap_or(0) < 4 {
+            apply_migration_v4(&transaction)?;
         }
         transaction.commit()?;
         Ok(())
@@ -837,6 +868,7 @@ pub struct HistoryGap {
 pub struct HistoryMaintenanceReport {
     pub events_pruned: usize,
     pub gaps_pruned: usize,
+    pub tombstones_pruned: usize,
     pub remaining_work: bool,
 }
 
@@ -1019,6 +1051,32 @@ fn apply_migration_v3(transaction: &Transaction<'_>) -> Result<(), DesktopError>
     Ok(())
 }
 
+fn apply_migration_v4(transaction: &Transaction<'_>) -> Result<(), DesktopError> {
+    transaction.execute_batch(
+        "ALTER TABLE desktop_event_tombstones ADD COLUMN created_at TEXT;
+         UPDATE desktop_event_tombstones
+         SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE created_at IS NULL;
+         CREATE TABLE desktop_source_checkpoints (
+            source_id TEXT PRIMARY KEY,
+            high_watermark INTEGER NOT NULL CHECK (high_watermark > 0)
+         );
+         INSERT INTO desktop_source_checkpoints (source_id, high_watermark)
+         SELECT source_id, MAX(sequence) FROM (
+            SELECT source_id, sequence FROM desktop_events
+            UNION ALL
+            SELECT source_id, sequence FROM desktop_event_tombstones
+            UNION ALL
+            SELECT source_id, lost_through_sequence AS sequence FROM desktop_gaps
+         ) GROUP BY source_id;
+         CREATE INDEX desktop_event_tombstones_created_at
+         ON desktop_event_tombstones(created_at);
+         INSERT INTO desktop_schema_migrations (version, applied_at)
+         VALUES (4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));",
+    )?;
+    Ok(())
+}
+
 fn notification_retry_delay(attempt_count: i64) -> ChronoDuration {
     let seconds = match attempt_count {
         i64::MIN..=0 => 5,
@@ -1028,6 +1086,45 @@ fn notification_retry_delay(attempt_count: i64) -> ChronoDuration {
         _ => 1_800,
     };
     ChronoDuration::seconds(seconds)
+}
+
+fn update_source_checkpoint(
+    transaction: &Transaction<'_>,
+    source_id: Uuid,
+    sequence: i64,
+) -> Result<(), DesktopError> {
+    update_source_checkpoint_text(transaction, &source_id.to_string(), sequence)
+}
+
+fn update_source_checkpoint_text(
+    transaction: &Transaction<'_>,
+    source_id: &str,
+    sequence: i64,
+) -> Result<(), DesktopError> {
+    transaction.execute(
+        "INSERT INTO desktop_source_checkpoints (source_id, high_watermark)
+         VALUES (?1, ?2)
+         ON CONFLICT(source_id) DO UPDATE SET
+            high_watermark = MAX(high_watermark, excluded.high_watermark)",
+        params![source_id, sequence],
+    )?;
+    Ok(())
+}
+
+fn prune_tombstones(transaction: &Transaction<'_>, cutoff: &str) -> Result<usize, DesktopError> {
+    transaction
+        .execute(
+            "DELETE FROM desktop_event_tombstones WHERE rowid IN (
+                SELECT rowid FROM desktop_event_tombstones
+                WHERE created_at < ?1 OR rowid NOT IN (
+                    SELECT rowid FROM desktop_event_tombstones
+                    ORDER BY created_at DESC, rowid DESC LIMIT ?2
+                )
+                ORDER BY created_at ASC, rowid ASC LIMIT ?3
+             )",
+            params![cutoff, MAX_TOMBSTONES, MAINTENANCE_BATCH],
+        )
+        .map_err(DesktopError::from)
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), DesktopError> {
@@ -1149,6 +1246,8 @@ fn known_source_high_watermark(
                 SELECT sequence FROM desktop_event_tombstones WHERE source_id = ?1
                 UNION ALL
                 SELECT lost_through_sequence AS sequence FROM desktop_gaps WHERE source_id = ?1
+                UNION ALL
+                SELECT high_watermark AS sequence FROM desktop_source_checkpoints WHERE source_id = ?1
              )",
             params![source_id.to_string()],
             |row| row.get::<_, Option<i64>>(0),
@@ -1468,8 +1567,19 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("read migrated table");
+        let has_checkpoints: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'desktop_source_checkpoints'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read checkpoint table");
         assert_eq!(version, DESKTOP_DATABASE_SCHEMA_VERSION);
         assert!(has_tombstones);
+        assert!(has_checkpoints);
     }
 
     #[test]
@@ -1710,6 +1820,61 @@ mod tests {
                 .ingest_event("local", 1, &delivered, timestamp(13))
                 .expect("tombstone replay"),
             IngestResult::Duplicate
+        );
+    }
+
+    #[test]
+    fn history_maintenance_bounds_tombstones_and_preserves_source_checkpoint() {
+        let fixture = TestState::new();
+        let source_id = fixture.source_id.to_string();
+        let connection = fixture.state.connection().expect("connection");
+        let created_at = format_timestamp(timestamp(12));
+        for sequence in 1..=(MAX_TOMBSTONES + MAINTENANCE_BATCH + 1) {
+            connection
+                .execute(
+                    "INSERT INTO desktop_event_tombstones
+                     (source_id, sequence, event_id, payload_sha256, created_at)
+                     VALUES (?1, ?2, ?3, 'digest', ?4)",
+                    params![source_id, sequence, Uuid::new_v4().to_string(), created_at],
+                )
+                .expect("tombstone");
+        }
+        connection
+            .execute(
+                "INSERT INTO desktop_source_checkpoints (source_id, high_watermark)
+                 VALUES (?1, ?2)",
+                params![source_id, MAX_TOMBSTONES + MAINTENANCE_BATCH + 1],
+            )
+            .expect("checkpoint");
+        drop(connection);
+
+        let mut pruned = 0;
+        loop {
+            let report = fixture
+                .state
+                .maintain_history(timestamp(13))
+                .expect("maintenance");
+            pruned += report.tombstones_pruned;
+            if !report.remaining_work {
+                break;
+            }
+        }
+
+        let mut connection = fixture.state.connection().expect("connection");
+        let remaining: i64 = connection
+            .query_row("SELECT COUNT(*) FROM desktop_event_tombstones", [], |row| {
+                row.get(0)
+            })
+            .expect("count");
+        assert_eq!(remaining, MAX_TOMBSTONES);
+        assert_eq!(pruned, usize::try_from(MAINTENANCE_BATCH + 1).unwrap());
+        assert_eq!(
+            known_source_high_watermark(
+                &connection.transaction().expect("transaction"),
+                fixture.source_id,
+            )
+            .expect("high watermark"),
+            MAX_TOMBSTONES + MAINTENANCE_BATCH + 1
         );
     }
 

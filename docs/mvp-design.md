@@ -397,6 +397,7 @@ SQLite はプロセス間の変更通知機構を持たないため、デスク�
 - desktop history は既定 30 日、10,000 events、payload 論理合計 128 MiB のいずれかを超えた古い delivered event から削除する。
 - `pending` outbox は履歴 retention の対象外とし、delivered/suppressed/failed-terminal のいずれかへ遷移してから削除できる。
 - “Clear history” は表示 payload と completed outbox を削除するが、source cursor、pinned `source_id`、最小限の dedup state は保持する。履歴消去を再通知や cursor reset の契機にしない。
+- event payload 削除後の exact replay 検出に使う desktop tombstone も既定 30 日または 10,000 件で bounded prune する。source ごとの高水位 checkpoint は tombstone とは別に保持し、tombstone 削除後も source の再登録・再接続で cursor を巻き戻さない。
 - clear/prune 後は WAL checkpoint と bounded incremental vacuum を idle 時に行う。SQLite の page/WAL に残った過去 data の即時 secure erase は保証せず、その制約を privacy UI に明記する。
 
 ## 10. Bridge protocol

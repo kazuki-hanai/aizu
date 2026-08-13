@@ -426,8 +426,8 @@ fn run_hook_command(
 
     match result {
         Ok(()) => Ok(0),
-        Err(error) if !args.strict => {
-            eprintln!("aizu hook: notification event was not persisted: {error}");
+        Err(_error) if !args.strict => {
+            eprintln!("aizu hook: notification event was not persisted (storage_error)");
             Ok(0)
         }
         Err(error) => Err(error),

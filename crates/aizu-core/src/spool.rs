@@ -730,7 +730,9 @@ fn ensure_local_filesystem(path: &Path) -> Result<(), SpoolError> {
             .map(|character| character.to_ne_bytes()[0])
             .collect();
         let filesystem = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
-        if macos_filesystem_is_network(&filesystem) {
+        if stats.f_flags & u32::try_from(libc::MNT_LOCAL).unwrap_or_default() == 0
+            || macos_filesystem_is_network(&filesystem)
+        {
             return Err(SpoolError::NetworkFilesystem(filesystem));
         }
     }
@@ -757,14 +759,18 @@ fn rustix_errno_to_spool_error(error: rustix::io::Errno) -> SpoolError {
 
 #[cfg(target_os = "macos")]
 fn macos_filesystem_is_network(filesystem: &str) -> bool {
-    matches!(filesystem, "afpfs" | "cifs" | "nfs" | "smbfs" | "webdav")
+    matches!(
+        filesystem,
+        "afpfs" | "cifs" | "macfuse" | "nfs" | "osxfuse" | "smbfs" | "webdav"
+    )
 }
 
 #[cfg(target_os = "linux")]
 const fn linux_filesystem_is_network(filesystem: i128) -> bool {
     matches!(
         filesystem,
-        0x6969 // NFS
+        0x6573_5546 // FUSE, including fuse.sshfs
+            | 0x6969 // NFS
             | 0xff53_4d42 // CIFS/SMB2
             | 0x0102_1997 // 9P
             | 0x7375_7245 // CODA
@@ -1304,10 +1310,19 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn classifies_macos_network_filesystems() {
-        for filesystem in ["afpfs", "cifs", "nfs", "smbfs", "webdav"] {
+        for filesystem in [
+            "afpfs", "cifs", "macfuse", "nfs", "osxfuse", "smbfs", "webdav",
+        ] {
             assert!(macos_filesystem_is_network(filesystem));
         }
         assert!(!macos_filesystem_is_network("apfs"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn classifies_linux_fuse_as_unsafe_for_wal() {
+        assert!(linux_filesystem_is_network(0x6573_5546));
+        assert!(!linux_filesystem_is_network(0xef53));
     }
 
     #[test]
