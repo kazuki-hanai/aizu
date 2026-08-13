@@ -50,6 +50,10 @@ without deleting unrelated agent settings. Completion notifications require
 these hooks; process monitoring alone is diagnostic and cannot determine when
 an agent task has completed.
 
+If Claude Code has `disableAllHooks` set to `true`, Aizu leaves that preference
+unchanged and setup stops. Enable hooks explicitly in Claude Code, then run
+setup again.
+
 ### Check the Local Setup
 
 The CLI does not need to be on `PATH` for installed hooks. For manual checks:
@@ -159,7 +163,9 @@ or English under **Settings > Language**.
    Aizu or agent update.
 3. Confirm the hooks in Codex. A configured hook is not active until Codex
    trusts it.
-4. For SSH sources, use **Test connection** and verify the source is
+4. If Claude Code has `disableAllHooks` enabled, turn it off intentionally and
+   rerun `integration-install --json`; Aizu never overrides it automatically.
+5. For SSH sources, use **Test connection** and verify the source is
    **Connected**.
 
 ### `an agent configuration path is unsafe`

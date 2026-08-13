@@ -116,6 +116,11 @@ installers are serialized with `~/.aizu/hooks.lock`; editors and agents do not
 participate in that lock, so do not edit these configuration files while the
 installer runs.
 
+Claude Code's top-level `disableAllHooks` preference is also preserved. When it
+is `true`, installation stops without changing either agent. Enable hooks
+explicitly in Claude Code only when that is your intent, then rerun
+`integration-install --json`.
+
 For a permissions diagnostic, inspect ownership and mode without exposing file
 contents:
 
