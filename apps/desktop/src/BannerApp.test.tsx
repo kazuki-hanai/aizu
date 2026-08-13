@@ -209,7 +209,7 @@ describe("Aizu Banner", () => {
     expect(backend.dismiss).not.toHaveBeenCalled();
   });
 
-  it("preserves body text selection instead of starting a swipe", async () => {
+  it("starts a horizontal swipe from selectable body text", async () => {
     const backend = client();
     const { container } = render(<BannerApp client={backend} />);
     await screen.findByText("Codex task completed");
@@ -222,6 +222,23 @@ describe("Aizu Banner", () => {
     fireEvent.pointerDown(body, { button: 0, clientX: 120, clientY: 40, isPrimary: true, pointerId: 10 });
     fireEvent.pointerMove(banner, { clientX: 20, clientY: 40, pointerId: 10 });
     fireEvent.pointerUp(banner, { clientX: 20, clientY: 40, pointerId: 10 });
+    await waitFor(() => expect(backend.dismiss).toHaveBeenCalledWith(1));
+  });
+
+  it("keeps short body drags available for text selection", async () => {
+    const backend = client();
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const body = container.querySelector<HTMLElement>(".aizu-banner__body");
+    const banner = container.querySelector<HTMLElement>('[data-banner-id="1"]');
+    expect(body).not.toBeNull();
+    expect(banner).not.toBeNull();
+    if (!body || !banner) return;
+
+    fireEvent.pointerDown(body, { button: 0, clientX: 120, clientY: 40, isPrimary: true, pointerId: 12 });
+    fireEvent.pointerMove(banner, { clientX: 116, clientY: 40, pointerId: 12 });
+    fireEvent.pointerUp(banner, { clientX: 116, clientY: 40, pointerId: 12 });
+
     expect(backend.dismiss).not.toHaveBeenCalled();
     expect(banner.style.getPropertyValue("--aizu-swipe-offset")).toBe("0px");
   });

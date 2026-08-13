@@ -130,7 +130,7 @@ describe("Aizu desktop MVP", () => {
         : null;
     })).toBe("aizu-banner-enter");
     const banner = $(".aizu-banner");
-    const swipeHandle = $(".aizu-banner__mark");
+    const swipeHandle = $(".aizu-banner__body");
     await browser.action("pointer", { parameters: { pointerType: "mouse" } })
       .move({ duration: 0, origin: swipeHandle, x: 0, y: 0 })
       .down({ button: 0 })

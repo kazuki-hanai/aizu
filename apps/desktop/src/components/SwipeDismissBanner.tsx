@@ -93,7 +93,7 @@ export function SwipeDismissBanner({
     target: EventTarget,
   ) => {
     if (swipe.current || dismissStarted.current || exitDirection !== null) return false;
-    if (target instanceof Element && target.closest("button, .aizu-banner__body")) return false;
+    if (target instanceof Element && target.closest("button")) return false;
     swipe.current = {
       axis: "pending",
       input,
