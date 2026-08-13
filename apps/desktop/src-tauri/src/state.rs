@@ -1282,12 +1282,12 @@ mod tests {
         let notifier = FakeNotifier::with_permission(PermissionStatus::Granted);
         let mut service = service(notifier);
         service
-            .add_remote_source("mini-pc".to_owned(), "Mini PC".to_owned())
+            .add_remote_source("remote-host".to_owned(), "Remote host".to_owned())
             .expect("remote source should register");
-        assert!(service.set_remote_status("mini-pc", SourceStatus::Connected, "Connected"));
+        assert!(service.set_remote_status("remote-host", SourceStatus::Connected, "Connected"));
         let first_epoch = service.connected_remote_agent_sources()[0].1;
         assert!(service.update_remote_agents(
-            "mini-pc",
+            "remote-host",
             first_epoch,
             &[
                 aizu_core::AgentKind::Codex,
@@ -1298,29 +1298,29 @@ mod tests {
         let view = service.view();
         assert_eq!(view.running_agents.len(), 2);
         assert!(view.running_agents.iter().all(|agent| {
-            agent.source_id == "ssh:mini-pc"
-                && agent.source_name == "Mini PC"
+            agent.source_id == "ssh:remote-host"
+                && agent.source_name == "Remote host"
                 && agent.source_kind == SourceKind::RemoteSsh
         }));
 
         assert!(service.set_remote_status(
-            "mini-pc",
+            "remote-host",
             SourceStatus::Reconnecting,
             "Connection interrupted; retrying"
         ));
         assert!(service.view().running_agents.is_empty());
 
-        assert!(service.set_remote_status("mini-pc", SourceStatus::Connected, "Connected"));
+        assert!(service.set_remote_status("remote-host", SourceStatus::Connected, "Connected"));
         let reconnected_epoch = service.connected_remote_agent_sources()[0].1;
         assert_ne!(first_epoch, reconnected_epoch);
         assert!(!service.update_remote_agents(
-            "mini-pc",
+            "remote-host",
             first_epoch,
             &[aizu_core::AgentKind::Codex]
         ));
         assert!(service.view().running_agents.is_empty());
         assert!(service.update_remote_agents(
-            "mini-pc",
+            "remote-host",
             reconnected_epoch,
             &[aizu_core::AgentKind::ClaudeCode]
         ));
@@ -1380,12 +1380,12 @@ mod tests {
         let notifier = FakeNotifier::with_permission(PermissionStatus::Granted);
         let mut service = service(notifier);
         service
-            .add_remote_source("mini-pc".to_owned(), "Mini PC".to_owned())
+            .add_remote_source("remote-host".to_owned(), "Remote host".to_owned())
             .expect("remote source should register");
         let source_id = uuid::Uuid::new_v4();
         service
             .desktop
-            .pin_source("ssh:mini-pc", source_id)
+            .pin_source("ssh:remote-host", source_id)
             .expect("identity should pin");
 
         let settings_path = service.store.path.clone();
@@ -1393,19 +1393,19 @@ mod tests {
         symlink("missing-settings-target", &settings_path).expect("failure symlink should exist");
 
         assert!(matches!(
-            service.remove_remote_source("mini-pc"),
+            service.remove_remote_source("remote-host"),
             Err(super::DesktopError::Store(_))
         ));
         assert!(
             service
                 .remote_sources()
                 .iter()
-                .any(|source| source.host_alias == "mini-pc")
+                .any(|source| source.host_alias == "remote-host")
         );
         assert_eq!(
             service
                 .desktop
-                .source("ssh:mini-pc")
+                .source("ssh:remote-host")
                 .expect("source should load")
                 .expect("source should remain")
                 .pinned_source_id,

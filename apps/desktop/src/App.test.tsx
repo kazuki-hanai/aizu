@@ -69,7 +69,7 @@ describe("Aizu desktop shell", () => {
               { agent: "codex", label: "Codex 1", sourceId: "local", sourceName: "This Mac", sourceKind: "local" },
               { agent: "codex", label: "Codex 2", sourceId: "local", sourceName: "This Mac", sourceKind: "local" },
               { agent: "claudeCode", label: "Claude Code 1", sourceId: "local", sourceName: "This Mac", sourceKind: "local" },
-              { agent: "claudeCode", label: "Claude Code 1", sourceId: "ssh:mini-pc", sourceName: "mini-pc", sourceKind: "remoteSsh" },
+              { agent: "claudeCode", label: "Claude Code 1", sourceId: "ssh:remote-host", sourceName: "Remote host", sourceKind: "remoteSsh" },
             ],
           }),
         )}
@@ -80,7 +80,7 @@ describe("Aizu desktop shell", () => {
     expect(screen.getByText("Codex 1")).toBeVisible();
     expect(screen.getByText("Codex 2")).toBeVisible();
     expect(screen.getAllByText("Claude Code 1")).toHaveLength(2);
-    expect(screen.getByText("mini-pc")).toBeVisible();
+    expect(screen.getByText("Remote host")).toBeVisible();
     expect(screen.getByText("Running via SSH")).toBeVisible();
     expect(screen.getByText("4 agent processes across 2 sources.")).toBeVisible();
     expect(screen.getAllByText("Running")).toHaveLength(4);
@@ -172,8 +172,8 @@ describe("Aizu desktop shell", () => {
                 actionRequired: null,
               },
               {
-                id: "ssh:mini-pc",
-                name: "Mini PC",
+                id: "ssh:remote-host",
+                name: "Remote host",
                 kind: "remoteSsh",
                 status: "connected",
                 detail: "Connected",
@@ -354,7 +354,7 @@ describe("Aizu desktop shell", () => {
         kind: "taskCompleted",
         title: "Codex task completed",
         summary: "A long but safe agent summary",
-        sourceName: "Ubuntu-vm1",
+        sourceName: "Remote host",
         occurredAt: "2026-08-12T12:00:00Z",
         deliveryStatus: "delivered",
         outcome: "succeeded",
@@ -365,7 +365,7 @@ describe("Aizu desktop shell", () => {
     expect(await screen.findByText("Codex task completed")).toBeVisible();
     const row = container.querySelector<HTMLElement>(".history-row");
     const meta = row?.querySelector<HTMLElement>(".history-row__meta");
-    expect(meta).toContainElement(screen.getByText("Ubuntu-vm1"));
+    expect(meta).toContainElement(screen.getByText("Remote host"));
     expect(meta?.querySelector("time")).toHaveAttribute("datetime", "2026-08-12T12:00:00Z");
     expect(row?.querySelector(".history-row__summary")).toHaveAttribute("title", "A long but safe agent summary");
     expect(row?.querySelector(".history-row__status")).not.toBeInTheDocument();
@@ -537,13 +537,13 @@ describe("Aizu desktop shell", () => {
     await user.click(await screen.findByRole("button", { name: "Sources" }));
     const trigger = screen.getByRole("button", { name: "Add SSH source" });
     await user.click(trigger);
-    await user.type(screen.getByRole("textbox", { name: "SSH config alias" }), "mini-pc");
-    await user.type(screen.getByRole("textbox", { name: "Local label" }), "Mini PC");
+    await user.type(screen.getByRole("textbox", { name: "SSH config alias" }), "remote-host");
+    await user.type(screen.getByRole("textbox", { name: "Local label" }), "Remote host");
     await user.click(screen.getByRole("button", { name: "Add source" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Source already exists");
     expect(screen.getByRole("dialog", { name: "Add SSH source" })).toBeVisible();
-    expect(screen.getByRole("textbox", { name: "SSH config alias" })).toHaveValue("mini-pc");
+    expect(screen.getByRole("textbox", { name: "SSH config alias" })).toHaveValue("remote-host");
 
     const close = screen.getByRole("button", { name: "Close" });
     close.focus();

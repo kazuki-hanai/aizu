@@ -14,10 +14,10 @@ machine's role:
 | SSH source | `aizu` CLI and agent hooks | Linux or macOS |
 | Windows | None | Core/CLI compilation is checked, but Windows is not an installation target yet |
 
-The desktop notification receiver is macOS-only. A Linux machine such as a
-mini-PC runs only the CLI: it stores agent events in its local SQLite spool and
-the Mac retrieves them through system SSH. No daemon, web server, or listening
-port is installed on the source machine.
+The desktop notification receiver is macOS-only. A Linux source machine runs
+only the CLI: it stores agent events in its local SQLite spool and the Mac
+retrieves them through system SSH. No daemon, web server, or listening port is
+installed on the source machine.
 
 ### Receiving Mac: desktop app
 
@@ -128,14 +128,14 @@ On the receiving Mac, add a normal system SSH alias to `~/.ssh/config`, verify
 it outside Aizu, then use **Sources > + > Test connection > Add source**:
 
 ```sshconfig
-Host mini-pc
+Host remote-host
   HostName 192.0.2.10
   User your-user
   IdentityFile ~/.ssh/id_ed25519
 ```
 
 ```bash
-ssh mini-pc '$HOME/.local/bin/aizu version --json'
+ssh remote-host '$HOME/.local/bin/aizu version --json'
 ```
 
 Replace the example address, user, and key with the existing SSH configuration
@@ -201,12 +201,13 @@ count; it contains no PID, command arguments, path, environment, prompt, or
 terminal output. A source that disconnects is removed from the running list
 until a fresh probe succeeds.
 
-For local SSH integration checks, use the existing system SSH alias `mini-pc`
-as the real remote fixture. Install the current `aizu` CLI on that host before
-testing, verify `ssh mini-pc '$HOME/.local/bin/aizu version --json'`, and run a
-Codex or Claude Code hook event there. A successful UI connection test alone is
-not sufficient: the event must traverse `aizu bridge` and appear in the Mac
-desktop history under the `Mini PC` source.
+For local SSH integration checks, use a dedicated system SSH alias such as
+`remote-host` as the real remote fixture. Install the current `aizu` CLI on that
+host before testing, verify
+`ssh remote-host '$HOME/.local/bin/aizu version --json'`, and run a Codex or
+Claude Code hook event there. A successful UI connection test alone is not
+sufficient: the event must traverse `aizu bridge` and appear in the Mac desktop
+history under the receiver-local source label.
 
 ## Development setup
 

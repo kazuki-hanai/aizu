@@ -422,7 +422,14 @@ mod tests {
             .pop()
             .expect("one event");
         spool.emit(request, None).expect("emit");
-        ingest_spool(&spool, &desktop, "ssh:mini-pc", "Mini PC", timestamp()).expect("ingest");
+        ingest_spool(
+            &spool,
+            &desktop,
+            "ssh:remote-host",
+            "Remote host",
+            timestamp(),
+        )
+        .expect("ingest");
 
         let notifier = FakeNotifier::successful();
         let policy = NotificationPolicy {
@@ -436,7 +443,7 @@ mod tests {
         assert_eq!(notifications[0].title, "Codex task completed");
         assert_eq!(
             notifications[0].body,
-            "Implemented reconnect handling and all checks pass.\naizu on Mini PC"
+            "Implemented reconnect handling and all checks pass.\naizu on Remote host"
         );
     }
 

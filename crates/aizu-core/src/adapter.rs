@@ -427,7 +427,7 @@ mod tests {
         let permission = CodexAdapter
             .parse_hook(
                 "PermissionRequest",
-                br#"{"session_id":"thread-123","turn_id":"turn-1","cwd":"/private/work/aizu","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ssh mini-pc deploy","description":"Deploy Aizu to the configured SSH host?"}}"#,
+                br#"{"session_id":"thread-123","turn_id":"turn-1","cwd":"/private/work/aizu","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ssh remote-host deploy","description":"Deploy Aizu to the configured SSH host?"}}"#,
             )
             .expect("permission");
         assert_eq!(permission[0].kind, Some(EventKind::AgentQuestion));
@@ -445,7 +445,7 @@ mod tests {
         );
         let serialized = serde_json::to_string(&permission[0].metadata).expect("metadata");
         assert!(!serialized.contains("private"));
-        assert!(!serialized.contains("ssh mini-pc deploy"));
+        assert!(!serialized.contains("ssh remote-host deploy"));
     }
 
     #[test]
@@ -473,7 +473,7 @@ mod tests {
             "Read /Users/alice/private.txt",
             "token: Bearer abc123",
             "bad\0message",
-            "Read `/home/hnkz/private.txt` next",
+            "Read `/home/user/private.txt` next",
             "Open `/Users/alice/private.txt` next",
             "Inspect `/tmp/aizu-debug.log` next",
         ] {
