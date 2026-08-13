@@ -604,6 +604,7 @@ Sections:
    - add/edit/disable/reconnect/test
 3. **Settings**
    - language: system default / Japanese / English, persisted and applied immediately
+   - text size: small / standard / large, persisted and applied immediately to the desktop and Aizu Banner
    - completion on/off
    - question on/off
    - notification style: Aizu Banner / macOS Notifications（既定 Aizu Banner、即時保存）

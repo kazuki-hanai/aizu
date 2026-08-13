@@ -342,6 +342,7 @@ mod tests {
             sound: Some(crate::model::NotificationSound::Glass),
             delivery: crate::model::NotificationDelivery::System,
             language: crate::model::LanguagePreference::English,
+            text_size: crate::model::TextSize::Standard,
         };
 
         let native = build_macos_notification(&notification);

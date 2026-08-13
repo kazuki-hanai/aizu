@@ -3,9 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AppShell } from "./components/AppShell";
 import { Onboarding } from "./components/Onboarding";
+import { applyDocumentPreferences } from "./lib/appearance";
 import { defaultBackend, type BackendClient } from "./lib/backend";
 import type { AppView, Preferences } from "./lib/contracts";
-import { messages, resolveLanguage } from "./lib/i18n";
+import { messages } from "./lib/i18n";
 
 type AppProps = {
   backend?: BackendClient;
@@ -67,7 +68,7 @@ export function App({ backend = defaultBackend }: AppProps) {
 
   useEffect(() => {
     if (view === null) return;
-    document.documentElement.lang = resolveLanguage(view.preferences.language);
+    applyDocumentPreferences(view.preferences);
   }, [view]);
 
   const runActionResult = useCallback(async (action: () => Promise<AppView>) => {

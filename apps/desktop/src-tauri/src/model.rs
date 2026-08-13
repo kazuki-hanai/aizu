@@ -208,6 +208,8 @@ impl Default for QuietHours {
 pub struct Preferences {
     #[serde(default)]
     pub language: LanguagePreference,
+    #[serde(default)]
+    pub text_size: TextSize,
     pub completion_enabled: bool,
     pub question_enabled: bool,
     #[serde(default)]
@@ -226,6 +228,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             language: LanguagePreference::default(),
+            text_size: TextSize::default(),
             completion_enabled: true,
             question_enabled: true,
             agent_details_enabled: false,
@@ -237,6 +240,15 @@ impl Default for Preferences {
             quiet_hours: QuietHours::default(),
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextSize {
+    Small,
+    #[default]
+    Standard,
+    Large,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,13 +348,14 @@ pub struct Notification {
     pub sound: Option<NotificationSound>,
     pub delivery: NotificationDelivery,
     pub language: LanguagePreference,
+    pub text_size: TextSize,
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         AppView, CliStatus, LanguagePreference, NotificationSound, PermissionStatus, Preferences,
-        TrayState,
+        TextSize, TrayState,
     };
 
     #[test]
@@ -371,10 +384,11 @@ mod tests {
         assert_eq!(value["preferences"]["notificationSound"], "default");
         assert_eq!(value["preferences"]["notificationDelivery"], "aizuBanner");
         assert_eq!(value["preferences"]["language"], "system");
+        assert_eq!(value["preferences"]["textSize"], "standard");
     }
 
     #[test]
-    fn preferences_from_older_settings_default_the_notification_sound() {
+    fn preferences_from_older_settings_default_new_fields() {
         let preferences: Preferences = serde_json::from_value(serde_json::json!({
             "completionEnabled": true,
             "questionEnabled": true,
@@ -396,5 +410,6 @@ mod tests {
             super::NotificationDelivery::AizuBanner
         );
         assert_eq!(preferences.language, LanguagePreference::System);
+        assert_eq!(preferences.text_size, TextSize::Standard);
     }
 }

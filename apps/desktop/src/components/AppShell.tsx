@@ -18,6 +18,7 @@ import {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
+  Type,
   Trash2,
   Volume2,
   Wrench,
@@ -580,6 +581,25 @@ function SettingsView({ busy, muted, onChange, onMuteChange, preferences, onSend
             <option value="system">{t.languageSystem}</option>
             <option value="ja">{t.languageJapanese}</option>
             <option value="en">{t.languageEnglish}</option>
+          </select>
+        </label>
+        <label className="setting-row setting-row--select">
+          <Type aria-hidden="true" size={17} />
+          <span>{t.textSize}</span>
+          <select
+            aria-label={t.textSize}
+            disabled={busy}
+            value={preferences.textSize}
+            onChange={(event) => {
+              const textSize = event.target.value;
+              if (textSize === "small" || textSize === "standard" || textSize === "large") {
+                void onChange({ ...preferences, textSize });
+              }
+            }}
+          >
+            <option value="small">{t.textSizeSmall}</option>
+            <option value="standard">{t.textSizeStandard}</option>
+            <option value="large">{t.textSizeLarge}</option>
           </select>
         </label>
         <SettingToggle checked={muted} disabled={busy} icon={BellOff} label={t.muteNotifications} onChange={() => void onMuteChange(!muted)} />

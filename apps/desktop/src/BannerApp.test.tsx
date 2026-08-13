@@ -62,6 +62,7 @@ const notices: BannerNotification[] = [
     sound: "ping",
     delivery: "aizuBanner",
     language: "en",
+    textSize: "standard",
   },
   {
     id: 2,
@@ -70,6 +71,7 @@ const notices: BannerNotification[] = [
     sound: null,
     delivery: "aizuBanner",
     language: "en",
+    textSize: "standard",
   },
 ];
 
@@ -102,6 +104,16 @@ describe("Aizu Banner", () => {
     expect(container.querySelectorAll(".aizu-banner")).toHaveLength(2);
     expect(backend.dismiss).not.toHaveBeenCalled();
     await waitFor(() => expect(backend.resize).toHaveBeenCalled());
+  });
+
+  it("applies the persisted text size to each banner", async () => {
+    const backend = client();
+    const enlarged = { ...notices[0], textSize: "large" as const };
+    backend.getBanners = vi.fn(() => Promise.resolve([enlarged]));
+    const { container } = render(<BannerApp client={backend} />);
+
+    await screen.findByText("Codex task completed");
+    expect(container.querySelector(".aizu-banner")).toHaveAttribute("data-text-size", "large");
   });
 
   it("keeps notification content passive and dismisses from the close button", async () => {
@@ -281,44 +293,43 @@ describe("Aizu Banner", () => {
     expect(screen.getByText(notices[1].body)).toBeVisible();
   });
 
-  it("does not let an in-flight snapshot resurrect a dismissed banner", async () => {
-    const stale = deferred<BannerNotification[]>();
+  it("does not let an in-flight snapshot replace a pushed banner state", async () => {
+    const firstStale = deferred<BannerNotification[]>();
+    const secondStale = deferred<BannerNotification[]>();
     const backend = client();
+    vi.mocked(backend.getBanners)
+      .mockImplementationOnce(() => firstStale.promise)
+      .mockImplementationOnce(() => secondStale.promise);
     render(<BannerApp client={backend} />);
-    await screen.findByText("Codex task completed");
-    vi.mocked(backend.getBanners).mockImplementationOnce(() => stale.promise);
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
     const [[subscription]] = vi.mocked(backend.subscribe).mock.calls;
-    subscription();
-    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(3));
+    subscription([notices[1]]);
+    expect(await screen.findByText(notices[1].body)).toBeVisible();
 
-    await userEvent.setup().click((await screen.findAllByRole("button", { name: "Dismiss notification" }))[0]);
-    await waitFor(() => expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument());
-    stale.resolve(notices);
+    firstStale.resolve(notices);
+    secondStale.resolve(notices);
     await Promise.resolve();
 
     expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument();
+    expect(screen.getByText(notices[1].body)).toBeVisible();
   });
 
   it("refreshes authoritatively after dismiss so a concurrent new banner remains visible", async () => {
     const dismissPending = deferred<undefined>();
-    const concurrentRefresh = deferred<BannerNotification[]>();
     const authoritativeRefresh = deferred<BannerNotification[]>();
     const backend = client();
     const newNotice = { ...notices[1], id: 3, title: "New remote question" };
     render(<BannerApp client={backend} />);
     await screen.findByText("Codex task completed");
     vi.mocked(backend.dismiss).mockReturnValueOnce(dismissPending.promise);
-    vi.mocked(backend.getBanners)
-      .mockImplementationOnce(() => concurrentRefresh.promise)
-      .mockImplementationOnce(() => authoritativeRefresh.promise);
+    vi.mocked(backend.getBanners).mockImplementationOnce(() => authoritativeRefresh.promise);
 
     fireEvent.click((await screen.findAllByRole("button", { name: "Dismiss notification" }))[0]);
     const [[subscription]] = vi.mocked(backend.subscribe).mock.calls;
-    subscription();
-    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(3));
+    subscription([notices[1], newNotice]);
+    expect(await screen.findByText("New remote question")).toBeVisible();
     dismissPending.resolve(undefined);
-    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(4));
-    concurrentRefresh.resolve([notices[1], newNotice]);
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(3));
     authoritativeRefresh.resolve([notices[1], newNotice]);
 
     expect(await screen.findByText("New remote question")).toBeVisible();

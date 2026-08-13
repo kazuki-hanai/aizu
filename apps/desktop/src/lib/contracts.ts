@@ -82,6 +82,7 @@ export const quietHoursSchema = z.object({
 
 export const preferencesSchema = z.object({
   language: z.enum(["system", "ja", "en"]).default("system"),
+  textSize: z.enum(["small", "standard", "large"]).default("standard"),
   completionEnabled: z.boolean(),
   questionEnabled: z.boolean(),
   agentDetailsEnabled: z.boolean().default(false),
@@ -100,6 +101,7 @@ export const bannerNotificationSchema = z.object({
   sound: z.enum(["default", "glass", "ping", "pop", "hero"]).nullable(),
   delivery: z.enum(["aizuBanner", "system"]),
   language: z.enum(["system", "ja", "en"]),
+  textSize: z.enum(["small", "standard", "large"]),
 });
 
 export const appViewSchema = z.object({

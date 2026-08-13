@@ -20,6 +20,7 @@ type View = {
   history: Array<{ title: string; deliveryStatus: string }>;
   preferences: {
     language: string;
+    textSize: string;
     completionEnabled: boolean;
     questionEnabled: boolean;
     agentDetailsEnabled: boolean;
@@ -40,6 +41,7 @@ type View = {
 type CapturedNotification = {
   title: string;
   body: string;
+  textSize: string;
 };
 
 const invokeView = async (command: string, args?: Record<string, unknown>): Promise<View> => {
@@ -108,6 +110,10 @@ describe("Aizu desktop MVP", () => {
     });
     expect(opened.onboardingComplete).toBe(true);
     await expect($("h1=Agents")).toBeDisplayed();
+    const standardHeadingSize = await browser.execute(() => {
+      const heading = document.querySelector(".topbar h1");
+      return heading instanceof HTMLElement ? Number.parseFloat(getComputedStyle(heading).fontSize) : 0;
+    });
 
     const systemPreferences = (await invokeView("get_app_view")).preferences;
     await invokeView("update_preferences", {
@@ -123,6 +129,48 @@ describe("Aizu desktop MVP", () => {
     await browser.switchToWindow("banner");
     await expect($("strong=Aizu test notification")).toBeDisplayed();
     await expect($("span=Aizu Banner is ready.")).toBeDisplayed();
+    const banner = $(".aizu-banner");
+    expect(await banner.getAttribute("data-text-size")).toBe("standard");
+    await browser.switchToWindow("main");
+    const bannerPreferences = (await invokeView("get_app_view")).preferences;
+    await invokeView("update_preferences", {
+      request: { ...bannerPreferences, textSize: "large" },
+    });
+    await browser.waitUntil(async () => {
+      const presentation = await browser.execute(() => {
+        const heading = document.querySelector(".topbar h1");
+        return {
+          textSize: document.documentElement.dataset.textSize,
+          headingSize: heading instanceof HTMLElement
+            ? Number.parseFloat(getComputedStyle(heading).fontSize)
+            : 0,
+        };
+      });
+      return presentation.textSize === "large"
+        && presentation.headingSize > standardHeadingSize;
+    }, {
+      timeout: 2_000,
+      timeoutMsg: "large text size was not rendered in the main window",
+    });
+    const largeHeadingSize = await browser.execute(() => {
+      const heading = document.querySelector(".topbar h1");
+      return heading instanceof HTMLElement ? Number.parseFloat(getComputedStyle(heading).fontSize) : 0;
+    });
+    expect(largeHeadingSize).toBeGreaterThan(standardHeadingSize);
+    await browser.switchToWindow("banner");
+    await browser.waitUntil(async () => {
+      const queued = await browser.tauri.execute(({ core }) => core.invoke("get_banners")) as CapturedNotification[];
+      return queued[0]?.textSize === "large";
+    }, {
+      timeout: 2_000,
+      timeoutMsg: "queued Aizu Banner did not adopt the updated text size",
+    });
+    await browser.waitUntil(async () =>
+      (await $(".aizu-banner").getAttribute("data-text-size")) === "large",
+    {
+      timeout: 2_000,
+      timeoutMsg: "visible Aizu Banner did not adopt the updated text size",
+    });
     const entranceMotion = await browser.execute(() => {
       const banner = document.querySelector(".aizu-banner");
       if (!(banner instanceof HTMLElement)) return null;
@@ -135,7 +183,6 @@ describe("Aizu desktop MVP", () => {
     expect(entranceMotion?.animationName).toBe(
       entranceMotion?.reducedMotion ? "none" : "aizu-banner-enter",
     );
-    const banner = $(".aizu-banner");
     const swipeHandle = $(".aizu-banner__body");
     await browser.action("pointer", { parameters: { pointerType: "mouse" } })
       .move({ duration: 0, origin: swipeHandle, x: 0, y: 0 })
@@ -164,6 +211,7 @@ describe("Aizu desktop MVP", () => {
     const preferences = {
       ...resumed.preferences,
       language: "ja",
+      textSize: "large",
       agentDetailsEnabled: true,
       notificationSound: "hero",
       quietHours: {
@@ -176,16 +224,19 @@ describe("Aizu desktop MVP", () => {
     const updated = await invokeView("update_preferences", { request: preferences });
     expect(updated.preferences.notificationSound).toBe("hero");
     expect(updated.preferences.language).toBe("ja");
+    expect(updated.preferences.textSize).toBe("large");
     expect(updated.preferences.agentDetailsEnabled).toBe(true);
     await expect($("h1=エージェント")).toBeDisplayed();
     expect(await browser.execute(() => document.documentElement.lang)).toBe("ja");
+    expect(await browser.execute(() => document.documentElement.dataset.textSize)).toBe("large");
     expect((await invokeView("get_app_view")).preferences.quietHours.enabled).toBe(true);
     const persisted = JSON.parse(await readFile(path.join(stateRoot as string, "settings.json"), "utf8")) as {
-      preferences: { agentDetailsEnabled: boolean; language: string; notificationSound: string; quietHours: { enabled: boolean } };
+      preferences: { agentDetailsEnabled: boolean; language: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
     };
     expect(persisted.preferences.agentDetailsEnabled).toBe(true);
     expect(persisted.preferences.notificationSound).toBe("hero");
     expect(persisted.preferences.language).toBe("ja");
+    expect(persisted.preferences.textSize).toBe("large");
     expect(persisted.preferences.quietHours.enabled).toBe(true);
     await invokeView("update_preferences", {
       request: {

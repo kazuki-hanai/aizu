@@ -218,6 +218,7 @@ impl AppService {
             notifier: self.notifier.as_ref(),
             delivery: self.settings.preferences.notification_delivery,
             language: self.settings.preferences.language,
+            text_size: self.settings.preferences.text_size,
             sound: self
                 .settings
                 .preferences
@@ -751,6 +752,7 @@ impl AppService {
                 .then_some(self.settings.preferences.notification_sound),
             delivery,
             language: self.settings.preferences.language,
+            text_size: self.settings.preferences.text_size,
         })?;
         Ok(self.view())
     }
@@ -935,6 +937,7 @@ struct PipelineNotifier<'a> {
     notifier: &'a dyn Notifier,
     delivery: NotificationDelivery,
     language: crate::model::LanguagePreference,
+    text_size: crate::model::TextSize,
     sound: Option<crate::model::NotificationSound>,
 }
 
@@ -965,6 +968,7 @@ impl aizu_core::Notifier for PipelineNotifier<'_> {
                 sound: self.sound,
                 delivery: self.delivery,
                 language: self.language,
+                text_size: self.text_size,
             })
             .map_err(|_| aizu_core::NotifyError::Retryable)
     }
@@ -1508,6 +1512,7 @@ mod tests {
             notifier: notifier.as_ref(),
             delivery: NotificationDelivery::System,
             language: LanguagePreference::English,
+            text_size: crate::model::TextSize::Large,
             sound: Some(crate::model::NotificationSound::Ping),
         };
         let prepared = PreparedNotification {
@@ -1531,6 +1536,7 @@ mod tests {
             notifications[0].sound,
             Some(crate::model::NotificationSound::Ping)
         );
+        assert_eq!(notifications[0].text_size, crate::model::TextSize::Large);
     }
 
     #[test]
