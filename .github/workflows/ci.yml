@@ -180,12 +180,17 @@ jobs:
               if (frames[0]?.type !== "hello" || frames[0]?.protocol_version !== 1) process.exit(1);
               if (frames[1]?.type !== "event" || frames[1]?.event?.kind !== "task.completed") process.exit(1);
             });'
+          mismatch_status=0
           mismatch=$(ssh -T -n \
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             -o ClearAllForwardings=yes \
             aizu-ci \
-            'HOME=/home/aizu-ci XDG_STATE_HOME=/home/aizu-ci/.local/state exec /home/aizu-ci/.local/bin/aizu bridge --protocol 999 --after 0')
+            'HOME=/home/aizu-ci XDG_STATE_HOME=/home/aizu-ci/.local/state exec /home/aizu-ci/.local/bin/aizu bridge --protocol 999 --after 0') || mismatch_status=$?
+          if [ "$mismatch_status" -ne 2 ]; then
+            echo "protocol mismatch returned unexpected status: $mismatch_status"
+            exit 1
+          fi
           printf '%s\n' "$mismatch" | node -e '
             let input = "";
             process.stdin.on("data", chunk => input += chunk);
