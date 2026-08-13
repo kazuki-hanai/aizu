@@ -879,11 +879,7 @@ fn print_agents(json_output: bool) -> Result<(), Box<dyn Error>> {
 
 fn running_agents() -> Vec<AgentProcessReport> {
     let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
-    );
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, agent_process_refresh_kind());
     let mut agents: Vec<_> = system
         .processes()
         .values()
@@ -893,6 +889,14 @@ fn running_agents() -> Vec<AgentProcessReport> {
         .collect();
     agents.sort_by_key(|process| process.agent);
     agents
+}
+
+fn agent_process_refresh_kind() -> ProcessRefreshKind {
+    // On Linux, `nothing()` still includes every task/thread as a process.
+    // Aizu reports agent processes, not their worker threads.
+    ProcessRefreshKind::nothing()
+        .with_exe(UpdateKind::OnlyIfNotSet)
+        .without_tasks()
 }
 
 fn classify_agent_process(
@@ -1023,5 +1027,10 @@ mod tests {
                 BridgeFrame::Error { code, .. } if code == "unsupported_storage"
             ));
         }
+    }
+
+    #[test]
+    fn agent_process_refresh_excludes_linux_tasks() {
+        assert!(!agent_process_refresh_kind().tasks());
     }
 }

@@ -89,7 +89,7 @@ impl ProcessMonitor {
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
+            agent_process_refresh_kind(),
         );
         let running: Vec<_> = self
             .system
@@ -122,6 +122,14 @@ impl ProcessMonitor {
         self.previous = current;
         ProcessSnapshot::new(Utc::now(), processes)
     }
+}
+
+fn agent_process_refresh_kind() -> ProcessRefreshKind {
+    // On Linux, `nothing()` still includes every task/thread as a process.
+    // Aizu reports agent processes, not their worker threads.
+    ProcessRefreshKind::nothing()
+        .with_exe(UpdateKind::OnlyIfNotSet)
+        .without_tasks()
 }
 
 fn classify_agent_process(name: &std::ffi::OsStr, executable: Option<&Path>) -> Option<AgentKind> {
@@ -249,8 +257,8 @@ mod tests {
     use aizu_core::{AgentKind, HookStatus, hook_configuration};
 
     use super::{
-        ProcessMonitor, classify_agent_executable, classify_agent_process, configuration_status,
-        configure_hooks_at,
+        ProcessMonitor, agent_process_refresh_kind, classify_agent_executable,
+        classify_agent_process, configuration_status, configure_hooks_at,
     };
 
     #[test]
@@ -299,6 +307,11 @@ mod tests {
             .snapshot()
             .expect("system process snapshot should be readable");
         assert!(snapshot.processes().len() <= aizu_core::MAX_PROCESS_SNAPSHOT_ENTRIES);
+    }
+
+    #[test]
+    fn agent_process_refresh_excludes_linux_tasks() {
+        assert!(!agent_process_refresh_kind().tasks());
     }
 
     #[test]
