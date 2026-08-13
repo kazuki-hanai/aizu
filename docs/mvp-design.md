@@ -1110,6 +1110,13 @@ weekly failure は issue または repository notification へ連携する。Aiz
 - version は Cargo、Tauri config、frontend package で一致させる
 - tag の commit が `main` に含まれることを確認する
 
+実装済み workflow は `.github/workflows/release.yml`。通常PRでは起動せず、
+manual dispatch の既定 `rehearsal` は signing secret を読まずに全target build、
+asset inventory、SBOM、checksum、clean-runner verifyを行う。public publish は
+stable tag と `release-signing` / `release-publish` の二つのprotected Environmentを
+必須とし、前者だけがApple/updater secretを読み、後者だけがGitHub Releaseへ
+writeする。運用手順は [`docs/releasing.md`](releasing.md) を正本とする。
+
 ### 20.2 Release jobs
 
 1. CI required checks を再実行
@@ -1132,7 +1139,7 @@ Aizu_<version>_x64.dmg
 aizu-cli_<version>_macos-aarch64.tar.gz
 aizu-cli_<version>_macos-x64.tar.gz
 aizu-cli_<version>_linux-x64.tar.gz
-aizu-cli_<version>_linux-arm64.tar.gz
+aizu-cli_<version>_linux-aarch64.tar.gz
 latest.json
 SHA256SUMS
 SBOM.spdx.json
