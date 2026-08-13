@@ -123,12 +123,18 @@ describe("Aizu desktop MVP", () => {
     await browser.switchToWindow("banner");
     await expect($("strong=Aizu test notification")).toBeDisplayed();
     await expect($("span=Aizu Banner is ready.")).toBeDisplayed();
-    expect(await browser.execute(() => {
+    const entranceMotion = await browser.execute(() => {
       const banner = document.querySelector(".aizu-banner");
-      return banner instanceof HTMLElement
-        ? window.getComputedStyle(banner).animationName
-        : null;
-    })).toBe("aizu-banner-enter");
+      if (!(banner instanceof HTMLElement)) return null;
+      return {
+        animationName: window.getComputedStyle(banner).animationName,
+        reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      };
+    });
+    expect(entranceMotion).not.toBeNull();
+    expect(entranceMotion?.animationName).toBe(
+      entranceMotion?.reducedMotion ? "none" : "aizu-banner-enter",
+    );
     const banner = $(".aizu-banner");
     const swipeHandle = $(".aizu-banner__body");
     await browser.action("pointer", { parameters: { pointerType: "mouse" } })
