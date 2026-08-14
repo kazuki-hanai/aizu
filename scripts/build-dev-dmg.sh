@@ -52,10 +52,12 @@ output="$output_directory/Aizu_${version}_${architecture}.dmg"
 mkdir -p "$output_directory"
 volume_name="Aizu $version"
 mount_point="/Volumes/$volume_name"
-if [ -e "$mount_point" ]; then
-  printf '%s\n' "eject the existing '$volume_name' disk image before building" >&2
-  exit 1
-fi
+for existing_mount in "$mount_point" "$mount_point "[0-9]*; do
+  if [ -e "$existing_mount" ]; then
+    printf '%s\n' "eject every existing '$volume_name' disk image before building" >&2
+    exit 1
+  fi
+done
 
 # Finder persists a disk image window's presentation in .DS_Store. Create a
 # writable image first so the installer opens as a compact drag-to-install
@@ -66,17 +68,27 @@ fi
   -mountpoint "$mount_point" "$read_write_image"
 attached=1
 
-finder_ready=0
-attempt=0
-while [ "$attempt" -lt 50 ]; do
-  if [ "$(/usr/bin/osascript -e "tell application \"Finder\" to exists disk \"$volume_name\"")" = true ]; then
-    finder_ready=1
-    break
-  fi
-  attempt=$((attempt + 1))
-  sleep 0.1
-done
-if [ "$finder_ready" -ne 1 ]; then
+if ! finder_ready=$(/usr/bin/osascript <<APPLESCRIPT
+set deadline to (current date) + 5
+repeat while (current date) is less than deadline
+  try
+    with timeout of 1 second
+      tell application "Finder"
+        if exists disk "$volume_name" then return "true"
+      end tell
+    end timeout
+  on error number -1712
+    -- Retry until the overall deadline when Finder is temporarily unresponsive.
+  end try
+  delay 0.1
+end repeat
+return "false"
+APPLESCRIPT
+); then
+  printf '%s\n' "Finder did not respond while registering '$volume_name'" >&2
+  exit 1
+fi
+if [ "$finder_ready" != true ]; then
   printf '%s\n' "Finder did not register '$volume_name'" >&2
   exit 1
 fi
