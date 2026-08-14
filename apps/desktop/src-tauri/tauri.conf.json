@@ -41,7 +41,10 @@
     ],
     "resources": {
       "resources/bin/aizu": "bin/aizu",
-      "../../../assets/audio/aizu-pop.wav": "aizu-pop.wav"
+      "../../../assets/audio/aizu-pop.wav": "aizu-pop.wav",
+      "../../../assets/audio/aizu-chime.wav": "aizu-chime.wav",
+      "../../../assets/audio/aizu-pulse.wav": "aizu-pulse.wav",
+      "../../../assets/audio/aizu-bloom.wav": "aizu-bloom.wav"
     },
     "macOS": {
       "minimumSystemVersion": "12.0"

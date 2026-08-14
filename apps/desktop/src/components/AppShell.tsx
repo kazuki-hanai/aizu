@@ -554,10 +554,9 @@ function SettingsView({ busy, muted, onChange, onMuteChange, preferences, onSend
   const sounds: readonly { label: string; value: Preferences["notificationSound"] | "off" }[] = [
     { label: t.sounds.off, value: "off" },
     { label: t.sounds.default, value: "default" },
-    { label: t.sounds.glass, value: "glass" },
-    { label: t.sounds.ping, value: "ping" },
-    { label: t.sounds.pop, value: "pop" },
-    { label: t.sounds.hero, value: "hero" },
+    { label: t.sounds.chime, value: "chime" },
+    { label: t.sounds.pulse, value: "pulse" },
+    { label: t.sounds.bloom, value: "bloom" },
   ];
 
   return (

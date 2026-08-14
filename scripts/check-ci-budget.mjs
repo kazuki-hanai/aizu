@@ -37,7 +37,7 @@ const classifications = [
   { files: ["crates/aizu-core/src/lib.rs"], macos: true, package: false },
   { files: ["apps/desktop/src/App.tsx"], macos: true, package: false },
   { files: ["apps/desktop/src-tauri/tauri.conf.json"], macos: true, package: true },
-  { files: ["assets/audio/aizu-pop.wav"], macos: true, package: true },
+  { files: ["assets/audio/aizu-chime.wav"], macos: true, package: true },
   { files: ["package.json"], macos: true, package: true },
   { files: ["pnpm-lock.yaml"], macos: true, package: true },
   { files: ["apps/desktop/package.json"], macos: true, package: true },
@@ -46,6 +46,7 @@ const classifications = [
   { files: [".github/workflows/release.yml"], macos: true, package: true },
   { files: ["apps/desktop/src-tauri/tauri.release.conf.json"], macos: true, package: true },
   { files: ["scripts/release/package-cli.sh"], macos: true, package: true },
+  { files: ["scripts/verify-audio-resources.sh"], macos: true, package: true },
 ];
 for (const expected of classifications) {
   const actual = classifyChanges(expected.files);

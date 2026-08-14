@@ -38,7 +38,7 @@ test "$(sips -g pixelWidth "$mount_point/.background/background.png" | awk '/pix
 test "$(sips -g pixelHeight "$mount_point/.background/background.png" | awk '/pixelHeight:/ {print $2}')" = 400
 codesign --verify --deep --strict "$app"
 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = dev.aizu.desktop
-cmp assets/audio/aizu-pop.wav "$app/Contents/Resources/aizu-pop.wav"
+scripts/verify-audio-resources.sh "$app"
 "$app/Contents/Resources/bin/aizu" version --json >/dev/null
 
 echo "verified $dmg"

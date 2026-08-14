@@ -2,7 +2,7 @@ import type { Preferences } from "./contracts";
 
 type Messages = {
   [key: string]: string | ((...args: never[]) => string) | Record<string, string>;
-  sounds: Record<"off" | "default" | "glass" | "ping" | "pop" | "hero", string>;
+  sounds: Record<"off" | "default" | "chime" | "pulse" | "bloom", string>;
 };
 
 const en = {
@@ -125,7 +125,7 @@ const en = {
   sshTestError: "The SSH connection test could not be completed.",
   remoteAizu: "Remote Aizu",
   sendTestNotification: "Send test notification",
-  sounds: { off: "Off", default: "Aizu Pop", glass: "Glass", ping: "Ping", pop: "Pop", hero: "Hero" },
+  sounds: { off: "Off", default: "Aizu Pop", chime: "Aizu Chime", pulse: "Aizu Pulse", bloom: "Aizu Bloom" },
 } satisfies Messages;
 
 const ja = {
@@ -248,7 +248,7 @@ const ja = {
   sshTestError: "SSH接続テストを完了できませんでした。",
   remoteAizu: "接続先のAizu",
   sendTestNotification: "テスト通知を送信",
-  sounds: { off: "オフ", default: "Aizu Pop", glass: "Glass", ping: "Ping", pop: "Pop", hero: "Hero" },
+  sounds: { off: "オフ", default: "Aizu Pop", chime: "Aizu Chime", pulse: "Aizu Pulse", bloom: "Aizu Bloom" },
 } satisfies Messages;
 
 export type { Messages };

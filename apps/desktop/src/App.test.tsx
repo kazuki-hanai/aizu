@@ -426,9 +426,13 @@ describe("Aizu desktop shell", () => {
     expect(screen.getByRole("combobox", { name: "Text size" })).toHaveValue("standard");
     expect(screen.getByRole("combobox", { name: "Notification sound" }))
       .toHaveDisplayValue("Aizu Pop");
+    for (const sound of ["Aizu Pop", "Aizu Chime", "Aizu Pulse", "Aizu Bloom"]) {
+      expect(screen.getByRole("option", { name: sound })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole("option", { name: "Hero" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Task completion" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification style" }), "system");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Notification sound" }), "ping");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Notification sound" }), "pulse");
     await user.selectOptions(screen.getByRole("combobox", { name: "Text size" }), "large");
     await user.click(screen.getByText("Advanced"));
     await user.click(screen.getByRole("switch", { name: "Show agent details" }));
@@ -440,7 +444,7 @@ describe("Aizu desktop shell", () => {
           completionEnabled: false,
           agentDetailsEnabled: true,
           notificationDelivery: "system",
-          notificationSound: "ping",
+          notificationSound: "pulse",
           textSize: "large",
           quietHours: { questionsBypass: false },
         },

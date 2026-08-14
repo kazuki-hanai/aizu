@@ -397,39 +397,34 @@ fn play_sound(sound: NotificationSound) {
     use std::cell::RefCell;
 
     const AIZU_POP: &[u8] = include_bytes!("../../../../assets/audio/aizu-pop.wav");
+    const AIZU_CHIME: &[u8] = include_bytes!("../../../../assets/audio/aizu-chime.wav");
+    const AIZU_PULSE: &[u8] = include_bytes!("../../../../assets/audio/aizu-pulse.wav");
+    const AIZU_BLOOM: &[u8] = include_bytes!("../../../../assets/audio/aizu-bloom.wav");
 
     thread_local! {
-        static AIZU_POP_SOUND: RefCell<Option<objc2::rc::Retained<objc2_app_kit::NSSound>>> =
-            const { RefCell::new(None) };
+        static AIZU_SOUNDS: RefCell<[
+            Option<objc2::rc::Retained<objc2_app_kit::NSSound>>;
+            4
+        ]> = const { RefCell::new([None, None, None, None]) };
     }
 
-    if sound == NotificationSound::Default {
-        AIZU_POP_SOUND.with_borrow_mut(|cached| {
-            if cached.is_none() {
-                let data = objc2_foundation::NSData::with_bytes(AIZU_POP);
-                *cached =
-                    objc2_app_kit::NSSound::initWithData(objc2_app_kit::NSSound::alloc(), &data);
-            }
-            if let Some(sound) = cached.as_ref() {
-                let _ = sound.stop();
-                let _ = sound.play();
-            }
-        });
-        return;
-    }
-
-    let name = match sound {
-        NotificationSound::Default => unreachable!("Aizu Pop handled above"),
-        NotificationSound::Glass => "Glass",
-        NotificationSound::Ping => "Ping",
-        NotificationSound::Pop => "Pop",
-        NotificationSound::Hero => "Hero",
-    }
-    .to_owned();
-    let name = objc2_foundation::NSString::from_str(&name);
-    if let Some(sound) = objc2_app_kit::NSSound::soundNamed(&name) {
-        let _ = sound.play();
-    }
+    let (index, bytes) = match sound {
+        NotificationSound::Default => (0, AIZU_POP),
+        NotificationSound::Chime => (1, AIZU_CHIME),
+        NotificationSound::Pulse => (2, AIZU_PULSE),
+        NotificationSound::Bloom => (3, AIZU_BLOOM),
+    };
+    AIZU_SOUNDS.with_borrow_mut(|cached| {
+        if cached[index].is_none() {
+            let data = objc2_foundation::NSData::with_bytes(bytes);
+            cached[index] =
+                objc2_app_kit::NSSound::initWithData(objc2_app_kit::NSSound::alloc(), &data);
+        }
+        if let Some(sound) = cached[index].as_ref() {
+            let _ = sound.stop();
+            let _ = sound.play();
+        }
+    });
 }
 
 #[cfg(not(target_os = "macos"))]

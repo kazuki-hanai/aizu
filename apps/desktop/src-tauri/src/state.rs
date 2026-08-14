@@ -1234,7 +1234,7 @@ mod tests {
         let notifier = FakeNotifier::with_permission(PermissionStatus::Granted);
         let mut service = service(notifier.clone());
         let mut preferences = service.view().preferences;
-        preferences.notification_sound = NotificationSound::Hero;
+        preferences.notification_sound = NotificationSound::Bloom;
         service
             .update_preferences(preferences)
             .expect("sound choice should persist");
@@ -1246,7 +1246,7 @@ mod tests {
         let notifications = notifier.notifications();
         assert_eq!(notifications.len(), 1);
         assert_eq!(notifications[0].title, "Aizu test notification");
-        assert_eq!(notifications[0].sound, Some(NotificationSound::Hero));
+        assert_eq!(notifications[0].sound, Some(NotificationSound::Bloom));
         assert_eq!(notifications[0].delivery, NotificationDelivery::AizuBanner);
     }
 
@@ -1513,7 +1513,7 @@ mod tests {
             delivery: NotificationDelivery::System,
             language: LanguagePreference::English,
             text_size: crate::model::TextSize::Large,
-            sound: Some(crate::model::NotificationSound::Ping),
+            sound: Some(crate::model::NotificationSound::Pulse),
         };
         let prepared = PreparedNotification {
             identifier: format!(
@@ -1534,7 +1534,7 @@ mod tests {
         );
         assert_eq!(
             notifications[0].sound,
-            Some(crate::model::NotificationSound::Ping)
+            Some(crate::model::NotificationSound::Pulse)
         );
         assert_eq!(notifications[0].text_size, crate::model::TextSize::Large);
     }

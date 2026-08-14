@@ -285,11 +285,22 @@ impl LanguagePreference {
 #[serde(rename_all = "camelCase")]
 pub enum NotificationSound {
     #[default]
+    #[serde(alias = "glass", alias = "ping", alias = "pop", alias = "hero")]
     Default,
-    Glass,
-    Ping,
-    Pop,
-    Hero,
+    Chime,
+    Pulse,
+    Bloom,
+}
+
+impl NotificationSound {
+    pub const fn asset_name(self) -> &'static str {
+        match self {
+            Self::Default => "aizu-pop.wav",
+            Self::Chime => "aizu-chime.wav",
+            Self::Pulse => "aizu-pulse.wav",
+            Self::Bloom => "aizu-bloom.wav",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,5 +422,18 @@ mod tests {
         );
         assert_eq!(preferences.language, LanguagePreference::System);
         assert_eq!(preferences.text_size, TextSize::Standard);
+    }
+
+    #[test]
+    fn legacy_system_sounds_migrate_to_aizu_pop() {
+        for legacy in ["glass", "ping", "pop", "hero"] {
+            let sound: NotificationSound = serde_json::from_value(serde_json::json!(legacy))
+                .expect("legacy sound should remain readable");
+            assert_eq!(sound, NotificationSound::Default);
+            assert_eq!(
+                serde_json::to_value(sound).expect("sound should serialize"),
+                "default"
+            );
+        }
     }
 }
