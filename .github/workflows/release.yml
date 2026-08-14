@@ -260,8 +260,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends minisign
           updater_public_key=$(node scripts/release/updater-public-key.mjs)
+          signature_dir=$(mktemp -d)
+          trap 'rm -rf "$signature_dir"' EXIT
           for archive in release-assets/*.app.tar.gz; do
-            minisign -Vm "$archive" -x "$archive.sig" -P "$updater_public_key"
+            decoded_signature="$signature_dir/$(basename "$archive").minisig"
+            node scripts/release/decode-updater-signature.mjs "$archive.sig" > "$decoded_signature"
+            minisign -Vm "$archive" -x "$decoded_signature" -P "$updater_public_key"
           done
       - name: Verify assembled artifacts
         run: node scripts/release/verify.mjs release-assets

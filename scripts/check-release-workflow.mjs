@@ -5,6 +5,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { assemble, expectedAssetNames } from "./release/assemble.mjs";
+import { decodeUpdaterSignature } from "./release/decode-updater-signature.mjs";
 import { decodeUpdaterPublicKey, validateReleaseConfiguration } from "./release/preflight.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -36,6 +37,13 @@ requireText(
   "node scripts/release/updater-public-key.mjs",
   "release verification must decode the checked-in Tauri updater key for minisign",
 );
+requireText(
+  "node scripts/release/decode-updater-signature.mjs",
+  "release verification must decode Tauri updater signatures before invoking minisign",
+);
+if (workflow.includes('minisign -Vm "$archive" -x "$archive.sig"')) {
+  errors.push("release verification must not pass Tauri's base64 signature directly to minisign");
+}
 requireText(
   'scripts/release/verify-attestations.sh release-assets "$GITHUB_REPOSITORY" "$GITHUB_SHA"',
   "publish must verify each downloaded artifact's provenance",
@@ -117,6 +125,12 @@ const fixture = {
 const fixtureUpdaterKey = Buffer.from(
   `untrusted comment: minisign public key: 0000000000000000\n${"RWR"}${"A".repeat(53)}\n`,
 ).toString("base64");
+const signatureBytes = Buffer.alloc(74);
+signatureBytes[0] = 0x45;
+signatureBytes[1] = 0x64;
+const fixtureUpdaterSignature = Buffer.from(
+  `untrusted comment: signature from tauri secret key\n${signatureBytes.toString("base64")}\ntrusted comment: timestamp:0\tfile:Aizu.app.tar.gz\n${Buffer.alloc(64).toString("base64")}\n`,
+).toString("base64");
 if (validateReleaseConfiguration(fixture).length !== 0) errors.push("rehearsal preflight should accept development configuration");
 const publishErrors = validateReleaseConfiguration({ ...fixture, mode: "publish", refType: "tag", refName: "v1.2.3" });
 for (const expected of ["approved branding", "createUpdaterArtifacts", "updater public key"]) {
@@ -146,6 +160,18 @@ if (!malformedKey.some((error) => error.includes("updater public key"))) {
 }
 if (decodeUpdaterPublicKey(fixtureUpdaterKey) === null) {
   errors.push("Tauri updater public-key envelope should be accepted");
+}
+if (decodeUpdaterSignature(fixtureUpdaterSignature) === null) {
+  errors.push("Tauri updater signature envelope should be accepted");
+}
+for (const malformed of [
+  `${fixtureUpdaterSignature}=`,
+  Buffer.from("not a minisign signature\n").toString("base64"),
+  "A".repeat(4_100),
+]) {
+  if (decodeUpdaterSignature(malformed) !== null) {
+    errors.push("malformed or oversized Tauri updater signatures must be rejected");
+  }
 }
 if (!validateReleaseConfiguration({ ...fixture, version: "1.2" }).some((error) => error.includes("SemVer"))) {
   errors.push("release preflight must reject non-SemVer versions");
