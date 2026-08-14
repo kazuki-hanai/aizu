@@ -59,6 +59,11 @@ if (releaseTauri.bundle?.targets?.join(",") !== "app") {
   errors.push("Tauri release bundling must leave DMG creation to the canonical Finder-alias builder");
 }
 if (!packageCli.includes("gzip -9n")) errors.push("standalone CLI archives must omit variable gzip timestamps");
+for (const expected of ["GNU tar", "--owner=0", "--group=0", "--numeric-owner", "--uid 0", "--gid 0"]) {
+  if (!packageCli.includes(expected)) {
+    errors.push(`standalone CLI packaging must support deterministic GNU and BSD tar metadata: ${expected}`);
+  }
+}
 if (/^\s{4}(?:cli|macos):[\s\S]*?^\s{4}strategy:/mu.test(workflow)) {
   errors.push("release CLI and macOS builds must not expand architecture runner matrices");
 }
