@@ -118,7 +118,10 @@ jobs:
       - name: Install pinned cross linker
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends gcc-aarch64-linux-gnu
+          sudo apt-get install --yes --no-install-recommends \
+            binutils-aarch64-linux-gnu \
+            gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
       - name: Build and package standalone Linux CLIs
         run: |
           cargo build --locked --release -p aizu-cli --target x86_64-unknown-linux-gnu

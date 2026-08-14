@@ -48,6 +48,8 @@ if (!publishJob.includes("Check out release verification scripts")) {
 requireText("/commits/$GITHUB_SHA/pulls", "publish preflight must resolve the merged PR for a squash commit");
 requireText("head_sha=$pr_head", "publish preflight must verify CI for the merged PR head");
 requireText("name: cli-linux", "Linux CLI architectures must share one runner");
+requireText("binutils-aarch64-linux-gnu", "Linux aarch64 CLI builds must install target binutils");
+requireText("libc6-dev-arm64-cross", "Linux aarch64 CLI builds must install the target libc development sysroot");
 requireText("name: macos-universal-release-set", "macOS release architectures must share one runner");
 if (!buildMacos.includes("AIZU_BUNDLED_CLI_TARGET=$target")) {
   errors.push("macOS app bundles must embed the matching CLI architecture");
