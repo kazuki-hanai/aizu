@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 source_app="$root/target/debug/bundle/macos/Aizu.app"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/aizu-dmg.XXXXXX")
 read_write_image="$stage/Aizu-layout.dmg"
@@ -52,18 +52,46 @@ output="$output_directory/Aizu_${version}_${architecture}.dmg"
 mkdir -p "$output_directory"
 volume_name="Aizu $version"
 mount_point="/Volumes/$volume_name"
-if [ -e "$mount_point" ]; then
-  printf '%s\n' "eject the existing '$volume_name' disk image before building" >&2
-  exit 1
-fi
+for existing_mount in "$mount_point" "$mount_point "[0-9]*; do
+  if [ -e "$existing_mount" ]; then
+    printf '%s\n' "eject every existing '$volume_name' disk image before building" >&2
+    exit 1
+  fi
+done
 
 # Finder persists a disk image window's presentation in .DS_Store. Create a
 # writable image first so the installer opens as a compact drag-to-install
 # window instead of an unstyled directory.
 /usr/bin/hdiutil create -quiet -ov -format UDRW -volname "$volume_name" \
   -srcfolder "$payload" "$read_write_image"
-/usr/bin/hdiutil attach -quiet -readwrite -noverify -noautoopen "$read_write_image"
+/usr/bin/hdiutil attach -quiet -readwrite -noverify -noautoopen \
+  -mountpoint "$mount_point" "$read_write_image"
 attached=1
+
+if ! finder_ready=$(/usr/bin/osascript <<APPLESCRIPT
+set deadline to (current date) + 5
+repeat while (current date) is less than deadline
+  try
+    with timeout of 1 second
+      tell application "Finder"
+        if exists disk "$volume_name" then return "true"
+      end tell
+    end timeout
+  on error number -1712
+    -- Retry until the overall deadline when Finder is temporarily unresponsive.
+  end try
+  delay 0.1
+end repeat
+return "false"
+APPLESCRIPT
+); then
+  printf '%s\n' "Finder did not respond while registering '$volume_name'" >&2
+  exit 1
+fi
+if [ "$finder_ready" != true ]; then
+  printf '%s\n' "Finder did not register '$volume_name'" >&2
+  exit 1
+fi
 
 /usr/bin/osascript <<APPLESCRIPT
 tell application "Finder"
