@@ -35,6 +35,10 @@ requireText(
 );
 requireText("sha256sum --check SHA256SUMS", "publish must verify checksums after downloading artifacts");
 const publishJob = workflow.split(/^  publish:\s*$/mu)[1] ?? "";
+const preflightJob = (workflow.split(/^  preflight:\s*$/mu)[1] ?? "").split(/^  cli:\s*$/mu)[0] ?? "";
+if (!/^\s{10}components: clippy,rustfmt\s*$/mu.test(preflightJob)) {
+  errors.push("release preflight must install clippy and rustfmt from the pinned toolchain");
+}
 if (!/^\s{6}attestations: read\s*$/mu.test(publishJob)) {
   errors.push("release publication must have read access to provenance attestations");
 }
