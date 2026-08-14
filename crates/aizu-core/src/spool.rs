@@ -333,7 +333,7 @@ impl Spool {
     }
 
     fn initialize(&self) -> Result<(), SpoolError> {
-        let mut connection = Connection::open(self.paths.spool_db())?;
+        let mut connection = open_connection(&self.paths.spool_db())?;
         ensure_safe_sqlite_version(&connection)?;
         reject_newer_database(&connection)?;
         configure_connection(&connection)?;
@@ -367,7 +367,7 @@ impl Spool {
     }
 
     fn connection(&self) -> Result<Connection, SpoolError> {
-        let connection = Connection::open(self.paths.spool_db())?;
+        let connection = open_connection(&self.paths.spool_db())?;
         ensure_safe_sqlite_version(&connection)?;
         reject_newer_database(&connection)?;
         configure_connection(&connection)?;
@@ -541,8 +541,13 @@ fn next_retention_candidate(
         .optional()?)
 }
 
-fn configure_connection(connection: &Connection) -> Result<(), SpoolError> {
+fn open_connection(path: &Path) -> Result<Connection, SpoolError> {
+    let connection = Connection::open(path)?;
     connection.busy_timeout(BUSY_TIMEOUT)?;
+    Ok(connection)
+}
+
+fn configure_connection(connection: &Connection) -> Result<(), SpoolError> {
     connection.execute_batch(
         "PRAGMA foreign_keys = ON;
          PRAGMA synchronous = FULL;
