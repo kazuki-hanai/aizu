@@ -1,7 +1,9 @@
 use std::fs::TryLockError;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use rusqlite::{
@@ -19,6 +21,7 @@ use crate::paths::StatePaths;
 
 pub const DATABASE_SCHEMA_VERSION: i64 = 1;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+const BUSY_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 const DEFAULT_PAGE_SIZE: usize = 256;
 const MAINTENANCE_BATCH_SIZE: usize = 1_000;
 const MAINTENANCE_INTERVAL: ChronoDuration = ChronoDuration::hours(24);
@@ -333,7 +336,20 @@ impl Spool {
     }
 
     fn initialize(&self) -> Result<(), SpoolError> {
-        let mut connection = open_connection(&self.paths.spool_db())?;
+        let deadline = Instant::now() + BUSY_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.initialize_once(remaining) {
+                Err(error) if error.is_sqlite_busy() && !remaining.is_zero() => {
+                    thread::sleep(BUSY_RETRY_INTERVAL.min(remaining));
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn initialize_once(&self, busy_timeout: Duration) -> Result<(), SpoolError> {
+        let mut connection = open_connection_with_timeout(&self.paths.spool_db(), busy_timeout)?;
         ensure_safe_sqlite_version(&connection)?;
         reject_newer_database(&connection)?;
         configure_connection(&connection)?;
@@ -542,8 +558,15 @@ fn next_retention_candidate(
 }
 
 fn open_connection(path: &Path) -> Result<Connection, SpoolError> {
+    open_connection_with_timeout(path, BUSY_TIMEOUT)
+}
+
+fn open_connection_with_timeout(
+    path: &Path,
+    busy_timeout: Duration,
+) -> Result<Connection, SpoolError> {
     let connection = Connection::open(path)?;
-    connection.busy_timeout(BUSY_TIMEOUT)?;
+    connection.busy_timeout(busy_timeout)?;
     Ok(connection)
 }
 
@@ -1013,6 +1036,18 @@ pub enum SpoolError {
 }
 
 impl SpoolError {
+    fn is_sqlite_busy(&self) -> bool {
+        matches!(
+            self,
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+                if matches!(
+                    error.code,
+                    rusqlite::ffi::ErrorCode::DatabaseBusy
+                        | rusqlite::ffi::ErrorCode::DatabaseLocked
+                )
+        )
+    }
+
     #[must_use]
     pub fn indicates_corruption(&self) -> bool {
         match self {
