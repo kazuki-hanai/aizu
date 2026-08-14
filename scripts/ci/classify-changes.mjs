@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
 const DOC_ONLY = /\.md$/u;
-const PACKAGING_INPUT = /^(?:Cargo\.(?:toml|lock)|package\.json|pnpm-lock\.yaml|mise\.(?:toml|lock)|\.github\/workflows\/(?:ci|release)\.yml|assets\/(?:audio|branding)\/|apps\/desktop\/(?:package\.json|src-tauri\/(?:Cargo\.toml|build\.rs|icons\/|resources\/|tauri(?:\.release)?\.conf\.json))|scripts\/(?:build-dev-dmg|install-dev-app|prepare-desktop-cli)\.sh|scripts\/(?:ci\/verify-dev-dmg\.sh|release\/))/u;
+const PACKAGING_INPUT = /^(?:Cargo\.(?:toml|lock)|package\.json|pnpm-lock\.yaml|mise\.(?:toml|lock)|\.github\/workflows\/(?:ci|release)\.yml|assets\/(?:audio|branding)\/|apps\/desktop\/(?:package\.json|src-tauri\/(?:Cargo\.toml|build\.rs|icons\/|resources\/|tauri(?:\.release)?\.conf\.json))|scripts\/(?:build-dev-dmg|install-dev-app|prepare-desktop-cli|verify-audio-resources)\.sh|scripts\/(?:ci\/verify-dev-dmg\.sh|release\/))/u;
 
 export function changedPaths(base, head, cwd = process.cwd()) {
   const fields = execFileSync("git", ["diff", "--name-status", "-z", `${base}...${head}`], {

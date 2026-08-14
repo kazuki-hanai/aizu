@@ -34,7 +34,7 @@ for spec in aarch64-apple-darwin:aarch64:arm64 x86_64-apple-darwin:x64:x86_64; d
   [[ -d $app ]] || { echo "missing app bundle for $target" >&2; exit 1; }
   [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist") == "$version" ]]
   [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist") == dev.aizu.desktop ]]
-  cmp assets/audio/aizu-pop.wav "$app/Contents/Resources/aizu-pop.wav"
+  scripts/verify-audio-resources.sh "$app"
   [[ $(lipo -archs "$app/Contents/Resources/bin/aizu") == "$mach_arch" ]]
 
   if [[ $mode == publish ]]; then

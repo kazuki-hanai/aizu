@@ -59,7 +59,7 @@ const notices: BannerNotification[] = [
     id: 1,
     title: "Codex task completed",
     body: "This complete safe notification body\n\nremains visible until it is dismissed.",
-    sound: "ping",
+    sound: "chime",
     delivery: "aizuBanner",
     language: "en",
     textSize: "standard",

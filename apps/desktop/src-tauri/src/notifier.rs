@@ -172,24 +172,12 @@ fn show_system_notification(
 
 #[cfg(target_os = "macos")]
 const fn native_sound_name(sound: crate::model::NotificationSound) -> &'static str {
-    match sound {
-        crate::model::NotificationSound::Default => "aizu-pop.wav",
-        crate::model::NotificationSound::Glass => "Glass",
-        crate::model::NotificationSound::Ping => "Ping",
-        crate::model::NotificationSound::Pop => "Pop",
-        crate::model::NotificationSound::Hero => "Hero",
-    }
+    sound.asset_name()
 }
 
 #[cfg(not(target_os = "macos"))]
-const fn native_sound_name(sound: crate::model::NotificationSound) -> &'static str {
-    match sound {
-        crate::model::NotificationSound::Default => "default",
-        crate::model::NotificationSound::Glass => "Glass",
-        crate::model::NotificationSound::Ping => "Ping",
-        crate::model::NotificationSound::Pop => "Pop",
-        crate::model::NotificationSound::Hero => "Hero",
-    }
+const fn native_sound_name(_sound: crate::model::NotificationSound) -> &'static str {
+    "default"
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -339,7 +327,7 @@ mod tests {
             id: 42,
             title: "Ready".to_owned(),
             body: "The task completed.".to_owned(),
-            sound: Some(crate::model::NotificationSound::Glass),
+            sound: Some(crate::model::NotificationSound::Chime),
             delivery: crate::model::NotificationDelivery::System,
             language: crate::model::LanguagePreference::English,
             text_size: crate::model::TextSize::Standard,
@@ -351,10 +339,14 @@ mod tests {
     }
 
     #[test]
-    fn default_macos_notification_uses_the_bundled_aizu_pop() {
-        assert_eq!(
-            native_sound_name(crate::model::NotificationSound::Default),
-            "aizu-pop.wav"
-        );
+    fn macos_notifications_use_bundled_aizu_sounds() {
+        for (sound, asset) in [
+            (crate::model::NotificationSound::Default, "aizu-pop.wav"),
+            (crate::model::NotificationSound::Chime, "aizu-chime.wav"),
+            (crate::model::NotificationSound::Pulse, "aizu-pulse.wav"),
+            (crate::model::NotificationSound::Bloom, "aizu-bloom.wav"),
+        ] {
+            assert_eq!(native_sound_name(sound), asset);
+        }
     }
 }

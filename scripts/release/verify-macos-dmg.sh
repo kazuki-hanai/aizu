@@ -37,7 +37,7 @@ background="$mount_point/.background/background.png"
 [[ $(sips -g pixelHeight "$background" | awk '/pixelHeight:/ { print $2 }') == 400 ]]
 codesign --verify --deep --strict "$app"
 [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist") == dev.aizu.desktop ]]
-cmp "$root/assets/audio/aizu-pop.wav" "$app/Contents/Resources/aizu-pop.wav"
+"$root/scripts/verify-audio-resources.sh" "$app"
 [[ $(lipo -archs "$app/Contents/Resources/bin/aizu") == "$expected_arch" ]]
 
 echo "verified $dmg"

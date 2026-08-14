@@ -608,7 +608,7 @@ Sections:
    - completion on/off
    - question on/off
    - notification style: Aizu Banner / macOS Notifications（既定 Aizu Banner、即時保存）
-   - Off または Aizu Pop（既定）を含む5種類から選べる通知音。Aizu Popは44.1kHz/16-bit mono、約440ms、-4dBFS peakのdeterministic generated assetとし、両通知方式で同じ音を使う
+   - Off または Aizu Pop（既定）、Aizu Chime、Aizu Pulse、Aizu Bloomから選べる通知音。4音は44.1kHz/16-bit mono、-4dBFS peakのdeterministic generated assetとし、両通知方式で同じ音を使う。旧版のmacOS標準音設定はAizu Popへ移行する
    - launch at login と quiet hours は折りたたみ式 Advanced に置く
 
 専用 History / Diagnostics 画面は置かない。永続 history は retention、dedup、診断のため backend に保持するが、通常 UI は agent 一覧と直近 activity に限定し、raw model output は表示しない。

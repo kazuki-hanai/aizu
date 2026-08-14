@@ -1,12 +1,16 @@
 # Aizu notification audio
 
-`aizu-pop.wav` is the canonical Aizu notification sound. It is generated
-deterministically by `scripts/generate-notification-sound.mjs` and is covered
-by the repository license.
+The four canonical Aizu notification sounds are generated deterministically by
+`scripts/generate-notification-sound.mjs` and are covered by the repository
+license:
 
-The sound is a 44.1 kHz, 16-bit mono, approximately 440 ms two-note cue. Its
-peak is normalized to -4 dBFS. Do not edit the WAV directly. Regenerate and
-verify it with:
+- `aizu-pop.wav`: bright 440 ms rising two-note cue
+- `aizu-chime.wav`: clear 820 ms descending bell sequence
+- `aizu-pulse.wav`: rounded 580 ms low two-pulse cue
+- `aizu-bloom.wav`: warm 760 ms expanding chord
+
+Every asset is 44.1 kHz, 16-bit mono and normalized to a -4 dBFS peak. Do not
+edit the WAV files directly. Regenerate and verify them with:
 
 ```bash
 mise exec -- node scripts/generate-notification-sound.mjs

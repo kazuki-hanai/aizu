@@ -213,7 +213,7 @@ describe("Aizu desktop MVP", () => {
       language: "ja",
       textSize: "large",
       agentDetailsEnabled: true,
-      notificationSound: "hero",
+      notificationSound: "bloom",
       quietHours: {
         ...resumed.preferences.quietHours,
         enabled: true,
@@ -222,7 +222,7 @@ describe("Aizu desktop MVP", () => {
       },
     };
     const updated = await invokeView("update_preferences", { request: preferences });
-    expect(updated.preferences.notificationSound).toBe("hero");
+    expect(updated.preferences.notificationSound).toBe("bloom");
     expect(updated.preferences.language).toBe("ja");
     expect(updated.preferences.textSize).toBe("large");
     expect(updated.preferences.agentDetailsEnabled).toBe(true);
@@ -234,7 +234,7 @@ describe("Aizu desktop MVP", () => {
       preferences: { agentDetailsEnabled: boolean; language: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
     };
     expect(persisted.preferences.agentDetailsEnabled).toBe(true);
-    expect(persisted.preferences.notificationSound).toBe("hero");
+    expect(persisted.preferences.notificationSound).toBe("bloom");
     expect(persisted.preferences.language).toBe("ja");
     expect(persisted.preferences.textSize).toBe("large");
     expect(persisted.preferences.quietHours.enabled).toBe(true);
