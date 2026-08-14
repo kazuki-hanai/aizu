@@ -23,6 +23,11 @@ mkdir -p "$output_dir"
 install -m 755 "$binary" "$stage/aizu"
 TZ=UTC touch -t 198001010000 "$stage/aizu"
 
-COPYFILE_DISABLE=1 tar --format ustar --uid 0 --gid 0 --uname root --gname root \
-  -C "$stage" -cf - aizu | gzip -9n > "$output_dir/$archive"
+if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+  COPYFILE_DISABLE=1 tar --format=ustar --owner=0 --group=0 --numeric-owner --sort=name \
+    -C "$stage" -cf - aizu | gzip -9n > "$output_dir/$archive"
+else
+  COPYFILE_DISABLE=1 tar --format ustar --uid 0 --gid 0 --uname root --gname root \
+    -C "$stage" -cf - aizu | gzip -9n > "$output_dir/$archive"
+fi
 printf '%s\n' "$output_dir/$archive"
