@@ -66,11 +66,37 @@ export function validateReleaseConfiguration({
     }
     const updater = tauri.plugins?.updater;
     const updaterKey = typeof updater?.pubkey === "string" ? updater.pubkey.trim() : "";
-    if (!/^RWT[0-9A-Za-z+/]{39,}={0,2}$/u.test(updaterKey)) {
+    if (decodeUpdaterPublicKey(updaterKey) === null) {
       errors.push("public release requires a non-placeholder updater public key");
     }
   }
   return errors;
+}
+
+export function decodeUpdaterPublicKey(encoded) {
+  if (typeof encoded !== "string"
+      || encoded.length === 0
+      || encoded.length % 4 !== 0
+      || !/^[0-9A-Za-z+/]+={0,2}$/u.test(encoded)) {
+    return null;
+  }
+  try {
+    const decodedBytes = Buffer.from(encoded, "base64");
+    if (decodedBytes.toString("base64") !== encoded) return null;
+    const decoded = decodedBytes.toString("utf8");
+    if (!decoded.startsWith("untrusted comment: minisign public key: ")) return null;
+    const lines = decoded.trimEnd().split(/\r?\n/u);
+    if (lines.length !== 2) return null;
+    const key = lines[1];
+    if (!/^[0-9A-Za-z+/]{56}$/u.test(key)) return null;
+    const keyBytes = Buffer.from(key, "base64");
+    if (keyBytes.length !== 42 || keyBytes[0] !== 0x45 || ![0x44, 0x64].includes(keyBytes[1])) {
+      return null;
+    }
+    return key;
+  } catch {
+    return null;
+  }
 }
 
 function main() {

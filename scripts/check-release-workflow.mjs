@@ -5,13 +5,16 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { assemble, expectedAssetNames } from "./release/assemble.mjs";
-import { validateReleaseConfiguration } from "./release/preflight.mjs";
+import { decodeUpdaterPublicKey, validateReleaseConfiguration } from "./release/preflight.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const workflow = readFileSync(resolve(root, ".github/workflows/release.yml"), "utf8");
 const packageCli = readFileSync(resolve(root, "scripts/release/package-cli.sh"), "utf8");
 const buildMacos = readFileSync(resolve(root, "scripts/release/build-macos-targets.sh"), "utf8");
 const releaseTauri = JSON.parse(readFileSync(resolve(root, "apps/desktop/src-tauri/tauri.release.conf.json"), "utf8"));
+const tauri = JSON.parse(readFileSync(resolve(root, "apps/desktop/src-tauri/tauri.conf.json"), "utf8"));
+const desktopCargo = readFileSync(resolve(root, "apps/desktop/src-tauri/Cargo.toml"), "utf8");
+const desktopRuntime = readFileSync(resolve(root, "apps/desktop/src-tauri/src/lib.rs"), "utf8");
 const verifyAttestations = resolve(root, "scripts/release/verify-attestations.sh");
 const errors = [];
 
@@ -29,6 +32,10 @@ requireText("name: release-publish", "release publication must be a distinct job
 requireText("--draft --generate-notes", "release publication must create a draft first");
 requireText("published versions are immutable", "release publication must reject replacement releases");
 requireText("minisign -Vm", "updater archives must be verified with the checked-in public key");
+requireText(
+  "node scripts/release/updater-public-key.mjs",
+  "release verification must decode the checked-in Tauri updater key for minisign",
+);
 requireText(
   'scripts/release/verify-attestations.sh release-assets "$GITHUB_REPOSITORY" "$GITHUB_SHA"',
   "publish must verify each downloaded artifact's provenance",
@@ -60,6 +67,24 @@ for (const expected of ["scripts/release/build-macos-dmg.sh", "xcrun notarytool 
 if (releaseTauri.bundle?.targets?.join(",") !== "app") {
   errors.push("Tauri release bundling must leave DMG creation to the canonical Finder-alias builder");
 }
+if (!desktopCargo.includes("tauri-plugin-updater")) {
+  errors.push("desktop release must include the Tauri updater plugin dependency");
+}
+if (!desktopRuntime.includes("tauri_plugin_updater::Builder::new().build()")) {
+  errors.push("desktop runtime must register the Tauri updater plugin");
+}
+if (tauri.plugins?.updater?.endpoints?.join(",")
+    !== "https://github.com/kazuki-hanai/aizu/releases/latest/download/latest.json") {
+  errors.push("desktop updater must use the static GitHub Releases manifest");
+}
+const configuredUpdaterKey = execFileSync(
+  process.execPath,
+  [resolve(root, "scripts/release/updater-public-key.mjs")],
+  { cwd: root, encoding: "utf8" },
+);
+if (configuredUpdaterKey !== decodeUpdaterPublicKey(tauri.plugins?.updater?.pubkey)) {
+  errors.push("updater key decoder must return the configured minisign key");
+}
 if (!packageCli.includes("gzip -9n")) errors.push("standalone CLI archives must omit variable gzip timestamps");
 for (const expected of ["GNU tar", "--owner=0", "--group=0", "--numeric-owner", "--uid 0", "--gid 0"]) {
   if (!packageCli.includes(expected)) {
@@ -89,6 +114,9 @@ const fixture = {
   releaseTauri: { bundle: {} },
   branding: { branding_status: "development-approved", release_approved: false },
 };
+const fixtureUpdaterKey = Buffer.from(
+  `untrusted comment: minisign public key: 0000000000000000\n${"RWR"}${"A".repeat(53)}\n`,
+).toString("base64");
 if (validateReleaseConfiguration(fixture).length !== 0) errors.push("rehearsal preflight should accept development configuration");
 const publishErrors = validateReleaseConfiguration({ ...fixture, mode: "publish", refType: "tag", refName: "v1.2.3" });
 for (const expected of ["approved branding", "createUpdaterArtifacts", "updater public key"]) {
@@ -101,7 +129,7 @@ const readyPublish = validateReleaseConfiguration({
   refName: "v1.2.3",
   branding: { branding_status: "approved", release_approved: true },
   releaseTauri: { bundle: { createUpdaterArtifacts: true } },
-  tauri: { ...fixture.tauri, plugins: { updater: { pubkey: `RWT${"A".repeat(41)}` } } },
+  tauri: { ...fixture.tauri, plugins: { updater: { pubkey: fixtureUpdaterKey } } },
 });
 if (readyPublish.length !== 0) errors.push(`release-ready fixture was rejected: ${readyPublish.join(", ")}`);
 const malformedKey = validateReleaseConfiguration({
@@ -115,6 +143,9 @@ const malformedKey = validateReleaseConfiguration({
 });
 if (!malformedKey.some((error) => error.includes("updater public key"))) {
   errors.push("publish preflight must reject malformed updater public keys");
+}
+if (decodeUpdaterPublicKey(fixtureUpdaterKey) === null) {
+  errors.push("Tauri updater public-key envelope should be accepted");
 }
 if (!validateReleaseConfiguration({ ...fixture, version: "1.2" }).some((error) => error.includes("SemVer"))) {
   errors.push("release preflight must reject non-SemVer versions");

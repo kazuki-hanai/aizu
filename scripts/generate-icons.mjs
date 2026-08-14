@@ -404,6 +404,27 @@ const outputMetadata = [...generated.entries()].map(([relativePath, data]) => {
   };
 });
 
+const manifestPath = "assets/branding/icon-manifest.json";
+let approval = {
+  branding_status: "development-approved",
+  release_approved: false,
+  approval_scope: "development builds only",
+};
+if (existsSync(resolve(ROOT, manifestPath))) {
+  const existing = JSON.parse(read(manifestPath).toString("utf8"));
+  if (existing.source_digest_sha256 === sourceDigest
+      && existing.branding_status === "approved"
+      && existing.release_approved === true
+      && typeof existing.approval_scope === "string"
+      && existing.approval_scope.length > 0) {
+    approval = {
+      branding_status: existing.branding_status,
+      release_approved: existing.release_approved,
+      approval_scope: existing.approval_scope,
+    };
+  }
+}
+
 for (const output of outputMetadata) {
   if (forbiddenFingerprints.sha256.includes(output.sha256)) {
     throw new Error(`${output.path}: matches a forbidden Tauri default icon fingerprint`);
@@ -412,9 +433,7 @@ for (const output of outputMetadata) {
 
 const manifest = {
   schema_version: 1,
-  branding_status: "development-approved",
-  release_approved: false,
-  approval_scope: "development builds only",
+  ...approval,
   license: "MIT",
   provenance: "Original Aizu project artwork created 2026-08-12",
   canonical_canvas: { width: 1024, height: 1024 },
@@ -432,7 +451,7 @@ const manifest = {
   outputs: outputMetadata,
 };
 const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
-generated.set("assets/branding/icon-manifest.json", manifestBytes);
+generated.set(manifestPath, manifestBytes);
 
 let failed = false;
 for (const [relativePath, expected] of generated) {

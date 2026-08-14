@@ -259,7 +259,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends minisign
-          updater_public_key=$(node -p "JSON.parse(require('fs').readFileSync('apps/desktop/src-tauri/tauri.conf.json')).plugins.updater.pubkey")
+          updater_public_key=$(node scripts/release/updater-public-key.mjs)
           for archive in release-assets/*.app.tar.gz; do
             minisign -Vm "$archive" -x "$archive.sig" -P "$updater_public_key"
           done
