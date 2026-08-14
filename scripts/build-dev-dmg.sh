@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 source_app="$root/target/debug/bundle/macos/Aizu.app"
 stage=$(mktemp -d "${TMPDIR:-/tmp}/aizu-dmg.XXXXXX")
 read_write_image="$stage/Aizu-layout.dmg"
@@ -62,8 +62,24 @@ fi
 # window instead of an unstyled directory.
 /usr/bin/hdiutil create -quiet -ov -format UDRW -volname "$volume_name" \
   -srcfolder "$payload" "$read_write_image"
-/usr/bin/hdiutil attach -quiet -readwrite -noverify -noautoopen "$read_write_image"
+/usr/bin/hdiutil attach -quiet -readwrite -noverify -noautoopen \
+  -mountpoint "$mount_point" "$read_write_image"
 attached=1
+
+finder_ready=0
+attempt=0
+while [ "$attempt" -lt 50 ]; do
+  if [ "$(/usr/bin/osascript -e "tell application \"Finder\" to exists disk \"$volume_name\"")" = true ]; then
+    finder_ready=1
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 0.1
+done
+if [ "$finder_ready" -ne 1 ]; then
+  printf '%s\n' "Finder did not register '$volume_name'" >&2
+  exit 1
+fi
 
 /usr/bin/osascript <<APPLESCRIPT
 tell application "Finder"
