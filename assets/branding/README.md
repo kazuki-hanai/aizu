@@ -1,8 +1,9 @@
 # Aizu branding assets
 
 This directory is the canonical source for Aizu application and menu bar
-artwork. The current artwork is approved for development builds only. Release
-approval is deliberately tracked separately in `icon-manifest.json`.
+artwork. The current artwork is approved for Aizu v0.1.x release artifacts.
+Release approval is tracked separately in `icon-manifest.json` and is reset
+when canonical artwork changes.
 
 ## Provenance and license
 
@@ -44,7 +45,9 @@ The generator uses only Node.js standard-library APIs. It emits deterministic
 RGBA PNGs with explicit sRGB and gamma chunks, an ICNS containing PNG icon
 representations, and an ICO containing PNG representations.
 
-Before release, a project owner must set `branding_status` to `approved` and
-`release_approved` to `true` through the approval process, regenerate the
-manifest, and attach Finder/Dock plus light/dark/Increase Contrast previews to
-the release PR. Development approval must not be presented as release approval.
+Before a later release line, a project owner must approve the unchanged
+artwork or review new artwork and set `branding_status` to `approved` and
+`release_approved` to `true` through the approval process. The generator
+preserves approval only while the canonical source digest is unchanged.
+Finder/Dock plus light/dark/Increase Contrast previews belong on the release
+PR. Development approval must not be presented as release approval.

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "branding_status": "development-approved",
-  "release_approved": false,
-  "approval_scope": "development builds only",
+  "branding_status": "approved",
+  "release_approved": true,
+  "approval_scope": "Aizu v0.1.x public release artifacts",
   "license": "MIT",
   "provenance": "Original Aizu project artwork created 2026-08-12",
   "canonical_canvas": {
@@ -13,7 +13,7 @@
   "generator": {
     "name": "scripts/generate-icons.mjs",
     "version": "1.0.0",
-    "sha256": "b48401227ae5d06627fcc22d8b85ad13845367021793122a85c18b9e04ed25f6",
+    "sha256": "bca719bf1bddc8c96a70fc2c72d547b4f2a4a5090b512638388b1603d3198741",
     "runtime": "node 24.19.0",
     "dependencies": "Node.js standard library only"
   },

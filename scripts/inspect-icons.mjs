@@ -93,11 +93,15 @@ function inspectTrayPng(relativePath, size) {
 }
 
 const manifest = JSON.parse(read("assets/branding/icon-manifest.json").toString("utf8"));
-if (manifest.schema_version !== 1 || manifest.branding_status !== "development-approved") {
-  throw new Error("icon-manifest.json: invalid development branding status");
-}
-if (manifest.release_approved !== false) {
-  throw new Error("development artwork must not claim release approval");
+const developmentApproval = manifest.branding_status === "development-approved"
+  && manifest.release_approved === false
+  && manifest.approval_scope === "development builds only";
+const releaseApproval = manifest.branding_status === "approved"
+  && manifest.release_approved === true
+  && typeof manifest.approval_scope === "string"
+  && manifest.approval_scope.length > 0;
+if (manifest.schema_version !== 1 || (!developmentApproval && !releaseApproval)) {
+  throw new Error("icon-manifest.json: invalid branding approval state");
 }
 if (manifest.generator.runtime !== "node 24.19.0" || manifest.color_profile !== "sRGB") {
   throw new Error("icon-manifest.json: generator runtime or color profile is not pinned");
