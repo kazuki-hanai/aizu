@@ -16,6 +16,7 @@ import {
 export type BannerClient = {
   getBanners: () => Promise<BannerNotification[]>;
   dismiss: (id: number) => Promise<void>;
+  activate: (id: number) => Promise<void>;
   resize: (height: number) => Promise<void>;
   subscribe: (onChange: (banners: BannerNotification[]) => void) => Promise<UnlistenFn>;
 };
@@ -116,6 +117,9 @@ export const bannerBackend: BannerClient = {
     bannerNotificationSchema.array().parse(await invokeBackend("get_banners")),
   dismiss: async (id) => {
     await invokeBackend("dismiss_banner", { id });
+  },
+  activate: async (id) => {
+    await invokeBackend("activate_banner", { id });
   },
   resize: async (height) => {
     await invokeBackend("resize_banner", { height });

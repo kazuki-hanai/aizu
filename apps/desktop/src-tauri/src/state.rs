@@ -753,6 +753,8 @@ impl AppService {
             delivery,
             language: self.settings.preferences.language,
             text_size: self.settings.preferences.text_size,
+            can_activate_terminal: false,
+            activation: None,
         })?;
         Ok(self.view())
     }
@@ -969,6 +971,8 @@ impl aizu_core::Notifier for PipelineNotifier<'_> {
                 delivery: self.delivery,
                 language: self.language,
                 text_size: self.text_size,
+                can_activate_terminal: notification.activation.is_some(),
+                activation: notification.activation.clone(),
             })
             .map_err(|_| aizu_core::NotifyError::Retryable)
     }
@@ -1523,6 +1527,11 @@ mod tests {
             ),
             title: "Agent is waiting for input".to_owned(),
             body: "Agent is waiting for input on This Mac".to_owned(),
+            activation: Some(aizu_core::TerminalActivation {
+                application: aizu_core::TerminalApplication::Iterm2,
+                application_session: Some("w0t0p0:ABCD".to_owned()),
+                tmux: None,
+            }),
         };
 
         aizu_core::Notifier::notify(&adapter, &prepared).expect("notification should schedule");
@@ -1537,6 +1546,8 @@ mod tests {
             Some(crate::model::NotificationSound::Pulse)
         );
         assert_eq!(notifications[0].text_size, crate::model::TextSize::Large);
+        assert!(notifications[0].can_activate_terminal);
+        assert!(notifications[0].activation.is_some());
     }
 
     #[test]

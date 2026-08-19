@@ -140,15 +140,24 @@ events remain in the source SQLite spool while the Mac is disconnected.
 
 - **Aizu Banner** is the default. It needs no macOS notification permission,
   keeps up to three alerts visible, preserves safe line breaks, and closes only
-  from its close button or a horizontal click-drag/swipe.
+  from its close button or a horizontal click-drag/swipe. Click a local Codex
+  or Claude Code alert to return to its terminal. Text remains selectable, and
+  selecting or dragging it does not activate the terminal.
 - **macOS Notifications** uses Notification Center. Select it under
   **Settings > Notification style**, then use the test action to request system
-  permission.
+  permission. Clicking a supported local agent notification also returns to its
+  terminal without opening the Aizu window.
 - **Aizu Pop** is the default sound. Change it or turn sound off under
   **Settings > Notification sound**.
-- **Show agent details** is off by default. Enabling it adds a short filtered
-  completion or permission excerpt. Aizu still excludes raw commands, full
-  prompts, transcripts, secrets, and absolute paths.
+- **Show agent details** is on by default and adds a short filtered completion
+  or permission excerpt. Aizu still excludes raw commands, full prompts,
+  transcripts, secrets, and absolute paths.
+
+Terminal return is exact for iTerm2 sessions, WezTerm panes, and valid tmux pane
+identifiers when they are still available. Apple Terminal, Ghostty, Warp,
+Kitty, and VS Code use application focus as a safe fallback. Remote SSH alerts
+do not offer terminal return because the receiving Mac cannot prove which local
+interactive SSH shell originated a remote event.
 
 Settings are saved immediately. The interface can follow macOS or use Japanese
 or English under **Settings > Language**.

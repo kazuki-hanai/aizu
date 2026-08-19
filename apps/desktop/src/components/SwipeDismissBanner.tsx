@@ -30,9 +30,11 @@ const EXIT_DURATION = 160;
 
 export function SwipeDismissBanner({
   banner,
+  onActivate,
   onDismiss,
 }: {
   banner: BannerNotification;
+  onActivate: (id: number) => Promise<boolean>;
   onDismiss: (id: number) => Promise<boolean>;
 }) {
   const bannerRef = useRef<HTMLElement>(null);
@@ -40,6 +42,9 @@ export function SwipeDismissBanner({
   const offset = useRef(0);
   const dismissTimer = useRef<number | null>(null);
   const dismissStarted = useRef(false);
+  const activationStarted = useRef(false);
+  const suppressActivation = useRef(false);
+  const suppressionTimer = useRef<number | null>(null);
   const [renderedOffset, setRenderedOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [exitDirection, setExitDirection] = useState<-1 | 1 | null>(null);
@@ -51,10 +56,21 @@ export function SwipeDismissBanner({
     setDragging(false);
     setExitDirection(null);
     dismissStarted.current = false;
+    activationStarted.current = false;
   }, []);
 
   useEffect(() => () => {
     if (dismissTimer.current !== null) window.clearTimeout(dismissTimer.current);
+    if (suppressionTimer.current !== null) window.clearTimeout(suppressionTimer.current);
+  }, []);
+
+  const suppressSyntheticClick = useCallback(() => {
+    suppressActivation.current = true;
+    if (suppressionTimer.current !== null) window.clearTimeout(suppressionTimer.current);
+    suppressionTimer.current = window.setTimeout(() => {
+      suppressionTimer.current = null;
+      suppressActivation.current = false;
+    }, 0);
   }, []);
 
   const finish = useCallback((input: SwipeState["input"], pointerId: number, cancelled = false) => {
@@ -92,7 +108,12 @@ export function SwipeDismissBanner({
     clientY: number,
     target: EventTarget,
   ) => {
-    if (swipe.current || dismissStarted.current || exitDirection !== null) return false;
+    if (
+      swipe.current ||
+      dismissStarted.current ||
+      activationStarted.current ||
+      exitDirection !== null
+    ) return false;
     if (target instanceof Element && target.closest("button")) return false;
     swipe.current = {
       axis: "pending",
@@ -124,10 +145,12 @@ export function SwipeDismissBanner({
     if (active.axis === "pending") {
       if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < AXIS_THRESHOLD) return;
       if (Math.abs(deltaX) <= Math.abs(deltaY)) {
+        suppressSyntheticClick();
         swipe.current = null;
         return;
       }
       active.axis = "horizontal";
+      suppressSyntheticClick();
       window.getSelection()?.removeAllRanges();
       setDragging(true);
     }
@@ -135,7 +158,7 @@ export function SwipeDismissBanner({
     const width = Math.max(bannerRef.current?.getBoundingClientRect().width ?? 0, DISMISS_THRESHOLD);
     offset.current = Math.max(-width, Math.min(width, deltaX));
     setRenderedOffset(offset.current);
-  }, [exitDirection]);
+  }, [exitDirection, suppressSyntheticClick]);
 
   useEffect(() => {
     const handleMouseMove = (event: MouseEvent) => {
@@ -160,10 +183,27 @@ export function SwipeDismissBanner({
     exitDirection === 1 ? "aizu-banner--dismiss-right" : "",
   ].filter(Boolean).join(" ");
   const dismissImmediately = () => {
-    if (dismissStarted.current) return;
+    if (dismissStarted.current || activationStarted.current) return;
     dismissStarted.current = true;
     void onDismiss(banner.id).then((dismissed) => {
       if (!dismissed) reset();
+    });
+  };
+  const activateImmediately = () => {
+    if (!banner.canActivateTerminal || activationStarted.current || dismissStarted.current) return;
+    if (suppressActivation.current) {
+      suppressActivation.current = false;
+      if (suppressionTimer.current !== null) {
+        window.clearTimeout(suppressionTimer.current);
+        suppressionTimer.current = null;
+      }
+      return;
+    }
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) return;
+    activationStarted.current = true;
+    void onActivate(banner.id).then((activated) => {
+      if (!activated) reset();
     });
   };
 
@@ -172,6 +212,7 @@ export function SwipeDismissBanner({
       className={classes}
       data-banner-id={banner.id}
       data-text-size={banner.textSize}
+      data-terminal-activation={banner.canActivateTerminal ? "available" : "unavailable"}
       lang={banner.language === "system" ? undefined : banner.language}
       onMouseDown={(event) => {
         if (event.button === 0) begin("mouse", 0, event.clientX, event.clientY, event.target);
@@ -198,7 +239,19 @@ export function SwipeDismissBanner({
       ref={bannerRef}
       style={style}
     >
-      <div className="aizu-banner__content">
+      <div
+        className="aizu-banner__content"
+        onClick={activateImmediately}
+        onKeyDown={(event) => {
+          if (banner.canActivateTerminal && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            activateImmediately();
+          }
+        }}
+        role={banner.canActivateTerminal ? "button" : undefined}
+        tabIndex={banner.canActivateTerminal ? 0 : undefined}
+        title={banner.canActivateTerminal ? messages(banner.language).returnToTerminal : undefined}
+      >
         <span className="aizu-banner__mark"><BrandMark small /></span>
         <span className="aizu-banner__copy">
           <strong>{banner.title}</strong>

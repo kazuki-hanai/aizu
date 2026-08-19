@@ -366,6 +366,9 @@ pub struct Notification {
     pub delivery: NotificationDelivery,
     pub language: LanguagePreference,
     pub text_size: TextSize,
+    pub can_activate_terminal: bool,
+    #[serde(skip_serializing)]
+    pub activation: Option<aizu_core::TerminalActivation>,
 }
 
 #[cfg(test)]

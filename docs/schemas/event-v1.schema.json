@@ -109,7 +109,7 @@
     },
     "metadata": {
       "type": "object",
-      "description": "Optional non-sensitive metadata. Must not contain secrets, full conversation text, or raw environment variables. Unknown properties are permitted for forward compatibility.",
+      "description": "Optional non-sensitive metadata. Must not contain secrets, full conversation text, raw environment variables, commands, argv, or absolute terminal socket paths. A trusted first-party hook may add aizu_terminal_activation with allowlisted terminal/session identifiers; remote receivers must not treat that value as a local terminal target. Unknown properties are permitted for forward compatibility.",
       "additionalProperties": true
     }
   },

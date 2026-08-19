@@ -52,6 +52,20 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
     }
   }, [client, refresh]);
 
+  const activate = useCallback(async (id: number) => {
+    try {
+      await client.activate(id);
+      refreshGeneration.current += 1;
+      setBanners((current) => current.filter((banner) => banner.id !== id));
+      setUnavailable(false);
+      await refresh();
+      return true;
+    } catch {
+      setUnavailable(true);
+      return false;
+    }
+  }, [client, refresh]);
+
   useEffect(() => {
     let active = true;
     let unsubscribe: (() => void) | undefined;
@@ -97,7 +111,12 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
     <main aria-label="Aizu notifications" className="banner-stack" ref={stackRef}>
       {unavailable ? <p className="banner-error">Aizu Banner is unavailable.</p> : null}
       {banners.map((banner) => (
-        <SwipeDismissBanner banner={banner} key={banner.id} onDismiss={dismiss} />
+        <SwipeDismissBanner
+          banner={banner}
+          key={banner.id}
+          onActivate={activate}
+          onDismiss={dismiss}
+        />
       ))}
     </main>
   );

@@ -119,6 +119,18 @@ impl BannerState {
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))
     }
 
+    fn activation(&self, id: i32) -> Result<Option<aizu_core::TerminalActivation>, NotifyError> {
+        self.banners
+            .lock()
+            .map(|banners| {
+                banners
+                    .iter()
+                    .find(|banner| banner.id == id)
+                    .and_then(|banner| banner.activation.clone())
+            })
+            .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))
+    }
+
     fn update_text_size(&self, text_size: TextSize) -> Result<bool, NotifyError> {
         let mut banners = self
             .banners
@@ -344,6 +356,15 @@ pub fn dismiss(app: &AppHandle<Wry>, id: i32) -> Result<(), NotifyError> {
     Ok(())
 }
 
+pub fn activation_target(
+    app: &AppHandle<Wry>,
+    id: i32,
+) -> Result<aizu_core::TerminalActivation, NotifyError> {
+    app.state::<BannerState>()
+        .activation(id)?
+        .ok_or_else(|| NotifyError::Scheduling("terminal activation is unavailable".to_owned()))
+}
+
 pub fn clear(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
     let ids = app
         .state::<BannerState>()
@@ -447,6 +468,8 @@ mod tests {
             delivery: crate::model::NotificationDelivery::AizuBanner,
             language: crate::model::LanguagePreference::English,
             text_size: crate::model::TextSize::Standard,
+            can_activate_terminal: false,
+            activation: None,
         }
     }
 
@@ -479,6 +502,26 @@ mod tests {
         assert!(!state.dismiss(1).expect("dismiss first"));
         assert_eq!(state.snapshot().expect("remaining banners").len(), 1);
         assert!(state.dismiss(2).expect("dismiss second"));
+    }
+
+    #[test]
+    fn frontend_receives_only_activation_availability_not_the_target() {
+        let state = BannerState::default();
+        let mut banner = notification(1, "ready");
+        banner.can_activate_terminal = true;
+        banner.activation = Some(aizu_core::TerminalActivation {
+            application: aizu_core::TerminalApplication::Iterm2,
+            application_session: Some("w0t0p0:ABCD".to_owned()),
+            tmux: None,
+        });
+        state.push(banner).expect("queue actionable banner");
+
+        assert!(state.activation(1).expect("activation lookup").is_some());
+        let serialized = serde_json::to_value(state.snapshot().expect("snapshot"))
+            .expect("serialize frontend snapshot");
+        assert_eq!(serialized[0]["canActivateTerminal"], true);
+        assert!(serialized[0].get("activation").is_none());
+        assert!(!serialized.to_string().contains("w0t0p0"));
     }
 
     #[test]

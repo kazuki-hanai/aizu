@@ -10,6 +10,7 @@ mod remote_worker;
 mod ssh_connection_test;
 mod state;
 mod store;
+mod terminal_activation;
 mod tray;
 mod worker;
 
@@ -23,10 +24,13 @@ use std::{
 use tauri::{Manager, RunEvent, WindowEvent};
 
 #[cfg(feature = "desktop-e2e")]
-use crate::commands::{get_e2e_notifications, set_e2e_remote_status};
+use crate::commands::{
+    get_e2e_notifications, get_e2e_terminal_activation_count, hide_e2e_main_window,
+    is_e2e_main_window_visible, set_e2e_remote_status, show_e2e_terminal_banner,
+};
 use crate::{
     commands::{
-        add_remote_source, clear_history, complete_onboarding, configure_agents,
+        activate_banner, add_remote_source, clear_history, complete_onboarding, configure_agents,
         confirm_codex_hook_trust, confirm_remote_identity, dismiss_banner, get_app_view,
         get_banners, install_cli, reconnect_remote_source, remove_remote_source,
         request_notification_permission, resize_banner, send_test_notification,
@@ -147,6 +151,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_banners,
             dismiss_banner,
+            activate_banner,
             resize_banner,
             get_app_view,
             complete_onboarding,
@@ -166,41 +171,30 @@ pub fn run() {
             #[cfg(feature = "desktop-e2e")]
             get_e2e_notifications,
             #[cfg(feature = "desktop-e2e")]
+            get_e2e_terminal_activation_count,
+            #[cfg(feature = "desktop-e2e")]
+            hide_e2e_main_window,
+            #[cfg(feature = "desktop-e2e")]
+            is_e2e_main_window_visible,
+            #[cfg(feature = "desktop-e2e")]
             set_e2e_remote_status,
+            #[cfg(feature = "desktop-e2e")]
+            show_e2e_terminal_banner,
         ])
         .build(tauri::generate_context!())
         .expect("Aizu desktop runtime failed");
     app.run(|app, event| {
-        #[cfg(target_os = "macos")]
-        if let RunEvent::Reopen {
-            has_visible_windows,
-            ..
-        } = event
-            && should_open_main_on_reopen(has_visible_windows)
-        {
-            tray::show_main_window(app);
-        }
         if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
             app.state::<worker::LocalWorker>().shutdown();
         }
     });
 }
 
-fn should_open_main_on_reopen(has_visible_windows: bool) -> bool {
-    !has_visible_windows
-}
-
 #[cfg(test)]
 mod tests {
     use std::{fs, time::SystemTime};
 
-    use super::{WorkerLease, should_open_main_on_reopen};
-
-    #[test]
-    fn visible_banner_does_not_reopen_the_main_window() {
-        assert!(!should_open_main_on_reopen(true));
-        assert!(should_open_main_on_reopen(false));
-    }
+    use super::WorkerLease;
 
     #[test]
     fn desktop_worker_lease_rejects_a_second_owner() {

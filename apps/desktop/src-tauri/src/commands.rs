@@ -24,6 +24,22 @@ pub fn dismiss_banner(app: AppHandle<Wry>, id: i32) -> Result<(), DesktopError> 
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+pub async fn activate_banner(app: AppHandle<Wry>, id: i32) -> Result<(), DesktopError> {
+    let target = crate::banner::activation_target(&app, id)?;
+    tauri::async_runtime::spawn_blocking(move || crate::terminal_activation::activate(&target))
+        .await
+        .map_err(|error| {
+            crate::notifier::NotifyError::Scheduling(format!(
+                "terminal activation task stopped unexpectedly: {error}"
+            ))
+        })?
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?;
+    crate::banner::dismiss(&app, id)?;
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn resize_banner(app: AppHandle<Wry>, height: f64) -> Result<(), DesktopError> {
     crate::banner::resize(&app, height).map_err(DesktopError::from)
 }
@@ -35,6 +51,61 @@ pub fn get_e2e_notifications(
     notifier: State<'_, std::sync::Arc<crate::notifier::FakeNotifier>>,
 ) -> Vec<crate::model::Notification> {
     notifier.notifications()
+}
+
+#[cfg(feature = "desktop-e2e")]
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn show_e2e_terminal_banner(app: AppHandle<Wry>) -> Result<(), DesktopError> {
+    crate::banner::show(
+        &app,
+        &Notification {
+            id: 8_675_309,
+            title: "Codex task completed".to_owned(),
+            body: "Return to the originating terminal.".to_owned(),
+            sound: None,
+            delivery: NotificationDelivery::AizuBanner,
+            language: crate::model::LanguagePreference::English,
+            text_size: crate::model::TextSize::Standard,
+            can_activate_terminal: true,
+            activation: Some(aizu_core::TerminalActivation {
+                application: aizu_core::TerminalApplication::Iterm2,
+                application_session: Some("w0t0p0:E2E".to_owned()),
+                tmux: None,
+            }),
+        },
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "desktop-e2e")]
+#[tauri::command]
+pub fn get_e2e_terminal_activation_count() -> usize {
+    crate::terminal_activation::e2e_activation_count()
+}
+
+#[cfg(feature = "desktop-e2e")]
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn hide_e2e_main_window(app: AppHandle<Wry>) -> Result<(), DesktopError> {
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        crate::notifier::NotifyError::Scheduling("main window is unavailable".to_owned())
+    })?;
+    window
+        .hide()
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()).into())
+}
+
+#[cfg(feature = "desktop-e2e")]
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn is_e2e_main_window_visible(app: AppHandle<Wry>) -> Result<bool, DesktopError> {
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        crate::notifier::NotifyError::Scheduling("main window is unavailable".to_owned())
+    })?;
+    window
+        .is_visible()
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()).into())
 }
 
 #[cfg(feature = "desktop-e2e")]

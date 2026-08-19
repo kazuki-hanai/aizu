@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use aizu_core::{
     AgentAdapter, AgentKind as CoreAgentKind, BridgeFrame, ClaudeCodeAdapter, CodexAdapter,
     EmitRequest, EventKind, HookInstallOutcome, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool,
-    SpoolError, StatePaths, Urgency, hook_configuration, install_agent_hooks,
-    parse_strict_json_value,
+    SpoolError, StatePaths, TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation, Urgency,
+    hook_configuration, install_agent_hooks, parse_strict_json_value,
 };
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -462,9 +462,10 @@ fn run_hook_command(
     display_name: Option<String>,
     args: HookArgs,
 ) -> Result<u8, Box<dyn Error>> {
+    let first_party_agent = matches!(args.agent.as_str(), "claude-code" | "codex");
     let result = (|| -> Result<(), Box<dyn Error>> {
         let raw = read_optional_stdin_limited(MAX_FRAME_BYTES)?;
-        let requests = if args.agent == "claude-code" || args.agent == "codex" {
+        let mut requests = if args.agent == "claude-code" || args.agent == "codex" {
             if raw.is_empty() {
                 return Err("first-party hook input is required on stdin".into());
             }
@@ -497,6 +498,11 @@ fn run_hook_command(
             reject_reserved_metadata(&request)?;
             vec![request]
         };
+        if first_party_agent {
+            for request in &mut requests {
+                attach_terminal_activation(request)?;
+            }
+        }
         let spool = open_spool(paths, display_name)?;
         for request in requests {
             spool.emit(request, None)?;
@@ -515,16 +521,34 @@ fn run_hook_command(
 }
 
 fn reject_reserved_metadata(request: &EmitRequest) -> Result<(), String> {
-    if request
-        .metadata
-        .as_ref()
-        .and_then(Value::as_object)
-        .is_some_and(|metadata| metadata.contains_key(RESERVED_ADAPTER_METADATA_KEY))
-    {
-        return Err(format!(
-            "metadata key {RESERVED_ADAPTER_METADATA_KEY:?} is reserved for first-party adapters"
-        ));
+    if let Some(metadata) = request.metadata.as_ref().and_then(Value::as_object) {
+        for key in [
+            RESERVED_ADAPTER_METADATA_KEY,
+            TERMINAL_ACTIVATION_METADATA_KEY,
+        ] {
+            if metadata.contains_key(key) {
+                return Err(format!(
+                    "metadata key {key:?} is reserved for Aizu-generated data"
+                ));
+            }
+        }
     }
+    Ok(())
+}
+
+fn attach_terminal_activation(request: &mut EmitRequest) -> Result<(), Box<dyn Error>> {
+    let Some(activation) = TerminalActivation::capture(|key| std::env::var(key).ok()) else {
+        return Ok(());
+    };
+    let metadata = request
+        .metadata
+        .get_or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or("metadata must be a JSON object")?;
+    metadata.insert(
+        TERMINAL_ACTIVATION_METADATA_KEY.to_owned(),
+        serde_json::to_value(activation)?,
+    );
     Ok(())
 }
 

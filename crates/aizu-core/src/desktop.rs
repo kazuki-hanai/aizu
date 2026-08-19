@@ -397,7 +397,8 @@ impl DesktopState {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
             "SELECT o.id, o.notification_identifier, o.state, o.attempt_count,
-                    e.source_label, e.sequence, e.payload_json, e.received_at, e.clock_skewed
+                    e.source_key, e.source_label, e.sequence, e.payload_json,
+                    e.received_at, e.clock_skewed
              FROM notification_outbox o
              JOIN desktop_events e ON e.id = o.event_row_id
              WHERE o.state IN ('pending', 'failed_retryable')
@@ -418,7 +419,7 @@ impl DesktopState {
         ])?;
         let mut items = Vec::new();
         while let Some(row) = rows.next()? {
-            let payload: String = row.get(6)?;
+            let payload: String = row.get(7)?;
             let event: NormalizedEvent = serde_json::from_str(&payload)?;
             event.validate()?;
             items.push(OutboxItem {
@@ -426,11 +427,12 @@ impl DesktopState {
                 notification_identifier: row.get(1)?,
                 state: parse_outbox_state(&row.get::<_, String>(2)?)?,
                 attempt_count: row.get(3)?,
-                source_label: row.get(4)?,
-                sequence: row.get(5)?,
+                source_key: row.get(4)?,
+                source_label: row.get(5)?,
+                sequence: row.get(6)?,
                 event,
-                received_at: parse_stored_timestamp(row.get(7)?)?,
-                clock_skewed: row.get(8)?,
+                received_at: parse_stored_timestamp(row.get(8)?)?,
+                clock_skewed: row.get(9)?,
             });
         }
         Ok(items)
@@ -812,6 +814,7 @@ pub struct OutboxItem {
     pub notification_identifier: String,
     pub state: OutboxState,
     pub attempt_count: i64,
+    pub source_key: String,
     pub source_label: String,
     pub sequence: i64,
     pub event: NormalizedEvent,

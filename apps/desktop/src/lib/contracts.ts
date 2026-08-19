@@ -102,6 +102,7 @@ export const bannerNotificationSchema = z.object({
   delivery: z.enum(["aizuBanner", "system"]),
   language: z.enum(["system", "ja", "en"]),
   textSize: z.enum(["small", "standard", "large"]),
+  canActivateTerminal: z.boolean(),
 });
 
 export const appViewSchema = z.object({

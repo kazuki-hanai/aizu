@@ -63,6 +63,7 @@ const notices: BannerNotification[] = [
     delivery: "aizuBanner",
     language: "en",
     textSize: "standard",
+    canActivateTerminal: true,
   },
   {
     id: 2,
@@ -72,6 +73,7 @@ const notices: BannerNotification[] = [
     delivery: "aizuBanner",
     language: "en",
     textSize: "standard",
+    canActivateTerminal: false,
   },
 ];
 
@@ -80,6 +82,10 @@ function client(): BannerClient {
   return {
     getBanners: vi.fn(() => Promise.resolve(queued)),
     dismiss: vi.fn((id: number) => {
+      queued = queued.filter((notice) => notice.id !== id);
+      return Promise.resolve();
+    }),
+    activate: vi.fn((id: number) => {
       queued = queued.filter((notice) => notice.id !== id);
       return Promise.resolve();
     }),
@@ -116,16 +122,91 @@ describe("Aizu Banner", () => {
     expect(container.querySelector(".aizu-banner")).toHaveAttribute("data-text-size", "large");
   });
 
-  it("keeps notification content passive and dismisses from the close button", async () => {
+  it("returns to the terminal from an actionable banner without opening Aizu", async () => {
     const user = userEvent.setup();
     const backend = client();
     const { container } = render(<BannerApp client={backend} />);
 
     await user.click((await screen.findAllByText("Codex task completed"))[0]);
-    expect(container.querySelector(".aizu-banner__content")).not.toHaveAttribute("role", "button");
+    await waitFor(() => expect(backend.activate).toHaveBeenCalledWith(1));
     expect(backend.dismiss).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-banner-id="1"]')).not.toBeInTheDocument();
+  });
+
+  it("supports keyboard terminal activation", async () => {
+    const backend = client();
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const action = container.querySelector<HTMLElement>(
+      '[data-banner-id="1"] .aizu-banner__content',
+    );
+    expect(action).toHaveAttribute("role", "button");
+    expect(action).toHaveAttribute("tabindex", "0");
+    if (!action) return;
+
+    fireEvent.keyDown(action, { key: "Enter" });
+
+    await waitFor(() => expect(backend.activate).toHaveBeenCalledWith(1));
+  });
+
+  it("does not start dismissal while terminal activation is pending", async () => {
+    const pending = deferred<undefined>();
+    const backend = client();
+    vi.mocked(backend.activate).mockReturnValueOnce(pending.promise);
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const action = container.querySelector<HTMLElement>(
+      '[data-banner-id="1"] .aizu-banner__content',
+    );
+    const banner = container.querySelector<HTMLElement>('[data-banner-id="1"]');
+    expect(action).not.toBeNull();
+    expect(banner).not.toBeNull();
+    if (!action || !banner) return;
+
+    fireEvent.click(action);
+    await waitFor(() => expect(backend.activate).toHaveBeenCalledWith(1));
+    fireEvent.click((await screen.findAllByRole("button", { name: "Dismiss notification" }))[0]);
+    fireEvent.pointerDown(banner, {
+      button: 0,
+      clientX: 140,
+      clientY: 20,
+      isPrimary: true,
+      pointerId: 16,
+    });
+    fireEvent.pointerMove(banner, { clientX: 40, clientY: 20, pointerId: 16 });
+    fireEvent.pointerUp(banner, { clientX: 40, clientY: 20, pointerId: 16 });
+
+    expect(backend.dismiss).not.toHaveBeenCalled();
+    expect(banner).not.toHaveClass("aizu-banner--dismiss-left");
+    pending.resolve(undefined);
+  });
+
+  it("keeps unsupported banners passive and dismisses from the close button", async () => {
+    const user = userEvent.setup();
+    const backend = client();
+    render(<BannerApp client={backend} />);
+
+    await user.click(await screen.findByText("Claude Code needs input"));
+    expect(backend.activate).not.toHaveBeenCalled();
     await user.click((await screen.findAllByRole("button", { name: "Dismiss notification" }))[0]);
     expect(backend.dismiss).toHaveBeenCalledWith(1);
+  });
+
+  it("does not activate while notification text is selected", async () => {
+    const backend = client();
+    const selection = vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: false,
+    } as Selection);
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const body = container.querySelector<HTMLElement>(".aizu-banner__body");
+    expect(body).not.toBeNull();
+    if (!body) return;
+
+    fireEvent.click(body);
+
+    expect(backend.activate).not.toHaveBeenCalled();
+    selection.mockRestore();
   });
 
   it("dismisses after a deliberate horizontal swipe", async () => {
@@ -144,6 +225,7 @@ describe("Aizu Banner", () => {
 
     expect(banner).toHaveClass("aizu-banner--dismiss-left");
     await waitFor(() => expect(backend.dismiss).toHaveBeenCalledWith(1));
+    expect(backend.activate).not.toHaveBeenCalled();
     await waitFor(() => expect(container.querySelector('[data-banner-id="1"]')).not.toBeInTheDocument());
   });
 
@@ -219,6 +301,33 @@ describe("Aizu Banner", () => {
     fireEvent.pointerMove(banner, { clientX: 90, clientY: 110, pointerId: 9 });
     fireEvent.pointerUp(banner, { clientX: 90, clientY: 110, pointerId: 9 });
     expect(backend.dismiss).not.toHaveBeenCalled();
+  });
+
+  it("suppresses only the synthetic click after a short drag", async () => {
+    const backend = client();
+    const { container } = render(<BannerApp client={backend} />);
+    await screen.findByText("Codex task completed");
+    const banner = container.querySelector<HTMLElement>('[data-banner-id="1"]');
+    const action = banner?.querySelector<HTMLElement>(".aizu-banner__content");
+    expect(banner).not.toBeNull();
+    expect(action).not.toBeNull();
+    if (!banner || !action) return;
+
+    fireEvent.pointerDown(banner, {
+      button: 0,
+      clientX: 100,
+      clientY: 20,
+      isPrimary: true,
+      pointerId: 15,
+    });
+    fireEvent.pointerMove(banner, { clientX: 60, clientY: 20, pointerId: 15 });
+    fireEvent.pointerUp(banner, { clientX: 60, clientY: 20, pointerId: 15 });
+    fireEvent.click(action);
+    expect(backend.activate).not.toHaveBeenCalled();
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    fireEvent.click(action);
+    await waitFor(() => expect(backend.activate).toHaveBeenCalledWith(1));
   });
 
   it("starts a horizontal swipe from selectable body text", async () => {
