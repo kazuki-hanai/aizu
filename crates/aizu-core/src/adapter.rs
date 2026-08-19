@@ -390,8 +390,7 @@ enum SecretState {
     None,
     AwaitDelimiter,
     AwaitValue,
-    AwaitBearerValue,
-    AwaitTokenOrDelimiter,
+    AwaitExplicitValue,
 }
 
 #[derive(Default)]
@@ -461,7 +460,23 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         let token = tokens[index];
         let lower = token.to_ascii_lowercase();
 
-        if let Some(masked) = redact_direct_token(token, state, &tokens[index + 1..]) {
+        if let Some(masked) = redact_expected_explicit_value(token, state) {
+            out.push(masked);
+            index += 1;
+            continue;
+        }
+        if let Some(action) = redact_explicit_context(token) {
+            match action {
+                ExplicitContextAction::AwaitValue(label) => {
+                    out.push(label);
+                    state.secret = SecretState::AwaitExplicitValue;
+                }
+                ExplicitContextAction::Inline(masked) => out.push(masked),
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(masked) = redact_direct_token(token, state) {
             out.push(masked);
             index += 1;
             continue;
@@ -519,20 +534,6 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         // Keep the key/header visible and carry only the delimiter expectation across
         // a line boundary. If the next line is ordinary prose rather than `:`/`=`,
         // the pending state is cancelled without redacting it.
-        if index + 1 == tokens.len() && matches!(lower.as_str(), "bearer" | "basic") {
-            out.push(token.to_owned());
-            state.secret = SecretState::AwaitBearerValue;
-            index += 1;
-            continue;
-        }
-        if index + 1 == tokens.len()
-            && matches!(lower.as_str(), "token" | "blob" | "base64" | "encoded")
-        {
-            out.push(token.to_owned());
-            state.secret = SecretState::AwaitTokenOrDelimiter;
-            index += 1;
-            continue;
-        }
         if index + 1 == tokens.len() && (is_sensitive_key(token) || lower == "authorization") {
             out.push(token.to_owned());
             state.secret = SecretState::AwaitDelimiter;
@@ -546,13 +547,55 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
     out.join(" ")
 }
 
-fn redact_direct_token(
-    token: &str,
-    state: &mut RedactionState,
-    following_tokens: &[&str],
-) -> Option<String> {
-    if let Some(masked) = redact_expected_context(token, state, following_tokens)
-        .or_else(|| redact_expected_delimiter(token, state))
+enum ExplicitContextAction {
+    AwaitValue(String),
+    Inline(String),
+}
+
+fn redact_explicit_context(token: &str) -> Option<ExplicitContextAction> {
+    if let Some(position) = token.find([':', '=']) {
+        let label = token.get(..position)?;
+        if !is_explicit_context_label(label) {
+            return None;
+        }
+        let separator = token.get(position..position + 1)?;
+        let value = token.get(position + 1..)?;
+        return Some(if value.is_empty() {
+            ExplicitContextAction::AwaitValue(token.to_owned())
+        } else {
+            ExplicitContextAction::Inline(format!("{label}{separator}{REDACTED_PLACEHOLDER}"))
+        });
+    }
+    is_explicit_context_label(token).then(|| ExplicitContextAction::AwaitValue(token.to_owned()))
+}
+
+fn is_explicit_context_label(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "bearer" | "basic" | "token" | "blob" | "base64" | "encoded"
+    )
+}
+
+fn redact_expected_explicit_value(token: &str, state: &mut RedactionState) -> Option<String> {
+    if state.secret != SecretState::AwaitExplicitValue {
+        return None;
+    }
+    if matches!(token.to_ascii_lowercase().as_str(), "bearer" | "basic") {
+        return Some(token.to_owned());
+    }
+    if let Some((separator, remainder)) = split_leading_separator(token) {
+        if remainder.is_empty() {
+            return Some(token.to_owned());
+        }
+        state.secret = SecretState::None;
+        return Some(format!("{separator}{REDACTED_PLACEHOLDER}"));
+    }
+    state.secret = SecretState::None;
+    Some(REDACTED_PLACEHOLDER.to_owned())
+}
+
+fn redact_direct_token(token: &str, state: &mut RedactionState) -> Option<String> {
+    if let Some(masked) = redact_expected_delimiter(token, state)
         .or_else(|| redact_expected_secret(token, state))
         .or_else(|| redact_file_url(token))
         .or_else(|| redact_url_userinfo(token))
@@ -578,50 +621,12 @@ fn redact_direct_token(
     Some(redaction.label)
 }
 
-fn redact_expected_context(
-    token: &str,
-    state: &mut RedactionState,
-    following_tokens: &[&str],
-) -> Option<String> {
-    match state.secret {
-        SecretState::AwaitBearerValue => {
-            state.secret = SecretState::None;
-            contextual_value_should_redact("bearer", token, following_tokens)
-                .then(|| REDACTED_PLACEHOLDER.to_owned())
-        }
-        SecretState::AwaitTokenOrDelimiter => {
-            state.secret = SecretState::None;
-            if split_leading_separator(token).is_some() {
-                state.secret = SecretState::AwaitValue;
-                return redact_expected_secret(token, state);
-            }
-            contextual_value_should_redact("token", token, following_tokens)
-                .then(|| REDACTED_PLACEHOLDER.to_owned())
-        }
-        _ => None,
-    }
-}
-
 fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String>, usize)> {
     let token = *tokens.get(index)?;
-    let lower = token.to_ascii_lowercase();
-    // A bare auth scheme is only treated as a credential when the next token is
-    // credential-shaped. This avoids corrupting ordinary prose such as
-    // "Bearer plants grow well here".
-    if matches!(lower.as_str(), "bearer" | "basic")
-        && tokens.get(index + 1).is_some_and(|value| {
-            contextual_value_should_redact(lower.as_str(), value, &tokens[index + 2..])
-        })
-    {
-        return Some((
-            vec![token.to_owned(), REDACTED_PLACEHOLDER.to_owned()],
-            index + 2,
-        ));
-    }
-
-    // Human-readable agent text may say `Token <value>` or
-    // `Secret value <value>` instead of using key/value punctuation.
-    if !is_sensitive_key(token) && !matches!(lower.as_str(), "blob" | "base64" | "encoded") {
+    // Non-explicit human-readable text may say `Secret value <value>` rather than
+    // using key/value punctuation. Explicit contexts are handled by one dedicated
+    // state machine before this fallback.
+    if !is_sensitive_key(token) {
         return None;
     }
     let filler = tokens
@@ -1730,6 +1735,41 @@ mod tests {
             ("Token secret", "Token [redacted]"),
             ("Base64 QUFB", "Base64 [redacted]"),
             (
+                "Bearer: secret surrounding message",
+                "Bearer: [redacted] surrounding message",
+            ),
+            (
+                "Basic: secret surrounding message",
+                "Basic: [redacted] surrounding message",
+            ),
+            (
+                "Blob: secret surrounding message",
+                "Blob: [redacted] surrounding message",
+            ),
+            (
+                "Encoded: payload surrounding message",
+                "Encoded: [redacted] surrounding message",
+            ),
+            (
+                "Bearer = secret surrounding message",
+                "Bearer = [redacted] surrounding message",
+            ),
+            (
+                "Bearer\n= secret surrounding message",
+                "Bearer\n= [redacted] surrounding message",
+            ),
+            (
+                "Base64 = QUFB surrounding message",
+                "Base64 = [redacted] surrounding message",
+            ),
+            (
+                "Blob value surrounding message",
+                "Blob [redacted] surrounding message",
+            ),
+            ("Blob value", "Blob [redacted]"),
+            ("Token value", "Token [redacted]"),
+            ("Encoded value", "Encoded [redacted]"),
+            (
                 "Bearer abcdefghijklmnopqrstuvwxyzabcdef",
                 "Bearer [redacted]",
             ),
@@ -1838,7 +1878,7 @@ mod tests {
             ),
             (
                 "Token value abcdefghijklmnopqrstuvwxyzabcdef is active",
-                "Token value [redacted] is active",
+                "Token [redacted] abcdefghijklmnopqrstuvwxyzabcdef is active",
             ),
         ] {
             assert_eq!(

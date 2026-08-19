@@ -536,6 +536,41 @@ mod tests {
             ("password :hunter2", "password :[redacted]", "hunter2"),
             ("Bearer hunter2", "Bearer [redacted]", "hunter2"),
             ("Bearer abcdef", "Bearer [redacted]", "abcdef"),
+            (
+                "Bearer: secret surrounding message",
+                "Bearer: [redacted] surrounding message",
+                "secret",
+            ),
+            (
+                "Basic: secret surrounding message",
+                "Basic: [redacted] surrounding message",
+                "secret",
+            ),
+            (
+                "Blob: secret surrounding message",
+                "Blob: [redacted] surrounding message",
+                "secret",
+            ),
+            (
+                "Encoded: payload surrounding message",
+                "Encoded: [redacted] surrounding message",
+                "payload",
+            ),
+            (
+                "Bearer = secret surrounding message",
+                "Bearer = [redacted] surrounding message",
+                "secret",
+            ),
+            (
+                "Bearer\n= secret surrounding message",
+                "Bearer\n= [redacted] surrounding message",
+                "secret",
+            ),
+            (
+                "Base64 = QUFB surrounding message",
+                "Base64 = [redacted] surrounding message",
+                "QUFB",
+            ),
             ("Bearer\nhunter2", "Bearer\n[redacted]", "hunter2"),
             (
                 "Bearer abcdefghijklmnopqrstuvwxyz123456",
@@ -569,6 +604,14 @@ mod tests {
             ),
             ("Token secret", "Token [redacted]", "secret"),
             ("Base64 QUFB", "Base64 [redacted]", "QUFB"),
+            (
+                "Blob value surrounding message",
+                "Blob [redacted] surrounding message",
+                "Blob value",
+            ),
+            ("Blob value", "Blob [redacted]", "Blob value"),
+            ("Token value", "Token [redacted]", "Token value"),
+            ("Encoded value", "Encoded [redacted]", "Encoded value"),
             (
                 "Secret value 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "Secret value [redacted]",
@@ -681,8 +724,8 @@ mod tests {
             ),
             (
                 "Token value abcdefghijklmnopqrstuvwxyzabcdef is active",
-                "Token value [redacted] is active",
-                "abcdefghijklmnopqrstuvwxyz",
+                "Token [redacted] abcdefghijklmnopqrstuvwxyzabcdef is active",
+                "Token value",
             ),
             (
                 "Bearer correcthorsebatterystaple expires tomorrow",
