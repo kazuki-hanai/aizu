@@ -19,6 +19,16 @@ const NOTIFICATION_EXCERPT_MAX_CHARS: usize = 240;
 const REDACTED_PLACEHOLDER: &str = "[redacted]";
 /// Placeholder substituted for a redacted private filesystem path.
 const PATH_PLACEHOLDER: &str = "[path]";
+const PRIVATE_KEY_LABELS: &[&str] = &[
+    "PRIVATE KEY",
+    "RSA PRIVATE KEY",
+    "EC PRIVATE KEY",
+    "DSA PRIVATE KEY",
+    "OPENSSH PRIVATE KEY",
+    "ENCRYPTED PRIVATE KEY",
+    "SECRET KEY",
+    "PGP PRIVATE KEY BLOCK",
+];
 /// Provider-issued credential prefixes. These are matched only at the start of a
 /// token and require a plausible credential length; substring matching would corrupt
 /// normal words such as `risk-based`, `task-specific`, `Asia`, or `Aizawa`.
@@ -310,8 +320,12 @@ fn redact_sensitive(value: &str) -> String {
         if state.block == BlockState::PublicCertificate {
             if uppercase.contains("-----END CERTIFICATE-----") {
                 state.block = BlockState::None;
-                redacted.push(line.to_owned());
-            } else if is_certificate_payload(line) {
+                redacted.push(if line.trim() == "-----END CERTIFICATE-----" {
+                    line.to_owned()
+                } else {
+                    redact_line(line, &mut state)
+                });
+            } else if is_certificate_payload(line) && !looks_like_known_credential(line.trim()) {
                 redacted.push(line.to_owned());
             } else {
                 redacted.push(redact_line(line, &mut state));
@@ -344,10 +358,15 @@ fn redact_sensitive(value: &str) -> String {
         // Private markers take precedence if malformed input places both public and
         // private BEGIN markers on one line.
         if uppercase.contains("-----BEGIN CERTIFICATE-----") {
-            if !uppercase.contains("-----END CERTIFICATE-----") {
+            let complete = uppercase.contains("-----END CERTIFICATE-----");
+            if !complete {
                 state.block = BlockState::PublicCertificate;
             }
-            redacted.push(line.to_owned());
+            redacted.push(if line.trim() == "-----BEGIN CERTIFICATE-----" {
+                line.to_owned()
+            } else {
+                redact_line(line, &mut state)
+            });
             continue;
         }
         redacted.push(redact_line(line, &mut state));
@@ -398,17 +417,7 @@ fn pem_labels<'a>(line: &'a str, marker: &'static str) -> impl Iterator<Item = (
 }
 
 fn is_private_key_label(label: &str) -> bool {
-    matches!(
-        label,
-        "PRIVATE KEY"
-            | "RSA PRIVATE KEY"
-            | "EC PRIVATE KEY"
-            | "DSA PRIVATE KEY"
-            | "OPENSSH PRIVATE KEY"
-            | "ENCRYPTED PRIVATE KEY"
-            | "SECRET KEY"
-            | "PGP PRIVATE KEY BLOCK"
-    )
+    PRIVATE_KEY_LABELS.contains(&label)
 }
 
 fn has_obfuscated_private_key_begin(value: &str) -> bool {
@@ -423,17 +432,14 @@ fn has_obfuscated_private_key_begin(value: &str) -> bool {
         .chars()
         .filter(|character| !character.is_whitespace())
         .collect();
-    [
-        "-----BEGINPRIVATEKEY-----",
-        "-----BEGINRSAPRIVATEKEY-----",
-        "-----BEGINGINPRIVATEKEY-----",
-        "-----BEGINOPENSSHPRIVATEKEY-----",
-        "-----BEGINENCRYPTEDPRIVATEKEY-----",
-        "-----BEGINSECRETKEY-----",
-    ]
-    .iter()
-    .any(|marker| collapsed.contains(marker))
-        || collapsed.contains("-----BEGINPRIVATEKEY")
+    PRIVATE_KEY_LABELS.iter().any(|label| {
+        let label: String = label
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        collapsed.contains(&format!("-----BEGIN{label}-----"))
+            || collapsed.contains(&format!("-----BEGIN{label}"))
+    })
 }
 
 fn is_certificate_payload(line: &str) -> bool {
@@ -517,7 +523,7 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
             index += 1;
             continue;
         }
-        if index + 1 == tokens.len() && lower == "token" {
+        if index + 1 == tokens.len() && matches!(lower.as_str(), "token" | "blob") {
             out.push(token.to_owned());
             state.secret = SecretState::AwaitTokenOrDelimiter;
             index += 1;
@@ -542,6 +548,7 @@ fn redact_direct_token(token: &str, state: &mut RedactionState) -> Option<String
         .or_else(|| redact_expected_secret(token, state))
         .or_else(|| redact_file_url(token))
         .or_else(|| redact_url_userinfo(token))
+        .or_else(|| redact_uri_secrets(token))
     {
         return Some(masked);
     }
@@ -600,7 +607,7 @@ fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String
 
     // Human-readable agent text may say `Token <value>` or
     // `Secret value <value>` instead of using key/value punctuation.
-    if !is_sensitive_key(token) {
+    if !is_sensitive_key(token) && lower != "blob" {
         return None;
     }
     let filler = tokens
@@ -756,9 +763,17 @@ fn redact_file_url(token: &str) -> Option<String> {
     }
     let path_start = file + 5;
     let path = token.get(path_start..)?;
+    let mut classified_path = path.to_ascii_lowercase();
+    for _ in 0..2 {
+        let decoded = classified_path.replace("%25", "%");
+        if decoded == classified_path {
+            break;
+        }
+        classified_path = decoded;
+    }
     let absolute = path.starts_with(['/', '\\'])
-        || path.to_ascii_lowercase().starts_with("%2f")
-        || path.to_ascii_lowercase().starts_with("%5c")
+        || classified_path.starts_with("%2f")
+        || classified_path.starts_with("%5c")
         || (path.as_bytes().get(1) == Some(&b':')
             && matches!(path.as_bytes().get(2), Some(b'\\' | b'/')));
     absolute.then(|| {
@@ -776,13 +791,36 @@ fn redact_url_userinfo(token: &str) -> Option<String> {
         .find(['/', '?', '#'])
         .map_or(token.len(), |offset| authority_start + offset);
     let at = token.get(authority_start..authority_end)?.rfind('@')? + authority_start;
-    (at > authority_start).then(|| {
-        format!(
-            "{}{REDACTED_PLACEHOLDER}@{}",
-            token.get(..authority_start).unwrap_or_default(),
-            token.get(at + 1..).unwrap_or_default()
-        )
-    })
+    let userinfo = token.get(authority_start..at)?;
+    (at > authority_start && (userinfo.contains(':') || looks_like_credential_value(userinfo)))
+        .then(|| {
+            format!(
+                "{}{REDACTED_PLACEHOLDER}@{}",
+                token.get(..authority_start).unwrap_or_default(),
+                token.get(at + 1..).unwrap_or_default()
+            )
+        })
+}
+
+fn redact_uri_secrets(token: &str) -> Option<String> {
+    if !looks_like_non_file_uri(token) {
+        return None;
+    }
+    let lower = token.to_ascii_lowercase();
+    let sensitive_assignment = SENSITIVE_KEYS.iter().any(|key| {
+        [format!("{key}="), format!("{key}:")]
+            .iter()
+            .any(|pattern| lower.contains(pattern))
+    });
+    let credential_component = token
+        .split(|character: char| {
+            matches!(
+                character,
+                '/' | '?' | '&' | '#' | ',' | ';' | '=' | ':' | '@'
+            )
+        })
+        .any(looks_like_credential_value);
+    (sensitive_assignment || credential_component).then(|| "[redacted URI]".to_owned())
 }
 
 fn uri_authority_start(token: &str) -> Option<usize> {
@@ -834,11 +872,14 @@ fn looks_like_credential_value(token: &str) -> bool {
             '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '"' | '\'' | '`'
         )
     });
+    looks_like_known_credential(token) || looks_like_high_entropy_blob(token)
+}
+
+fn looks_like_known_credential(token: &str) -> bool {
     looks_like_provider_token(token)
         || looks_like_aws_access_key(token)
         || looks_like_google_api_key(token)
         || looks_like_jwt(token)
-        || looks_like_high_entropy_blob(token)
 }
 
 fn looks_like_provider_token(token: &str) -> bool {
@@ -896,9 +937,7 @@ fn looks_like_bearer_value(token: &str) -> bool {
     (6..=10).contains(&token.len())
         && token.bytes().any(|byte| byte.is_ascii_digit())
         && token.bytes().all(|byte| byte.is_ascii_alphanumeric())
-        || (token.len() >= 16
-            && token.bytes().any(|byte| byte.is_ascii_digit())
-            && token.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        || looks_like_token_value(token)
 }
 
 fn contextual_secret_candidate(key: &str, candidate: &str) -> bool {
@@ -908,11 +947,19 @@ fn contextual_secret_candidate(key: &str, candidate: &str) -> bool {
             !character.is_ascii_alphanumeric() && character != '_' && character != '-'
         })
         .to_owned();
-    if key == "token" {
-        looks_like_credential_value(candidate) || looks_like_long_random_candidate(candidate)
+    if matches!(key.as_str(), "token" | "blob") {
+        looks_like_credential_value(candidate) || looks_like_token_value(candidate)
     } else {
         looks_like_secret_candidate(candidate)
     }
+}
+
+fn looks_like_token_value(token: &str) -> bool {
+    let token = trimmed_token(token);
+    token.len() >= 16
+        && token.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'_' | b'-' | b'=')
+        })
 }
 
 fn looks_like_long_random_candidate(token: &str) -> bool {
@@ -974,7 +1021,7 @@ fn looks_like_private_path(token: &str) -> bool {
         )
     });
     token.starts_with("~/")
-        || token.contains(r"\\")
+        || contains_unc_path(token)
         || token.as_bytes().iter().enumerate().any(|(index, byte)| {
             *byte == b'/'
                 && (index == 0
@@ -997,6 +1044,29 @@ fn looks_like_private_path(token: &str) -> bool {
                             b'=' | b'"' | b'\'' | b'`' | b'(' | b'[' | b'{'
                         ))
             })
+}
+
+fn contains_unc_path(token: &str) -> bool {
+    token.match_indices(r"\\").any(|(offset, _)| {
+        let Some(remainder) = token.get(offset + 2..) else {
+            return false;
+        };
+        if let Some(extended) = remainder.strip_prefix("?\\") {
+            return extended.as_bytes().get(1) == Some(&b':')
+                && matches!(extended.as_bytes().get(2), Some(b'\\' | b'/'));
+        }
+        let mut parts = remainder.split('\\');
+        let server = parts.next().unwrap_or_default();
+        let share = parts.next().unwrap_or_default();
+        !server.is_empty()
+            && !share.is_empty()
+            && server
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            && share
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    })
 }
 
 fn adapter_metadata(
@@ -1305,6 +1375,10 @@ mod tests {
                 "Open file:README.md for details",
             ),
             ("Open file:%2Froot%2F.ssh%2Fid_rsa", "Open file:[path]"),
+            (
+                "Open file:%252Froot%252F.ssh%252Fid_rsa",
+                "Open file:[path]",
+            ),
             (r"Open \\server\share\Alice\secret.txt", "Open [path]"),
             (r"Open \\?\C:\Users\Alice\secret.txt", "Open [path]"),
             (r"path=\\server\share\Alice\secret.txt", "[path]"),
@@ -1318,6 +1392,39 @@ mod tests {
             (
                 "Open https://example.com/home/start",
                 "Open https://example.com/home/start",
+            ),
+            (
+                "Open https://host.example/callback?token=ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/login?password=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/path#xoxb-1234567890-abcdefgh",
+                "Open [redacted URI]",
+            ),
+            (
+                "url=https://host.example/callback?api_key=sk-1234567890abcdef",
+                "[redacted URI]",
+            ),
+            (
+                "Open data:text/plain,password=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Contact mailto:user@example.com",
+                "Contact mailto:user@example.com",
+            ),
+            (
+                "SSH target ssh:user@example.com",
+                "SSH target ssh:user@example.com",
+            ),
+            (r"Regex \\d+ matches digits", r"Regex \\d+ matches digits"),
+            (
+                r"Windows escape \\n is a newline",
+                r"Windows escape \\n is a newline",
             ),
             (
                 "AWS_SECRET_ACCESS_KEY = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -1365,6 +1472,14 @@ mod tests {
                 "Blob [redacted]",
             ),
             (
+                "Blob QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+                "Blob [redacted]",
+            ),
+            (
+                "Blob AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCD",
+                "Blob [redacted]",
+            ),
+            (
                 "Authorization is required before deployment",
                 "Authorization is required before deployment",
             ),
@@ -1396,6 +1511,11 @@ mod tests {
                 "Bearer version2026 compatibility is documented",
                 "Bearer version2026 compatibility is documented",
             ),
+            (
+                "Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "Bearer [redacted]",
+            ),
+            ("Token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "Token [redacted]"),
         ] {
             assert_eq!(
                 safe_agent_excerpt(message).as_deref(),
@@ -1452,6 +1572,9 @@ mod tests {
         for obfuscated in [
             "-----BEGIN\nPRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
             "-----BE\nGIN PRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+            "-----BEGIN EC\nPRIVATE KEY-----\nsecretBody\n-----END EC PRIVATE KEY-----",
+            "-----BEGIN DSA\nPRIVATE KEY-----\nsecretBody\n-----END DSA PRIVATE KEY-----",
+            "-----BEGIN PGP\nPRIVATE KEY BLOCK-----\nsecretBody\n-----END PGP PRIVATE KEY BLOCK-----",
         ] {
             assert_eq!(
                 safe_agent_excerpt(obfuscated).as_deref(),
@@ -1480,6 +1603,20 @@ mod tests {
             )
             .as_deref(),
             Some("-----BEGIN CERTIFICATE-----\npassword=[redacted]\n-----END CERTIFICATE-----")
+        );
+        assert_eq!(
+            safe_agent_excerpt(
+                "-----BEGIN CERTIFICATE----- password=hunter2 -----END CERTIFICATE-----"
+            )
+            .as_deref(),
+            Some("-----BEGIN CERTIFICATE----- password=[redacted] -----END CERTIFICATE-----")
+        );
+        assert_eq!(
+            safe_agent_excerpt(
+                "-----BEGIN CERTIFICATE-----\nAKIAIOSFODNN7EXAMPLE\n-----END CERTIFICATE-----"
+            )
+            .as_deref(),
+            Some("-----BEGIN CERTIFICATE-----\n[redacted]\n-----END CERTIFICATE-----")
         );
         let mixed = "-----BEGIN CERTIFICATE----- -----BEGIN PRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----";
         let excerpt = safe_agent_excerpt(mixed).expect("private marker wins");

@@ -542,6 +542,11 @@ mod tests {
                 "abcdefghijklmnopqrstuvwxyz",
             ),
             (
+                "Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "Bearer [redacted]",
+                "aaaaaaaaaaaaaaaa",
+            ),
+            (
                 "Slack xapp-1-A1234567890-1234567890-abcdef",
                 "Slack [redacted]",
                 "xapp-1-",
@@ -557,6 +562,11 @@ mod tests {
                 "aB1cD2",
             ),
             (
+                "Token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "Token [redacted]",
+                "aaaaaaaaaaaaaaaa",
+            ),
+            (
                 "Secret value 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "Secret value [redacted]",
                 "0123456789abcdef",
@@ -570,6 +580,16 @@ mod tests {
                 "Blob QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==",
                 "Blob [redacted]",
                 "QUFBQUFB",
+            ),
+            (
+                "Blob QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+                "Blob [redacted]",
+                "QUFBQUFB",
+            ),
+            (
+                "Blob AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCD",
+                "Blob [redacted]",
+                "AbCdEfGh",
             ),
             (
                 "-----BEGIN PRIVATE\nKEY-----\nshortSecretBody\n-----END PRIVATE KEY-----\nsafe ending",
@@ -592,9 +612,34 @@ mod tests {
                 "secretBody",
             ),
             (
+                "-----BEGIN EC\nPRIVATE KEY-----\nsecretBody\n-----END EC PRIVATE KEY-----",
+                "[redacted private key]",
+                "secretBody",
+            ),
+            (
+                "-----BEGIN DSA\nPRIVATE KEY-----\nsecretBody\n-----END DSA PRIVATE KEY-----",
+                "[redacted private key]",
+                "secretBody",
+            ),
+            (
+                "-----BEGIN PGP\nPRIVATE KEY BLOCK-----\nsecretBody\n-----END PGP PRIVATE KEY BLOCK-----",
+                "[redacted private key]",
+                "secretBody",
+            ),
+            (
                 "-----BEGIN CERTIFICATE-----\npassword=hunter2\n-----END CERTIFICATE-----",
                 "password=[redacted]",
                 "hunter2",
+            ),
+            (
+                "-----BEGIN CERTIFICATE----- password=hunter2 -----END CERTIFICATE-----",
+                "password=[redacted]",
+                "hunter2",
+            ),
+            (
+                "-----BEGIN CERTIFICATE-----\nAKIAIOSFODNN7EXAMPLE\n-----END CERTIFICATE-----",
+                "[redacted]",
+                "AKIAIOS",
             ),
             (
                 "-----BEGIN CERTIFICATE----- -----BEGIN PRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
@@ -626,6 +671,11 @@ mod tests {
                 "%2Froot",
             ),
             (
+                "Open file:%252Froot%252F.ssh%252Fid_rsa",
+                "Open file:[path]",
+                "%252Froot",
+            ),
+            (
                 "Open https://user:pa@ss@host.example/path",
                 "Open https://[redacted]@host.example/path",
                 "pa@ss",
@@ -639,6 +689,31 @@ mod tests {
                 "Open https:user:pass@host.example/path",
                 "Open https:[redacted]@host.example/path",
                 "user:pass",
+            ),
+            (
+                "Open https://host.example/callback?token=ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+                "ghp_",
+            ),
+            (
+                "Open https://host.example/login?password=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host.example/path#xoxb-1234567890-abcdefgh",
+                "Open [redacted URI]",
+                "xoxb-",
+            ),
+            (
+                "url=https://host.example/callback?api_key=sk-1234567890abcdef",
+                "[redacted URI]",
+                "sk-",
+            ),
+            (
+                "Open data:text/plain,password=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
             ),
         ] {
             assert_pipeline_redacts(message, expected, leaked);
