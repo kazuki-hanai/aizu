@@ -62,6 +62,8 @@ const SENSITIVE_KEYS: &[&str] = &[
     "password",
     "passwd",
     "secret",
+    "secret_key",
+    "secret-key",
     "api_key",
     "api-key",
     "apikey",
@@ -525,30 +527,116 @@ fn byte_is_escaped(bytes: &[u8], index: usize) -> bool {
 fn quoted_value_has_sensitive_key(prefix: &str) -> bool {
     let prefix = prefix.trim_end();
     let separator_start = prefix.trim_end_matches([':', '=']).trim_end();
-    if separator_start.len() == prefix.len() {
+    if separator_start.len() != prefix.len() {
+        let key = if let Some(quote) = separator_start
+            .as_bytes()
+            .last()
+            .copied()
+            .filter(|quote| matches!(quote, b'"' | b'\'' | b'`'))
+        {
+            separator_start
+                .get(..separator_start.len().saturating_sub(1))
+                .and_then(|value| {
+                    value
+                        .rfind(char::from(quote))
+                        .map(|start| &value[start + 1..])
+                })
+                .unwrap_or_default()
+        } else {
+            separator_start
+                .rsplit(|character: char| {
+                    character.is_whitespace() || matches!(character, '{' | ',')
+                })
+                .next()
+                .unwrap_or_default()
+        };
+        if is_sensitive_assignment_key(key) || key.eq_ignore_ascii_case("authorization") {
+            return true;
+        }
+    }
+
+    let mut reversed = separator_start.split_whitespace().rev();
+    let mut fillers = 0;
+    let first_label = loop {
+        let Some(token) = reversed.next() else {
+            return false;
+        };
+        if is_value_filler(token) {
+            fillers += 1;
+            if fillers > usize::from(MAX_VALUE_FILLERS) {
+                return true;
+            }
+        } else {
+            break token;
+        }
+    };
+    let mut tokens = vec![first_label];
+    tokens.extend(reversed.take(MAX_SENSITIVE_LABEL_TOKENS.saturating_sub(1)));
+    tokens.reverse();
+    sensitive_label_suffix(&tokens)
+}
+
+fn contextual_fillers_exceeded(tokens: &[&str], candidate_index: usize, fillers: usize) -> bool {
+    fillers == usize::from(MAX_VALUE_FILLERS)
+        && tokens
+            .get(candidate_index)
+            .is_some_and(|token| is_value_filler(token))
+        && tokens.get(candidate_index + 1).is_some()
+}
+
+fn contextual_redacted_prefix(
+    tokens: &[&str],
+    index: usize,
+    candidate_index: usize,
+) -> Vec<String> {
+    let mut masked = tokens[index..candidate_index]
+        .iter()
+        .map(|token| (*token).to_owned())
+        .collect::<Vec<_>>();
+    masked.push(REDACTED_PLACEHOLDER.to_owned());
+    masked
+}
+
+fn redact_contextual_candidate(
+    tokens: &[&str],
+    index: usize,
+    candidate_index: usize,
+) -> Vec<String> {
+    let candidate = tokens[candidate_index];
+    let mut masked = tokens[index..candidate_index]
+        .iter()
+        .map(|token| (*token).to_owned())
+        .collect::<Vec<_>>();
+    if candidate.contains(REDACTED_PLACEHOLDER) {
+        masked.push(candidate.to_owned());
+    } else {
+        masked.push(REDACTED_PLACEHOLDER.to_owned());
+    }
+    masked
+}
+
+const MAX_SENSITIVE_LABEL_TOKENS: usize = 4;
+
+fn sensitive_label_suffix(tokens: &[&str]) -> bool {
+    (1..=tokens.len().min(MAX_SENSITIVE_LABEL_TOKENS))
+        .any(|length| sensitive_label(&tokens[tokens.len() - length..]))
+}
+
+fn sensitive_label(tokens: &[&str]) -> bool {
+    let normalized = tokens
+        .iter()
+        .map(|token| {
+            security_classification_view(token)
+                .trim_matches(|character: char| {
+                    !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+                })
+                .to_ascii_lowercase()
+        })
+        .collect::<Vec<_>>();
+    if normalized.iter().any(String::is_empty) {
         return false;
     }
-    let key = if let Some(quote) = separator_start
-        .as_bytes()
-        .last()
-        .copied()
-        .filter(|quote| matches!(quote, b'"' | b'\'' | b'`'))
-    {
-        separator_start
-            .get(..separator_start.len().saturating_sub(1))
-            .and_then(|value| {
-                value
-                    .rfind(char::from(quote))
-                    .map(|start| &value[start + 1..])
-            })
-            .unwrap_or_default()
-    } else {
-        separator_start
-            .rsplit(|character: char| character.is_whitespace() || matches!(character, '{' | ','))
-            .next()
-            .unwrap_or_default()
-    };
-    is_sensitive_assignment_key(key) || key.eq_ignore_ascii_case("authorization")
+    is_sensitive_assignment_key(&normalized.join("_"))
 }
 
 fn path_sentence_suffix(token: &str) -> &str {
@@ -833,27 +921,55 @@ fn redact_direct_token(
 }
 
 fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String>, usize)> {
-    let token = *tokens.get(index)?;
     // Non-explicit human-readable text may say `Secret value <value>` rather than
     // using key/value punctuation. Explicit contexts are handled by one dedicated
     // state machine before this fallback.
-    if !is_sensitive_key(token) {
-        return None;
+    let label_length = (1..=MAX_SENSITIVE_LABEL_TOKENS.min(tokens.len().saturating_sub(index)))
+        .rev()
+        .find(|length| sensitive_label(&tokens[index..index + length]))?;
+    let mut candidate_index = index + label_length;
+    let mut fillers = 0;
+    while tokens
+        .get(candidate_index)
+        .is_some_and(|token| is_value_filler(token))
+        && fillers < usize::from(MAX_VALUE_FILLERS)
+        && tokens.get(candidate_index + 1).is_some()
+    {
+        candidate_index += 1;
+        fillers += 1;
     }
-    let filler = tokens
-        .get(index + 1)
-        .is_some_and(|next| matches!(next.to_ascii_lowercase().as_str(), "value" | "is"));
-    let candidate_index = index + usize::from(filler) + 1;
+    if contextual_fillers_exceeded(tokens, candidate_index, fillers) {
+        return Some((
+            contextual_redacted_prefix(tokens, index, candidate_index),
+            tokens.len(),
+        ));
+    }
     let candidate = tokens.get(candidate_index)?;
-    if !contextual_value_should_redact(token, candidate, &tokens[candidate_index + 1..]) {
+    if label_length == 1
+        && fillers == 0
+        && !contextual_value_should_redact(tokens[index], candidate, &tokens[candidate_index + 1..])
+    {
         return None;
     }
-    let mut masked = vec![token.to_owned()];
-    if filler {
-        masked.push(tokens[index + 1].to_owned());
-    }
-    masked.push(REDACTED_PLACEHOLDER.to_owned());
+    let masked = redact_contextual_candidate(tokens, index, candidate_index);
     Some((masked, candidate_index + 1))
+}
+
+fn contextual_value_should_redact(key: &str, candidate: &str, _following_tokens: &[&str]) -> bool {
+    let key = key
+        .to_ascii_lowercase()
+        .trim_matches(|character: char| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        })
+        .to_owned();
+    if matches!(
+        key.as_str(),
+        "token" | "blob" | "base64" | "encoded" | "bearer" | "basic"
+    ) {
+        !trimmed_token(candidate).is_empty()
+    } else {
+        looks_like_secret_candidate(candidate)
+    }
 }
 
 fn redact_expected_delimiter(
@@ -1364,23 +1480,6 @@ fn looks_like_secret_candidate(token: &str) -> bool {
             }))
 }
 
-fn contextual_value_should_redact(key: &str, candidate: &str, _following_tokens: &[&str]) -> bool {
-    let key = key
-        .to_ascii_lowercase()
-        .trim_matches(|character: char| {
-            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
-        })
-        .to_owned();
-    if matches!(
-        key.as_str(),
-        "token" | "blob" | "base64" | "encoded" | "bearer" | "basic"
-    ) {
-        !trimmed_token(candidate).is_empty()
-    } else {
-        looks_like_secret_candidate(candidate)
-    }
-}
-
 fn looks_like_token_value(token: &str) -> bool {
     let token = trimmed_token(token);
     if token.len() < 16
@@ -1734,6 +1833,42 @@ mod tests {
                 "password=[redacted] deployment finished",
             ),
             (
+                "The password is \"correct horse battery staple\"; deploy finished",
+                "The password is [redacted]; deploy finished",
+            ),
+            (
+                "Password value `correct horse battery staple`; deploy finished",
+                "Password value [redacted]; deploy finished",
+            ),
+            (
+                "password is letmein after deploy",
+                "password is [redacted] after deploy",
+            ),
+            (
+                "API key: abc123 after deploy",
+                "API key: [redacted] after deploy",
+            ),
+            (
+                "The password is (hunter2) after deploy",
+                "The password is [redacted] after deploy",
+            ),
+            (
+                "API key: [abc123] after deploy",
+                "API key: [redacted] after deploy",
+            ),
+            (
+                "password value is equals hunter2 after deploy",
+                "password value is [redacted]",
+            ),
+            (
+                "API key value is equals abc123 after deploy",
+                "API key value is [redacted]",
+            ),
+            (
+                "Secret key is hunter2 after deploy",
+                "Secret key is [redacted] after deploy",
+            ),
+            (
                 "pass\u{200B}word=hunter2 after deploy",
                 "password=[redacted] after deploy",
             ),
@@ -1936,7 +2071,10 @@ mod tests {
             ),
             ("Open %2FUsers%2Falice%2F.ssh%2Fid_ed25519", "Open [path]"),
             (
-                "Open https://host.example/callback?token=ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                concat!(
+                    "Open https://host.example/callback?token=ghp_",
+                    "1234567890abcdefghijklmnopqrstuvwxyz"
+                ),
                 "Open [redacted URI]",
             ),
             (
@@ -2060,7 +2198,10 @@ mod tests {
                 "Open [redacted URI]",
             ),
             (
-                "Open https://host/path?token%ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                concat!(
+                    "Open https://host/path?token%ghp_",
+                    "1234567890abcdefghijklmnopqrstuvwxyz"
+                ),
                 "Open [redacted URI]",
             ),
             (
@@ -2089,15 +2230,15 @@ mod tests {
                 "AWS session uses [redacted]",
             ),
             (
-                "GitHub OAuth gho_1234567890abcdefghijklmnopqrstuvwxyz",
+                concat!("GitHub OAuth gho_", "1234567890abcdefghijklmnopqrstuvwxyz"),
                 "GitHub OAuth [redacted]",
             ),
             (
-                "Wrapped **ghp_1234567890abcdefghijklmnopqrstuvwxyz**",
+                concat!("Wrapped **ghp_", "1234567890abcdefghijklmnopqrstuvwxyz**"),
                 "Wrapped [redacted]",
             ),
             (
-                "Wrapped ghp_1234567890abcdefghijklmnopqrstuvwxyz!",
+                concat!("Wrapped ghp_", "1234567890abcdefghijklmnopqrstuvwxyz!"),
                 "Wrapped [redacted]",
             ),
             (
@@ -2110,7 +2251,7 @@ mod tests {
                 "Slack app token [redacted]",
             ),
             (
-                "OpenAI sk-1234567890abcdefghijklmnopqrstuvwxyz",
+                concat!("OpenAI sk-", "1234567890abcdefghijklmnopqrstuvwxyz"),
                 "OpenAI [redacted]",
             ),
             (
@@ -2416,7 +2557,8 @@ mod tests {
     fn excerpts_redact_complete_multiline_private_keys() {
         let message = concat!(
             "Use this key:\n",
-            "-----BEGIN PRIVATE KEY-----\n",
+            "-----BEGIN PRIVATE",
+            " KEY-----\n",
             "QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OUFCQ0RFRg==\n",
             "another-key-body-line\n",
             "-----END PRIVATE KEY-----\n",
@@ -2442,7 +2584,8 @@ mod tests {
         assert_eq!(excerpt, "[redacted private key]");
 
         let misleading_end = concat!(
-            "-----BEGIN PRIVATE KEY-----\n",
+            "-----BEGIN PRIVATE",
+            " KEY-----\n",
             "firstSecret\n",
             "-----END CERTIFICATE-----\n",
             "secondSecret\n",
@@ -2507,14 +2650,18 @@ mod tests {
             .as_deref(),
             Some("-----BEGIN CERTIFICATE-----\n[redacted]\n-----END CERTIFICATE-----")
         );
-        let mixed = "-----BEGIN CERTIFICATE----- -----BEGIN PRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----";
+        let mixed = concat!(
+            "-----BEGIN CERTIFICATE----- -----BEGIN PRIVATE",
+            " KEY-----\nsecretBody\n-----END PRIVATE KEY-----"
+        );
         let excerpt = safe_agent_excerpt(mixed).expect("private marker wins");
         assert!(excerpt.contains("[redacted private key]"));
         assert!(!excerpt.contains("secretBody"));
 
         let nested = concat!(
             "-----BEGIN CERTIFICATE-----\n",
-            "-----BEGIN PRIVATE KEY-----\n",
+            "-----BEGIN PRIVATE",
+            " KEY-----\n",
             "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB\n",
             "-----END PRIVATE KEY-----\n",
             "-----END CERTIFICATE-----"

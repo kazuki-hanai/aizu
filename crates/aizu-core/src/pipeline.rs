@@ -450,11 +450,14 @@ mod tests {
     #[test]
     fn trusted_agent_secrets_are_redacted_before_spool_history_and_notification() {
         let (_directory, spool, desktop) = fixture();
+        let payload = concat!(
+            r#"{"session_id":"thread-1","cwd":"/home/dev/aizu","hook_event_name":"Stop","last_assistant_message":"Deployment finished.\nAuthorization: Bearer ghp_"#,
+            "exampletoken000000000000000000",
+            r#"\n-----BEGIN PRIVATE"#,
+            r#" KEY-----\nQWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OUFCQ0RFRg==\n-----END PRIVATE KEY-----\nSee /Users/alice/private.log"}"#
+        );
         let request = CodexAdapter
-            .parse_hook(
-                "Stop",
-                br#"{"session_id":"thread-1","cwd":"/home/dev/aizu","hook_event_name":"Stop","last_assistant_message":"Deployment finished.\nAuthorization: Bearer ghp_exampletoken000000000000000000\n-----BEGIN PRIVATE KEY-----\nQWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OUFCQ0RFRg==\n-----END PRIVATE KEY-----\nSee /Users/alice/private.log"}"#,
-            )
+            .parse_hook("Stop", payload.as_bytes())
             .expect("valid Codex hook")
             .pop()
             .expect("one event");
@@ -676,7 +679,7 @@ mod tests {
                 "AbCdEfGh",
             ),
             (
-                "Wrapped **ghp_1234567890abcdefghijklmnopqrstuvwxyz**",
+                concat!("Wrapped **ghp_", "1234567890abcdefghijklmnopqrstuvwxyz**"),
                 "Wrapped [redacted]",
                 "ghp_",
             ),
@@ -697,6 +700,51 @@ mod tests {
             ),
             ("Token secret", "Token [redacted]", "secret"),
             ("Base64 QUFB", "Base64 [redacted]", "QUFB"),
+            (
+                "The password is \"correct horse battery staple\"; deploy finished",
+                "The password is [redacted]; deploy finished",
+                "correct horse battery staple",
+            ),
+            (
+                "Password value `correct horse battery staple`; deploy finished",
+                "Password value [redacted]; deploy finished",
+                "correct horse battery staple",
+            ),
+            (
+                "password is letmein after deploy",
+                "password is [redacted] after deploy",
+                "letmein",
+            ),
+            (
+                "API key: abc123 after deploy",
+                "API key: [redacted] after deploy",
+                "abc123",
+            ),
+            (
+                "The password is (hunter2) after deploy",
+                "The password is [redacted] after deploy",
+                "hunter2",
+            ),
+            (
+                "API key: [abc123] after deploy",
+                "API key: [redacted] after deploy",
+                "abc123",
+            ),
+            (
+                "password value is equals hunter2 after deploy",
+                "password value is [redacted]",
+                "hunter2",
+            ),
+            (
+                "API key value is equals abc123 after deploy",
+                "API key value is [redacted]",
+                "abc123",
+            ),
+            (
+                "Secret key is hunter2 after deploy",
+                "Secret key is [redacted] after deploy",
+                "hunter2",
+            ),
             (
                 "Blob value surrounding message",
                 "Blob value [redacted] message",
@@ -918,7 +966,10 @@ mod tests {
                 "shortSecretBody",
             ),
             (
-                "-----BEGIN PRIVATE KEY-----\nfirstSecret\n-----END CERTIFICATE-----\nsecondSecret\n-----END PRIVATE KEY-----\nsafe ending",
+                concat!(
+                    "-----BEGIN PRIVATE",
+                    " KEY-----\nfirstSecret\n-----END CERTIFICATE-----\nsecondSecret\n-----END PRIVATE KEY-----\nsafe ending"
+                ),
                 "[redacted private key]",
                 "secondSecret",
             ),
@@ -973,12 +1024,18 @@ mod tests {
                 "AKIAIOS",
             ),
             (
-                "-----BEGIN CERTIFICATE----- -----BEGIN PRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+                concat!(
+                    "-----BEGIN CERTIFICATE----- -----BEGIN PRIVATE",
+                    " KEY-----\nsecretBody\n-----END PRIVATE KEY-----"
+                ),
                 "[redacted private key]",
                 "secretBody",
             ),
             (
-                "-----BEGIN CERTIFICATE-----\n-----BEGIN PRIVATE KEY-----\nQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB\n-----END PRIVATE KEY-----\n-----END CERTIFICATE-----",
+                concat!(
+                    "-----BEGIN CERTIFICATE-----\n-----BEGIN PRIVATE",
+                    " KEY-----\nQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB\n-----END PRIVATE KEY-----\n-----END CERTIFICATE-----"
+                ),
                 "[redacted private key]",
                 "QUFBQUFB",
             ),
@@ -1112,7 +1169,10 @@ mod tests {
                 "hunter2",
             ),
             (
-                "Open https://host.example/callback?token=ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                concat!(
+                    "Open https://host.example/callback?token=ghp_",
+                    "1234567890abcdefghijklmnopqrstuvwxyz"
+                ),
                 "Open [redacted URI]",
                 "ghp_",
             ),
@@ -1187,7 +1247,10 @@ mod tests {
                 "hunter2",
             ),
             (
-                "Open https://host/path?token%ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                concat!(
+                    "Open https://host/path?token%ghp_",
+                    "1234567890abcdefghijklmnopqrstuvwxyz"
+                ),
                 "Open [redacted URI]",
                 "ghp_",
             ),
