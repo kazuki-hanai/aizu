@@ -4,7 +4,8 @@ use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde_json::Value;
 
 use crate::{
-    EventKind, NormalizedEvent, Outcome, TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation,
+    EventKind, LOCAL_APPROVAL_PRESENTED_METADATA_KEY, NormalizedEvent, Outcome,
+    TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation,
 };
 
 /// Maximum trusted source-label length shown in a notification.
@@ -71,6 +72,7 @@ pub enum SuppressionReason {
     Paused,
     CompletionDisabled,
     QuestionDisabled,
+    LocalApprovalPresented,
     QuietHours,
     CompletionExpired,
 }
@@ -82,6 +84,7 @@ impl SuppressionReason {
             Self::Paused => "paused",
             Self::CompletionDisabled => "completion_disabled",
             Self::QuestionDisabled => "question_disabled",
+            Self::LocalApprovalPresented => "local_approval_presented",
             Self::QuietHours => "quiet_hours",
             Self::CompletionExpired => "completion_expired",
         }
@@ -133,6 +136,17 @@ impl NotificationPolicy {
                 return NotificationDecision::Suppress(SuppressionReason::QuestionDisabled);
             }
             _ => {}
+        }
+        if context.allow_terminal_activation
+            && trusted_adapter(event)
+            && event.metadata.as_ref().is_some_and(|metadata| {
+                metadata
+                    .get(LOCAL_APPROVAL_PRESENTED_METADATA_KEY)
+                    .and_then(Value::as_bool)
+                    == Some(true)
+            })
+        {
+            return NotificationDecision::Suppress(SuppressionReason::LocalApprovalPresented);
         }
         if let (Some(quiet), Some(local_minute)) = (self.quiet_hours, context.local_minute)
             && quiet.contains(local_minute)
@@ -442,6 +456,45 @@ mod tests {
 
         assert_eq!(notification.title, "Claude Code task failed");
         assert_eq!(notification.body, "Failed in My Mac");
+    }
+
+    #[test]
+    fn presented_local_approval_suppresses_only_the_duplicate_local_notification() {
+        let mut event = event(EventKind::AgentQuestion, None, timestamp(12));
+        event.source.agent = "codex".to_owned();
+        event.metadata = serde_json::json!({
+            "aizu_adapter": "codex-v1",
+            LOCAL_APPROVAL_PRESENTED_METADATA_KEY: true,
+            "tool_name": "Bash"
+        })
+        .as_object()
+        .cloned();
+        let local_context = NotificationContext {
+            received_at: timestamp(12),
+            now: timestamp(12),
+            local_minute: None,
+            allow_terminal_activation: true,
+        };
+
+        assert_eq!(
+            NotificationPolicy::default().decide(&event, "My Mac", local_context),
+            NotificationDecision::Suppress(SuppressionReason::LocalApprovalPresented)
+        );
+
+        let remote_context = NotificationContext {
+            allow_terminal_activation: false,
+            ..local_context
+        };
+        assert!(matches!(
+            NotificationPolicy::default().decide(&event, "Remote host", remote_context),
+            NotificationDecision::Notify(_)
+        ));
+
+        event.source.agent = "generic".to_owned();
+        assert!(matches!(
+            NotificationPolicy::default().decide(&event, "My Mac", local_context),
+            NotificationDecision::Notify(_)
+        ));
     }
 
     #[test]

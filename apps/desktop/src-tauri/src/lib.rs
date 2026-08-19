@@ -1,5 +1,6 @@
 #![cfg_attr(feature = "desktop-e2e", allow(dead_code, unused_imports))]
 
+mod approval_broker;
 mod banner;
 mod cli_diagnostic;
 mod commands;
@@ -31,8 +32,8 @@ use crate::commands::{
 use crate::{
     commands::{
         activate_banner, add_remote_source, clear_history, complete_onboarding, configure_agents,
-        confirm_codex_hook_trust, confirm_remote_identity, dismiss_banner, get_app_view,
-        get_banners, install_cli, reconnect_remote_source, remove_remote_source,
+        confirm_codex_hook_trust, confirm_remote_identity, decide_banner_approval, dismiss_banner,
+        get_app_view, get_banners, install_cli, reconnect_remote_source, remove_remote_source,
         request_notification_permission, resize_banner, send_test_notification,
         set_notifications_paused, test_ssh_connection, update_preferences,
     },
@@ -131,6 +132,10 @@ pub fn run() {
             let _ = service.poll_local_pipeline();
             let initial_view = service.view();
             app.manage(DesktopState::new(service));
+            app.manage(approval_broker::ApprovalBroker::start(
+                app.handle().clone(),
+                &state_paths.approval_socket(),
+            ));
             #[cfg(feature = "desktop-e2e")]
             app.manage(notification_recorder);
             app.manage(worker_lease);
@@ -152,6 +157,7 @@ pub fn run() {
             get_banners,
             dismiss_banner,
             activate_banner,
+            decide_banner_approval,
             resize_banner,
             get_app_view,
             complete_onboarding,
@@ -185,6 +191,7 @@ pub fn run() {
         .expect("Aizu desktop runtime failed");
     app.run(|app, event| {
         if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            app.state::<approval_broker::ApprovalBroker>().shutdown();
             app.state::<worker::LocalWorker>().shutdown();
         }
     });

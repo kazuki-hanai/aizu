@@ -214,6 +214,8 @@ pub struct Preferences {
     pub question_enabled: bool,
     #[serde(default = "default_true")]
     pub agent_details_enabled: bool,
+    #[serde(default = "default_true")]
+    pub command_approvals_enabled: bool,
     pub sound_enabled: bool,
     #[serde(default)]
     pub notification_delivery: NotificationDelivery,
@@ -238,6 +240,7 @@ impl Default for Preferences {
             completion_enabled: true,
             question_enabled: true,
             agent_details_enabled: true,
+            command_approvals_enabled: true,
             sound_enabled: true,
             notification_delivery: NotificationDelivery::default(),
             notification_sound: NotificationSound::default(),
@@ -356,7 +359,7 @@ pub struct AddRemoteSourceRequest {
     pub local_label: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Notification {
     pub id: i32,
@@ -367,8 +370,24 @@ pub struct Notification {
     pub language: LanguagePreference,
     pub text_size: TextSize,
     pub can_activate_terminal: bool,
+    pub approval: Option<ApprovalPresentation>,
     #[serde(skip_serializing)]
     pub activation: Option<aizu_core::TerminalActivation>,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalPresentation {
+    pub agent: AgentKind,
+    pub tool_name: String,
+    pub command: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ApprovalAction {
+    AllowOnce,
+    Deny,
 }
 
 #[cfg(test)]
@@ -405,6 +424,7 @@ mod tests {
         assert_eq!(value["preferences"]["notificationDelivery"], "aizuBanner");
         assert_eq!(value["preferences"]["language"], "system");
         assert_eq!(value["preferences"]["textSize"], "standard");
+        assert_eq!(value["preferences"]["commandApprovalsEnabled"], true);
     }
 
     #[test]
@@ -431,6 +451,7 @@ mod tests {
         );
         assert_eq!(preferences.language, LanguagePreference::System);
         assert_eq!(preferences.text_size, TextSize::Standard);
+        assert!(preferences.command_approvals_enabled);
     }
 
     #[test]

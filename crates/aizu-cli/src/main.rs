@@ -1,3 +1,5 @@
+mod approval_client;
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -8,11 +10,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use aizu_core::{
-    AgentAdapter, AgentKind as CoreAgentKind, BridgeFrame, ClaudeCodeAdapter, CodexAdapter,
-    EmitRequest, EventKind, HookInstallOutcome, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool,
+    AgentAdapter, AgentKind as CoreAgentKind, ApprovalDecision, BridgeFrame, ClaudeCodeAdapter,
+    CodexAdapter, EmitRequest, EventKind, HookInstallOutcome,
+    LOCAL_APPROVAL_PRESENTED_METADATA_KEY, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool,
     SpoolError, StatePaths, TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation, Urgency,
-    hook_configuration, install_agent_hooks, parse_strict_json_value,
-    remove_terminal_activation_metadata,
+    hook_configuration, install_agent_hooks, local_approval_request_from_hook,
+    parse_strict_json_value, remove_terminal_activation_metadata,
 };
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -464,8 +467,15 @@ fn run_hook_command(
     args: HookArgs,
 ) -> Result<u8, Box<dyn Error>> {
     let first_party_agent = matches!(args.agent.as_str(), "claude-code" | "codex");
-    let result = (|| -> Result<(), Box<dyn Error>> {
+    let result = (|| -> Result<Option<ApprovalDecision>, Box<dyn Error>> {
         let raw = read_optional_stdin_limited(MAX_FRAME_BYTES)?;
+        let approval_request = match args.agent.as_str() {
+            "claude-code" => {
+                local_approval_request_from_hook(CoreAgentKind::ClaudeCode, &args.event, &raw)?
+            }
+            "codex" => local_approval_request_from_hook(CoreAgentKind::Codex, &args.event, &raw)?,
+            _ => None,
+        };
         let mut requests = if args.agent == "claude-code" || args.agent == "codex" {
             if raw.is_empty() {
                 return Err("first-party hook input is required on stdin".into());
@@ -504,15 +514,32 @@ fn run_hook_command(
                 attach_terminal_activation(request)?;
             }
         }
+        let approval = approval_request
+            .as_ref()
+            .and_then(|request| approval_client::request(paths, request).ok())
+            .unwrap_or_default();
+        if approval.presented {
+            for request in &mut requests {
+                attach_local_approval_presented(request)?;
+            }
+        }
         let spool = open_spool(paths, display_name)?;
         for request in requests {
             spool.emit(request, None)?;
         }
-        Ok(())
+        Ok(approval.decision)
     })();
 
     match result {
-        Ok(()) => Ok(0),
+        Ok(decision) => {
+            if let Some(decision) = decision {
+                println!(
+                    "{}",
+                    serde_json::to_string(&hook_decision_output(decision))?
+                );
+            }
+            Ok(0)
+        }
         Err(_error) if !args.strict => {
             eprintln!("aizu hook: notification event was not persisted (storage_error)");
             Ok(0)
@@ -521,10 +548,26 @@ fn run_hook_command(
     }
 }
 
+fn hook_decision_output(decision: ApprovalDecision) -> Value {
+    let decision = match decision {
+        ApprovalDecision::AllowOnce => json!({ "behavior": "allow" }),
+        ApprovalDecision::Deny => {
+            json!({ "behavior": "deny", "message": "Denied in Aizu." })
+        }
+    };
+    json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": decision
+        }
+    })
+}
+
 fn reject_reserved_metadata(request: &EmitRequest) -> Result<(), String> {
     if let Some(metadata) = request.metadata.as_ref().and_then(Value::as_object) {
         for key in [
             RESERVED_ADAPTER_METADATA_KEY,
+            LOCAL_APPROVAL_PRESENTED_METADATA_KEY,
             TERMINAL_ACTIVATION_METADATA_KEY,
         ] {
             if metadata.contains_key(key) {
@@ -534,6 +577,19 @@ fn reject_reserved_metadata(request: &EmitRequest) -> Result<(), String> {
             }
         }
     }
+    Ok(())
+}
+
+fn attach_local_approval_presented(request: &mut EmitRequest) -> Result<(), Box<dyn Error>> {
+    let metadata = request
+        .metadata
+        .get_or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or("metadata must be a JSON object")?;
+    metadata.insert(
+        LOCAL_APPROVAL_PRESENTED_METADATA_KEY.to_owned(),
+        Value::Bool(true),
+    );
     Ok(())
 }
 
@@ -1089,5 +1145,30 @@ mod tests {
         assert!(session_leader_is_present(false, false));
         assert!(session_leader_is_present(true, true));
         assert!(!session_leader_is_present(true, false));
+    }
+
+    #[test]
+    fn local_approval_decisions_use_the_common_agent_hook_contract() {
+        assert_eq!(
+            hook_decision_output(ApprovalDecision::AllowOnce),
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": { "behavior": "allow" }
+                }
+            })
+        );
+        assert_eq!(
+            hook_decision_output(ApprovalDecision::Deny),
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {
+                        "behavior": "deny",
+                        "message": "Denied in Aizu."
+                    }
+                }
+            })
+        );
     }
 }

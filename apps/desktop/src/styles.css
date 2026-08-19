@@ -190,6 +190,64 @@ html[data-window="banner"] body {
   -webkit-user-select: text;
 }
 
+.aizu-banner__approval-tool {
+  color: #9da6a1;
+  font-size: var(--font-size-xs);
+  font-weight: 650;
+}
+
+.aizu-banner__command {
+  max-height: 180px;
+  margin: 1px 0 2px;
+  padding: 9px 10px;
+  overflow: auto;
+  color: #f4f6f5;
+  border: 1px solid #4b544f;
+  border-radius: 5px;
+  background: #151918;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  user-select: text;
+  white-space: pre-wrap;
+  -webkit-user-select: text;
+}
+
+.aizu-banner__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 3px;
+}
+
+.aizu-banner__action {
+  min-height: 30px;
+  padding: 5px 11px;
+  color: #f4f6f5;
+  border: 1px solid #59625d;
+  border-radius: 5px;
+  background: #303633;
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  font-weight: 650;
+}
+
+.aizu-banner__action:hover { background: #3b433f; }
+
+.aizu-banner__action--allow {
+  color: #10271f;
+  border-color: #72c8a7;
+  background: #72c8a7;
+}
+
+.aizu-banner__action--allow:hover { background: #8bd8ba; }
+
+.aizu-banner__action:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .aizu-banner__dismiss {
   position: absolute;
   top: 9px;

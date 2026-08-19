@@ -3,7 +3,7 @@ use tauri_plugin_autostart::ManagerExt;
 
 use crate::{
     model::{
-        AddRemoteSourceRequest, AppView, CompleteOnboardingRequest, Notification,
+        AddRemoteSourceRequest, AppView, ApprovalAction, CompleteOnboardingRequest, Notification,
         NotificationDelivery, Preferences, SshConnectionTestResult,
     },
     state::{DesktopError, DesktopState},
@@ -19,6 +19,40 @@ pub fn get_banners(app: AppHandle<Wry>) -> Result<Vec<Notification>, DesktopErro
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn dismiss_banner(app: AppHandle<Wry>, id: i32) -> Result<(), DesktopError> {
+    if let Some(broker) = app.try_state::<crate::approval_broker::ApprovalBroker>() {
+        let _ = broker.cancel(id);
+    }
+    crate::banner::dismiss(&app, id).map_err(DesktopError::from)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn decide_banner_approval(
+    app: AppHandle<Wry>,
+    window: tauri::WebviewWindow<Wry>,
+    id: i32,
+    decision: ApprovalAction,
+) -> Result<(), DesktopError> {
+    if window.label() != crate::banner::BANNER_WINDOW {
+        return Err(crate::notifier::NotifyError::Scheduling(
+            "command approvals are available only from the Aizu banner".to_owned(),
+        )
+        .into());
+    }
+    let decision = match decision {
+        ApprovalAction::AllowOnce => aizu_core::ApprovalDecision::AllowOnce,
+        ApprovalAction::Deny => aizu_core::ApprovalDecision::Deny,
+    };
+    let broker = app.state::<crate::approval_broker::ApprovalBroker>();
+    if !broker
+        .decide(id, decision)
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?
+    {
+        return Err(crate::notifier::NotifyError::Scheduling(
+            "this command approval is no longer available".to_owned(),
+        )
+        .into());
+    }
     crate::banner::dismiss(&app, id).map_err(DesktopError::from)
 }
 
@@ -74,6 +108,7 @@ pub fn show_e2e_terminal_banner(app: AppHandle<Wry>) -> Result<(), DesktopError>
             language: crate::model::LanguagePreference::English,
             text_size: crate::model::TextSize::Standard,
             can_activate_terminal: true,
+            approval: None,
             activation: Some(aizu_core::TerminalActivation {
                 application: aizu_core::TerminalApplication::Iterm2,
                 application_session: Some("w0t0p0:E2E".to_owned()),
@@ -215,7 +250,15 @@ pub fn update_preferences(
         set_autostart(&app, request.launch_at_login)?;
     }
     let delivery = request.notification_delivery;
+    let approvals_enabled = request.command_approvals_enabled;
     let view = state.lock()?.update_preferences(request)?;
+    if !approvals_enabled
+        && let Some(broker) = app.try_state::<crate::approval_broker::ApprovalBroker>()
+    {
+        for id in broker.cancel_all() {
+            let _ = crate::banner::dismiss(&app, id);
+        }
+    }
     if delivery == NotificationDelivery::System {
         let _ = crate::banner::clear(&app);
     } else {

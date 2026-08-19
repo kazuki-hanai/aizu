@@ -431,6 +431,7 @@ describe("Aizu desktop shell", () => {
     }
     expect(screen.queryByRole("option", { name: "Hero" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Task completion" }));
+    await user.click(screen.getByRole("switch", { name: "Approve commands in Aizu" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification style" }), "system");
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification sound" }), "pulse");
     await user.selectOptions(screen.getByRole("combobox", { name: "Text size" }), "large");
@@ -438,11 +439,12 @@ describe("Aizu desktop shell", () => {
     await user.click(screen.getByRole("switch", { name: "Show agent details" }));
 
     await waitFor(async () => {
-      expect(updatePreferences).toHaveBeenCalledTimes(5);
+      expect(updatePreferences).toHaveBeenCalledTimes(6);
       await expect(backend.getView()).resolves.toMatchObject({
         preferences: {
           completionEnabled: false,
           agentDetailsEnabled: false,
+          commandApprovalsEnabled: false,
           notificationDelivery: "system",
           notificationSound: "pulse",
           textSize: "large",

@@ -72,7 +72,7 @@ GitHub Releases はアプリの配布・更新ファイルの静的ホスティ�
 - iPhone / Apple Watch アプリ、APNs 配信
 - Slack / Discord / Teams 連携
 - Windows/Linux 向けデスクトップアプリの正式配布
-- 通知からエージェントへ回答を返す双方向操作
+- 通知から自由形式の回答を返す操作、永続的な許可、または Aizu 自身による tool 実行。ローカル `PermissionRequest` への一度限りの許可/拒否は §13.5 の限定契約として扱う
 - ターミナル画面や標準出力を常時スクレイピングして状態を推測する機能
 - エージェントの会話全文や生成結果の同期・保存
 - パスワードや SSH 秘密鍵の独自管理
@@ -740,10 +740,19 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 - install 先が symlink、user 所有でない file、または user が配置した異なる binary の場合は無断で上書きしない
 - unmanaged/incompatible CLI が hook path に残る場合、共有 local spool を新 schema へ migrate せず local source を warning/read-only にし、CLI path の解決または明示的 install を要求する
 - hook 設定には絶対パスの利用を推奨
-- `aizu integration-config` は絶対 CLI path を検証し、Codex の `Stop` / `PermissionRequest` と Claude Code の `Stop` / `StopFailure` / `PermissionRequest` を 5 秒上限の同期 hook として出力する。既存 user hook は structured JSON merge で保持し、Codex の hook trust review は省略しない
+- `aizu integration-config` は絶対 CLI path を検証し、Codex の `Stop` と Claude Code の `Stop` / `StopFailure` は 5 秒上限、両 agent の `PermissionRequest` はローカル承認の45秒待機に終了余裕を加えた50秒上限の同期 hook として出力する。既存 user hook は structured JSON merge で保持し、Codex の hook trust review は省略しない
 - `aizu integration-install` は引数なしで Codex と Claude Code の両方、`--agent` 指定時は一方だけを current user に設定する。両方の既存 JSON と保存先 directory を書込前に検証し、無関係な key/handler を保持し、128 KiB 上限、home 外への symlink、dangling symlink、unsafe directory、invalid JSON、incompatible hook shape を拒否する。Aizu installer 同士は `~/.aizu/hooks.lock` で直列化し、lock 取得後に全入力を再読込する。agent や editor はこの lock に参加しないため同時編集を禁止し、各 rename 直前の byte 比較で検出可能な競合を拒否する。変更時は同一 directory の `0600` temporary file を fsync して atomic rename し、新規 directory は `0700`、最終 file は `0600` とする。Claude Code の `disableAllHooks` は無断で解除せず、Codex の hook trust review も省略しない。machine-readable result は agent、更新状態、承認要否だけを返し、path や既存設定内容を出さない
 
-### 13.5 App icon, tray icon, and branding assets
+### 13.5 Local command approval
+
+- first-party local `PermissionRequest` の canonical `Bash` tool が完全な `tool_input.command` を持つ場合だけ、CLI は private state directory の Unix domain socket へ versioned strict-JSON request を1件送る。generic hook、remote bridge、Bash以外のtool、commandを完全表示できないinputは対象外
+- request は random ID、固定 agent kind、64 byte以下の tool label、16 KiB以下の完全な command だけを含む。raw command は spool、desktop DB、history、settings、log、Notification Center、SSH frameへ保存・転送しない。bannerを実際に提示したlocal eventにはAizu生成のboolean markerだけを保存し、同じrequestの通常通知を抑制して二重表示を防ぐ。このmarkerはremote sourceやgeneric eventの通知を抑制しない
+- socket directory は `0700`、socket node は `0600` とし、symlink/non-socketを拒否する。frameは32 KiB、read 2秒、同時待機1件、decision待機45秒、hook外側timeout 50秒で上限を固定する
+- Aizu Banner は完全なcommandをselect/scroll可能な領域で表示し、`今回だけ許可` / `拒否` だけを返す。decisionは一度だけconsumeする。close/swipe、無効設定、app停止、timeout、busy、invalid inputはdenyに変換せず、decisionなしでagent標準promptへfallbackする
+- Aizuはraw commandを実行しない。常時許可、permission rule変更、free-form回答は提供しない。通常通知がNotification Center設定でも、直接承認は完全表示できるAizu Bannerだけを使う
+- 本節はlocal hookだけを対象とする。SSH sourceの承認はbridge protocolを双方向へversion upする別設計までsource terminalの標準promptへfallbackする
+
+### 13.6 App icon, tray icon, and branding assets
 
 正式 icon はリリース前の装飾ではなく、M0 から version control・CI・package 検証の対象にする。Tauri の default icon は development placeholder としても release artifact に残してはならない。
 

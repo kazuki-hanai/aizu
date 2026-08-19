@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -24,6 +24,7 @@ type View = {
     completionEnabled: boolean;
     questionEnabled: boolean;
     agentDetailsEnabled: boolean;
+    commandApprovalsEnabled: boolean;
     soundEnabled: boolean;
     notificationDelivery: string;
     notificationSound: string;
@@ -51,6 +52,47 @@ const invokeView = async (command: string, args?: Record<string, unknown>): Prom
     args,
   });
   return result as View;
+};
+
+const runPermissionHook = (stateRoot: string) => {
+  const child = spawn(cliBinary, [
+    "--state-dir",
+    stateRoot,
+    "hook",
+    "--agent",
+    "codex",
+    "--event",
+    "PermissionRequest",
+    "--strict",
+  ], { stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+  child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+  child.stdin.end(JSON.stringify({
+    hook_event_name: "PermissionRequest",
+    tool_name: "Bash",
+    tool_input: {
+      command: "printf 'Aizu approval E2E'",
+      description: "Run the approval E2E command?",
+    },
+  }));
+  return new Promise<{ code: number | null; stderr: string; stdout: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("local permission hook did not finish"));
+    }, 10_000);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      resolve({ code, stderr, stdout });
+    });
+  });
 };
 
 describe("Aizu desktop MVP", () => {
@@ -204,10 +246,32 @@ describe("Aizu desktop MVP", () => {
     }, { timeout: 2_000, timeoutMsg: "swiped banner remained in the backend queue" });
     await browser.switchToWindow("main");
     await expect($("h1=Agents")).toBeDisplayed();
+    const permissionHook = runPermissionHook(stateRoot as string);
+    await browser.switchToWindow("banner");
+    await expect($("strong=Codex requests permission")).toBeDisplayed();
+    await expect($("pre=printf 'Aizu approval E2E'")).toBeDisplayed();
+    await $("button=Allow once").click();
+    const hookResult = await permissionHook;
+    expect(hookResult.code).toBe(0);
+    expect(hookResult.stderr).toBe("");
+    expect(JSON.parse(hookResult.stdout)).toMatchObject({
+      hookSpecificOutput: { decision: { behavior: "allow" } },
+    });
+    await browser.waitUntil(async () => {
+      const view = await invokeView("get_app_view");
+      return view.history.some((event) =>
+        event.title === "Codex is waiting for permission" && event.deliveryStatus === "suppressed");
+    }, { timeout: 2_000, timeoutMsg: "approved command event was not retained as suppressed history" });
+    await browser.waitUntil(async () => {
+      const remaining = await browser.tauri.execute(({ core }) =>
+        core.invoke("get_banners")) as CapturedNotification[];
+      return remaining.length === 0;
+    }, { timeout: 2_000, timeoutMsg: "approved command banner remained queued" });
+    await browser.switchToWindow("main");
     const paused = await invokeView("set_notifications_paused", { paused: true });
     expect(paused.trayState).toBe("paused");
     const resumed = await invokeView("set_notifications_paused", { paused: false });
-    expect(resumed.trayState).toBe("normal");
+    expect(resumed.trayState).toBe("attention");
 
     const preferences = {
       ...resumed.preferences,

@@ -150,9 +150,16 @@ events remain in the source SQLite spool while the Mac is disconnected.
   generic, and test alerts remain non-actionable.
 - **Aizu Pop** is the default sound. Change it or turn sound off under
   **Settings > Notification sound**.
+- **Approve commands in Aizu** is on by default for local Codex and Claude Code
+  shell requests. Aizu Banner shows the complete command with **Deny** and
+  **Allow once**. Closing or swiping the banner, waiting 45 seconds, disabling
+  the setting, or stopping Aizu returns control to the agent's normal terminal
+  prompt. Aizu never runs the command itself. Remote SSH approvals continue in
+  the source terminal.
 - **Show agent details** is on by default and adds a short filtered completion
-  or permission excerpt. Aizu still excludes raw commands, full prompts,
-  transcripts, secrets, and absolute paths.
+  or permission excerpt. Outside the temporary local approval banner, Aizu
+  still excludes raw commands, full prompts, transcripts, secrets, and absolute
+  paths from notifications and history.
 
 Terminal return is exact for iTerm2 sessions, WezTerm panes, and valid tmux pane
 identifiers when they are still available. Apple Terminal, Ghostty, Warp,
