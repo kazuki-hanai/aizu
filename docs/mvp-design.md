@@ -700,7 +700,9 @@ trait Notifier {
 - macOS Notifications へ即時切替できる。権限要求は初回起動直後ではなく、テスト通知などの明示操作で行う。
 - macOS Notifications が拒否された場合は System Settings への案内を表示する。
 - テストでは `FakeNotifier` を利用する。
-- macOS Notification Center の local first-party 通知クリックも同じ terminal 復帰 adapter を使い、Aizu main window は開かない。復帰対象がないテスト通知、generic event、remote SSH event は action を持たない。
+- macOS Notification Center は表示専用とし、response waiter や terminal activation descriptor
+  を保持しない。クリックで Aizu main window や推測した terminal を開かない。terminal 復帰
+  が必要な場合は Aizu Banner を使う。
 - question は音あり、completed は既定で音なしを推奨する。
 
 terminal 復帰は `TerminalActivation` の固定 adapter 境界に置く。iTerm2 は bounded
@@ -712,8 +714,9 @@ command string、AppleScript、remote payload が指定した executable/bundle 
 
 この action は `source_key == "local"` かつ trusted Codex/Claude Code adapter の event
 だけに付与する。SSH source の hook environment は接続先 host の terminal を表し、
-受信 Mac 上の元の interactive SSH shell を証明しないため、remote metadata は保存・
-表示先で terminal action として採用しない。新規 SSH session を代替として開かない。
+受信 Mac 上の元の interactive SSH shell を証明しないため、activation metadata は
+bridge frame 出力前に除去し、受信側でも durable ingest 前に再度除去する。表示先で
+terminal action として採用せず、新規 SSH session を代替として開かない。
 
 ### 13.3 Menu bar and startup
 

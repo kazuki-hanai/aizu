@@ -111,7 +111,7 @@ desktop は `protocol_version` と `source_id` を event/cursor 処理前に検�
 - `event.source.source_id` は `hello` の `source_id` と一致しなければならない。
 - `event.schema_version` は protocol v1 では `1` でなければならない。
 - notification の source label は pinned `source_id` に対応する desktop-local label を使い、remote-provided `event.source.display_name` を authoritative な表示名として信用しない。
-- remote event の `metadata.aizu_terminal_activation` は受信 Mac 上の terminal action として信用しない。source host の session/pane ID は元の local SSH shell を識別できないため、desktop は remote notification から shell を開かず、新規 SSH session で代用しない。
+- `aizu bridge` は `metadata.aizu_terminal_activation` を frame 出力前に除去し、desktop も defense-in-depth として durable ingest 前に除去する。source host の session/pane ID は受信 Mac 上の元の local SSH shell を識別できないため、desktop は remote notification から shell を開かず、新規 SSH session で代用しない。
 - `(source_id, sequence)` または `(source_id, event.id)` の重複は通知せず idempotently 無視する。同じ key で payload が異なる場合は protocol/data-integrity error とする。
 
 ### 4.3 `heartbeat`

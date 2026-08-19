@@ -66,6 +66,7 @@ pub use ssh::{
 };
 pub use terminal_activation::{
     TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation, TerminalApplication, TmuxActivation,
+    remove_terminal_activation_metadata,
 };
 
 /// Maximum serialized normalized event size.

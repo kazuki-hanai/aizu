@@ -59,8 +59,6 @@ dependencies = [
  "aizu-core",
  "chrono",
  "directories",
- "futures-lite",
- "futures-timer",
  "mac-usernotifications",
  "nix",
  "objc2",

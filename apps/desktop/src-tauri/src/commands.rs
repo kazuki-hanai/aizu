@@ -25,17 +25,23 @@ pub fn dismiss_banner(app: AppHandle<Wry>, id: i32) -> Result<(), DesktopError> 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub async fn activate_banner(app: AppHandle<Wry>, id: i32) -> Result<(), DesktopError> {
-    let target = crate::banner::activation_target(&app, id)?;
-    tauri::async_runtime::spawn_blocking(move || crate::terminal_activation::activate(&target))
-        .await
-        .map_err(|error| {
-            crate::notifier::NotifyError::Scheduling(format!(
-                "terminal activation task stopped unexpectedly: {error}"
-            ))
-        })?
-        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?;
-    crate::banner::dismiss(&app, id)?;
-    Ok(())
+    let (claim, target) = crate::banner::claim_activation(&app, id)?;
+    let result =
+        tauri::async_runtime::spawn_blocking(move || crate::terminal_activation::activate(&target))
+            .await
+            .map_err(|error| {
+                crate::notifier::NotifyError::Scheduling(format!(
+                    "terminal activation task stopped unexpectedly: {error}"
+                ))
+            })
+            .and_then(|result| {
+                result.map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))
+            });
+    if let Err(error) = result {
+        let _ = crate::banner::cancel_activation(&app, &claim);
+        return Err(error.into());
+    }
+    crate::banner::complete_activation(&app, &claim).map_err(DesktopError::from)
 }
 
 #[tauri::command]

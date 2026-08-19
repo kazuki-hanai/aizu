@@ -962,6 +962,9 @@ impl aizu_core::Notifier for PipelineNotifier<'_> {
                 Err(_) => return Err(aizu_core::NotifyError::Retryable),
             },
         }
+        let activation = (self.delivery == NotificationDelivery::AizuBanner)
+            .then(|| notification.activation.clone())
+            .flatten();
         self.notifier
             .notify(&Notification {
                 id: stable_notification_id(&notification.identifier),
@@ -971,8 +974,8 @@ impl aizu_core::Notifier for PipelineNotifier<'_> {
                 delivery: self.delivery,
                 language: self.language,
                 text_size: self.text_size,
-                can_activate_terminal: notification.activation.is_some(),
-                activation: notification.activation.clone(),
+                can_activate_terminal: activation.is_some(),
+                activation,
             })
             .map_err(|_| aizu_core::NotifyError::Retryable)
     }
@@ -1510,7 +1513,7 @@ mod tests {
     }
 
     #[test]
-    fn native_notification_identity_and_question_sound_are_stable() {
+    fn system_notifications_are_stable_and_do_not_retain_terminal_actions() {
         let notifier = FakeNotifier::with_permission(PermissionStatus::Granted);
         let adapter = PipelineNotifier {
             notifier: notifier.as_ref(),
@@ -1546,8 +1549,22 @@ mod tests {
             Some(crate::model::NotificationSound::Pulse)
         );
         assert_eq!(notifications[0].text_size, crate::model::TextSize::Large);
-        assert!(notifications[0].can_activate_terminal);
-        assert!(notifications[0].activation.is_some());
+        assert!(!notifications[0].can_activate_terminal);
+        assert!(notifications[0].activation.is_none());
+
+        let banner_notifier = FakeNotifier::with_permission(PermissionStatus::NotDetermined);
+        let banner_adapter = PipelineNotifier {
+            notifier: banner_notifier.as_ref(),
+            delivery: NotificationDelivery::AizuBanner,
+            language: LanguagePreference::English,
+            text_size: crate::model::TextSize::Large,
+            sound: None,
+        };
+        aizu_core::Notifier::notify(&banner_adapter, &prepared)
+            .expect("Aizu Banner should schedule without native permission");
+        let banners = banner_notifier.notifications();
+        assert!(banners[0].can_activate_terminal);
+        assert!(banners[0].activation.is_some());
     }
 
     #[test]

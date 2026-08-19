@@ -1,12 +1,7 @@
-#[cfg(any(target_os = "macos", test, feature = "desktop-e2e"))]
+#[cfg(any(test, feature = "desktop-e2e"))]
 use std::sync::Arc;
 #[cfg(any(test, feature = "desktop-e2e"))]
 use std::sync::Mutex;
-#[cfg(target_os = "macos")]
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
 
 #[cfg(not(target_os = "macos"))]
 use tauri::plugin::PermissionState as TauriPermissionState;
@@ -33,17 +28,11 @@ pub trait Notifier: Send + Sync {
 
 pub struct SystemNotifier {
     app: AppHandle<Wry>,
-    #[cfg(target_os = "macos")]
-    responses: Arc<SystemResponseTracker>,
 }
 
 impl SystemNotifier {
     pub fn new(app: AppHandle<Wry>) -> Self {
-        Self {
-            app,
-            #[cfg(target_os = "macos")]
-            responses: Arc::new(SystemResponseTracker::default()),
-        }
+        Self { app }
     }
 }
 
@@ -61,7 +50,7 @@ impl Notifier for SystemNotifier {
             return crate::banner::show(&self.app, notification);
         }
         #[cfg(target_os = "macos")]
-        return show_system_notification(&self.app, &self.responses, notification);
+        return show_system_notification(&self.app, notification);
         #[cfg(not(target_os = "macos"))]
         show_system_notification(&self.app, notification)
     }
@@ -131,33 +120,12 @@ fn request_system_permission(app: &AppHandle<Wry>) -> Result<PermissionStatus, N
 #[cfg(target_os = "macos")]
 fn show_system_notification(
     _app: &AppHandle<Wry>,
-    responses: &Arc<SystemResponseTracker>,
     notification: &Notification,
 ) -> Result<(), NotifyError> {
-    let handle = build_macos_notification(notification)
+    build_macos_notification(notification)
         .send_blocking()
-        .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
-
-    if let Some(target) = notification.activation.clone()
-        && let Some(slot) = SystemResponseTracker::try_acquire(responses)
-    {
-        tauri::async_runtime::spawn(async move {
-            let _slot = slot;
-            let response =
-                futures_lite::future::race(async { handle.response().await.ok() }, async {
-                    futures_timer::Delay::new(Duration::from_hours(168)).await;
-                    None
-                })
-                .await;
-            if response.is_some_and(|response| response.is_default_action()) {
-                let _ = tauri::async_runtime::spawn_blocking(move || {
-                    crate::terminal_activation::activate(&target)
-                })
-                .await;
-            }
-        });
-    }
-    Ok(())
+        .map(drop)
+        .map_err(|error| NotifyError::Scheduling(error.to_string()))
 }
 
 #[cfg(target_os = "macos")]
@@ -178,38 +146,6 @@ fn build_macos_notification(notification: &Notification) -> mac_usernotification
 #[cfg(target_os = "macos")]
 fn macos_notification_id(id: i32) -> String {
     format!("aizu-{:08x}", id.cast_unsigned())
-}
-
-#[cfg(target_os = "macos")]
-const MAX_SYSTEM_RESPONSE_WAITERS: usize = 64;
-
-#[cfg(target_os = "macos")]
-#[derive(Default)]
-struct SystemResponseTracker {
-    active: AtomicUsize,
-}
-
-#[cfg(target_os = "macos")]
-impl SystemResponseTracker {
-    fn try_acquire(tracker: &Arc<Self>) -> Option<SystemResponseSlot> {
-        tracker
-            .active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                (active < MAX_SYSTEM_RESPONSE_WAITERS).then_some(active + 1)
-            })
-            .ok()?;
-        Some(SystemResponseSlot(Arc::clone(tracker)))
-    }
-}
-
-#[cfg(target_os = "macos")]
-struct SystemResponseSlot(Arc<SystemResponseTracker>);
-
-#[cfg(target_os = "macos")]
-impl Drop for SystemResponseSlot {
-    fn drop(&mut self) {
-        self.0.active.fetch_sub(1, Ordering::AcqRel);
-    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -339,16 +275,13 @@ impl Notifier for E2eNotifier {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use std::sync::{Arc, atomic::Ordering};
-
     use mac_usernotifications::{
         AuthorizationStatus, NotificationSettingStatus, NotificationSettings,
     };
 
     use super::{
-        MAX_SYSTEM_RESPONSE_WAITERS, PermissionStatus, SystemResponseTracker,
-        build_macos_notification, macos_notification_id, map_macos_permission, map_macos_settings,
-        native_sound_name,
+        PermissionStatus, build_macos_notification, macos_notification_id, map_macos_permission,
+        map_macos_settings, native_sound_name,
     };
 
     #[test]
@@ -388,7 +321,19 @@ mod tests {
     }
 
     #[test]
-    fn macos_notifications_are_delivered_immediately() {
+    fn macos_notifications_use_bundled_aizu_sounds() {
+        for (sound, asset) in [
+            (crate::model::NotificationSound::Default, "aizu-pop.wav"),
+            (crate::model::NotificationSound::Chime, "aizu-chime.wav"),
+            (crate::model::NotificationSound::Pulse, "aizu-pulse.wav"),
+            (crate::model::NotificationSound::Bloom, "aizu-bloom.wav"),
+        ] {
+            assert_eq!(native_sound_name(sound), asset);
+        }
+    }
+
+    #[test]
+    fn macos_notifications_are_scheduled_without_an_action_waiter() {
         let notification = crate::model::Notification {
             id: 42,
             title: "Ready".to_owned(),
@@ -404,28 +349,5 @@ mod tests {
         let _native = build_macos_notification(&notification);
 
         assert_eq!(macos_notification_id(notification.id), "aizu-0000002a");
-    }
-
-    #[test]
-    fn system_notification_response_waiters_are_bounded() {
-        let tracker = Arc::new(SystemResponseTracker::default());
-        let slots = (0..MAX_SYSTEM_RESPONSE_WAITERS)
-            .map(|_| SystemResponseTracker::try_acquire(&tracker).expect("slot"))
-            .collect::<Vec<_>>();
-        assert!(SystemResponseTracker::try_acquire(&tracker).is_none());
-        drop(slots);
-        assert_eq!(tracker.active.load(Ordering::Acquire), 0);
-    }
-
-    #[test]
-    fn macos_notifications_use_bundled_aizu_sounds() {
-        for (sound, asset) in [
-            (crate::model::NotificationSound::Default, "aizu-pop.wav"),
-            (crate::model::NotificationSound::Chime, "aizu-chime.wav"),
-            (crate::model::NotificationSound::Pulse, "aizu-pulse.wav"),
-            (crate::model::NotificationSound::Bloom, "aizu-bloom.wav"),
-        ] {
-            assert_eq!(native_sound_name(sound), asset);
-        }
     }
 }

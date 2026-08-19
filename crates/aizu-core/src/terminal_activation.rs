@@ -3,6 +3,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::NormalizedEvent;
+
 /// Reserved metadata key populated by the trusted Aizu CLI process.
 pub const TERMINAL_ACTIVATION_METADATA_KEY: &str = "aizu_terminal_activation";
 
@@ -83,6 +85,16 @@ impl TerminalActivation {
             _ => false,
         };
         session_valid && self.tmux.as_ref().is_none_or(valid_tmux)
+    }
+}
+
+/// Removes receiver-local activation data before SSH output or durable remote ingest.
+pub fn remove_terminal_activation_metadata(event: &mut NormalizedEvent) {
+    if let Some(metadata) = event.metadata.as_mut() {
+        metadata.remove(TERMINAL_ACTIVATION_METADATA_KEY);
+        if metadata.is_empty() {
+            event.metadata = None;
+        }
     }
 }
 
@@ -169,7 +181,10 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{TerminalActivation, TerminalApplication, TmuxActivation};
+    use super::{
+        TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation, TerminalApplication, TmuxActivation,
+        remove_terminal_activation_metadata,
+    };
 
     fn capture(values: &[(&str, &str)]) -> Option<TerminalActivation> {
         let values = values
@@ -247,6 +262,44 @@ mod tests {
                 "command": "rm -rf /"
             }))
             .is_none()
+        );
+    }
+
+    #[test]
+    fn removing_activation_preserves_unrelated_metadata() {
+        let mut event = crate::EmitRequest {
+            kind: Some(crate::EventKind::TaskCompleted),
+            title: Some("Done".to_owned()),
+            metadata: Some(serde_json::json!({
+                "aizu_adapter": "codex-v1",
+                TERMINAL_ACTIVATION_METADATA_KEY: {
+                    "application": "iterm2",
+                    "application_session": "w0t0p0:ABCD"
+                }
+            })),
+            ..crate::EmitRequest::default()
+        }
+        .normalize(
+            uuid::Uuid::parse_str("7a4881c7-c667-47dc-b544-f98a46ab17ca").expect("UUID"),
+            "local".to_owned(),
+            None,
+        )
+        .expect("event");
+
+        remove_terminal_activation_metadata(&mut event);
+
+        assert_eq!(
+            event
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("aizu_adapter")),
+            Some(&serde_json::json!("codex-v1"))
+        );
+        assert!(
+            event
+                .metadata
+                .as_ref()
+                .is_none_or(|metadata| !metadata.contains_key(TERMINAL_ACTIVATION_METADATA_KEY))
         );
     }
 }

@@ -12,6 +12,7 @@ use aizu_core::{
     EmitRequest, EventKind, HookInstallOutcome, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool,
     SpoolError, StatePaths, TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation, Urgency,
     hook_configuration, install_agent_hooks, parse_strict_json_value,
+    remove_terminal_activation_metadata,
 };
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -678,11 +679,13 @@ fn stream_bridge(
                     },
                 )?;
             }
+            let mut event = item.event;
+            remove_terminal_activation_metadata(&mut event);
             write_frame(
                 stdout,
                 &BridgeFrame::Event {
                     sequence: item.sequence,
-                    event: Box::new(item.event),
+                    event: Box::new(event),
                 },
             )?;
             cursor = item.sequence;

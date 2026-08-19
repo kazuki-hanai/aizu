@@ -644,6 +644,17 @@ fn first_party_hook_captures_only_bounded_terminal_identifiers() {
         .assert()
         .success();
 
+    let spool = Spool::open(StatePaths::new(directory.path())).unwrap();
+    let local_event = spool.events_after(0, Some(1)).unwrap().remove(0).event;
+    let activation = &local_event.metadata.as_ref().unwrap()["aizu_terminal_activation"];
+    assert_eq!(activation["application"], "iterm2");
+    assert_eq!(activation["application_session"], "w0t1p0:0123-ABCD");
+    assert_eq!(activation["tmux"]["socket_name"], "work");
+    assert_eq!(activation["tmux"]["pane_id"], "%17");
+    let serialized = serde_json::to_string(&local_event).unwrap();
+    assert!(!serialized.contains("/private/tmp"));
+    assert!(!serialized.contains("123,0"));
+
     let output = aizu()
         .args([
             "--state-dir",
@@ -663,14 +674,10 @@ fn first_party_hook_captures_only_bounded_terminal_identifiers() {
         .map(|line| serde_json::from_slice::<Value>(line).unwrap())
         .find(|frame| frame["type"] == "event")
         .expect("event frame");
-    let activation = &event["event"]["metadata"]["aizu_terminal_activation"];
-    assert_eq!(activation["application"], "iterm2");
-    assert_eq!(activation["application_session"], "w0t1p0:0123-ABCD");
-    assert_eq!(activation["tmux"]["socket_name"], "work");
-    assert_eq!(activation["tmux"]["pane_id"], "%17");
     let serialized = serde_json::to_string(&event).unwrap();
-    assert!(!serialized.contains("/private/tmp"));
-    assert!(!serialized.contains("123,0"));
+    assert!(!serialized.contains("aizu_terminal_activation"));
+    assert!(!serialized.contains("w0t1p0:0123-ABCD"));
+    assert!(!serialized.contains("%17"));
 
     let generic = aizu()
         .env("ITERM_SESSION_ID", "w0t1p0:0123-ABCD")

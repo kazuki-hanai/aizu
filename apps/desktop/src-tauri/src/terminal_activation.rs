@@ -49,19 +49,12 @@ pub fn activate(target: &TerminalActivation) -> Result<(), TerminalActivationErr
 
 #[cfg(not(feature = "desktop-e2e"))]
 fn activate_platform(target: &TerminalActivation) -> Result<(), TerminalActivationError> {
-    if let Some(tmux) = &target.tmux {
-        let _ = tmux_command(tmux).is_some_and(|spec| run_bounded(&spec));
+    for command in activation_plan(target)? {
+        if !run_bounded(&command) {
+            return Err(TerminalActivationError::ApplicationUnavailable);
+        }
     }
-
-    if let Some(exact) = exact_application_command(target)
-        && run_bounded(&exact)
-    {
-        return Ok(());
-    }
-    let fallback = application_fallback(target.application);
-    run_bounded(&fallback)
-        .then_some(())
-        .ok_or(TerminalActivationError::ApplicationUnavailable)
+    Ok(())
 }
 
 #[cfg(feature = "desktop-e2e")]
@@ -93,6 +86,24 @@ fn exact_application_command(target: &TerminalActivation) -> Option<CommandSpec>
         }
         _ => None,
     }
+}
+
+fn activation_plan(
+    target: &TerminalActivation,
+) -> Result<Vec<CommandSpec>, TerminalActivationError> {
+    let mut commands = Vec::with_capacity(2);
+    if let Some(tmux) = &target.tmux {
+        commands.push(tmux_command(tmux).ok_or(TerminalActivationError::ApplicationUnavailable)?);
+    }
+    if target.application_session.is_some() {
+        commands.push(
+            exact_application_command(target)
+                .ok_or(TerminalActivationError::ApplicationUnavailable)?,
+        );
+    } else {
+        commands.push(application_fallback(target.application));
+    }
+    Ok(commands)
 }
 
 fn application_fallback(application: TerminalApplication) -> CommandSpec {
@@ -196,7 +207,10 @@ mod tests {
 
     use aizu_core::{TerminalActivation, TerminalApplication, TmuxActivation};
 
-    use super::{application_fallback, exact_application_command, percent_encode, tmux_command};
+    use super::{
+        activation_plan, application_fallback, exact_application_command, percent_encode,
+        tmux_command,
+    };
 
     #[test]
     fn iterm_reveal_uses_a_fixed_url_command_and_encodes_the_session() {
@@ -248,6 +262,30 @@ mod tests {
         assert_eq!(
             terminal.arguments,
             ["-b", "com.apple.Terminal"].map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn exact_session_plan_never_downgrades_to_application_focus() {
+        let commands = activation_plan(&TerminalActivation {
+            application: TerminalApplication::Iterm2,
+            application_session: Some("w0t0p0:ABCD".to_owned()),
+            tmux: None,
+        })
+        .expect("exact iTerm plan");
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].executable, Path::new("/usr/bin/open"));
+        assert!(
+            commands[0].arguments[0]
+                .to_string_lossy()
+                .starts_with("iterm2:///reveal?")
+        );
+        assert!(
+            !commands[0]
+                .arguments
+                .iter()
+                .any(|argument| argument == "-b")
         );
     }
 }

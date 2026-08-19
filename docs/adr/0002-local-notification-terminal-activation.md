@@ -36,10 +36,12 @@ non-interactive SSH child. Opening a fresh SSH connection would not return to th
      and VS Code when exact selection is unavailable.
 5. Adapter children have a bounded timeout and Aizu terminates only children it started. No shell
    command string or AppleScript is used.
-6. Aizu Banner and macOS Notification Center use the same hidden backend descriptor. The frontend
-   receives only `canActivateTerminal` and sends the notification ID back. A normal click or
-   keyboard activation returns to the terminal; text selection, vertical movement, and swipe do
-   not. Successful activation dismisses an Aizu Banner. Failure leaves it queued.
+6. Only Aizu Banner uses the hidden backend descriptor. The frontend receives only
+   `canActivateTerminal` and sends the notification ID back. A normal click or keyboard activation
+   returns to the terminal; text selection, vertical movement, and swipe do not. Successful
+   activation dismisses an Aizu Banner. Failure leaves it queued. macOS Notification Center
+   alerts are display-only because the available safe notification wrapper does not provide a
+   cancellable, bounded response registration lifecycle.
 7. Notification activation never opens the Aizu main window. Explicit tray Open and launching a
    second app instance remain the supported ways to show the main window.
 
@@ -50,8 +52,8 @@ non-interactive SSH child. Opening a fresh SSH connection would not return to th
 - Remote SSH notifications intentionally have no return-to-shell action. This avoids targeting the
   wrong local session and preserves the existing SSH trust model.
 - Stale sessions or missing applications can fail without executing attacker-controlled input.
-- System notification response observers are globally bounded and expire; Aizu Banner actions are
-  persisted in the in-memory bounded banner queue only.
+- Aizu Banner actions are persisted in the in-memory bounded banner queue only. System
+  notifications do not retain response observers or activation descriptors.
 
 ## Alternatives considered
 
