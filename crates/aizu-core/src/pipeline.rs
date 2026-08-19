@@ -514,6 +514,128 @@ mod tests {
     }
 
     #[test]
+    fn adversarial_secret_corpus_is_redacted_at_every_pipeline_stage() {
+        for (message, expected, leaked) in [
+            (
+                "Authorization : Bearer abc123",
+                "Authorization : Bearer [redacted]",
+                "abc123",
+            ),
+            (
+                "Authorization = Bearer abc123",
+                "Authorization = Bearer [redacted]",
+                "abc123",
+            ),
+            ("password :hunter2", "password :[redacted]", "hunter2"),
+            ("Bearer hunter2", "Bearer [redacted]", "hunter2"),
+            (
+                "Slack xapp-1-A1234567890-1234567890-abcdef",
+                "Slack [redacted]",
+                "xapp-1-",
+            ),
+            (
+                "Token aB1cD2eF3gH4iJ5kL6mN7pQ8rS9tU0vW1xY2zA3b",
+                "Token [redacted]",
+                "aB1cD2",
+            ),
+            (
+                "Secret value 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "Secret value [redacted]",
+                "0123456789abcdef",
+            ),
+            (
+                "-----BEGIN PRIVATE\nKEY-----\nshortSecretBody\n-----END PRIVATE KEY-----\nsafe ending",
+                "[redacted private key]",
+                "shortSecretBody",
+            ),
+            (
+                "Open file:///Users/alice/.ssh/id_ed25519",
+                "Open file:[path]",
+                "/Users/alice",
+            ),
+        ] {
+            assert_pipeline_redacts(message, expected, leaked);
+        }
+    }
+
+    fn assert_pipeline_redacts(message: &str, expected: &str, leaked: &str) {
+        let (_directory, spool, desktop) = fixture();
+        let payload = serde_json::json!({
+            "session_id": "thread-review-corpus",
+            "cwd": "/home/dev/aizu",
+            "hook_event_name": "Stop",
+            "last_assistant_message": message
+        });
+        let request = CodexAdapter
+            .parse_hook("Stop", payload.to_string().as_bytes())
+            .expect("valid Codex hook")
+            .pop()
+            .expect("one event");
+        let body = request.body.clone().expect("redacted agent message");
+        assert!(body.contains(expected), "adapter output: {body}");
+        assert!(!body.contains(leaked), "adapter leaked {leaked}: {body}");
+
+        spool.emit(request, None).expect("emit redacted event");
+        let stored = spool.events_after(0, Some(10)).expect("source spool");
+        let stored_body = stored[0]
+            .event
+            .body
+            .as_deref()
+            .expect("stored redacted message");
+        assert!(
+            stored_body.contains(expected),
+            "spool output: {stored_body}"
+        );
+        assert!(
+            !stored_body.contains(leaked),
+            "source spool leaked {leaked}: {stored_body}"
+        );
+
+        ingest_spool(
+            &spool,
+            &desktop,
+            "ssh:review-host",
+            "Review host",
+            timestamp(),
+        )
+        .expect("ingest");
+        let history = desktop.recent_history(Some(10)).expect("history");
+        let HistoryItem::Event(history_event) = &history[0] else {
+            panic!("expected event history");
+        };
+        let history_body = history_event
+            .event
+            .body
+            .as_deref()
+            .expect("history redacted message");
+        assert!(history_body.contains(expected), "history: {history_body}");
+        assert!(
+            !history_body.contains(leaked),
+            "history leaked {leaked}: {history_body}"
+        );
+
+        let notifier = FakeNotifier::successful();
+        dispatch_outbox(
+            &desktop,
+            &notifier,
+            &NotificationPolicy::default(),
+            timestamp(),
+            None,
+        )
+        .expect("dispatch");
+        let notifications = notifier.notifications.borrow();
+        let notification_body = &notifications[0].body;
+        assert!(
+            notification_body.contains(expected),
+            "notification: {notification_body}"
+        );
+        assert!(
+            !notification_body.contains(leaked),
+            "notification leaked {leaked}: {notification_body}"
+        );
+    }
+
+    #[test]
     fn trusted_claude_question_details_reach_the_notifier_with_the_remote_source_label() {
         let (_directory, spool, desktop) = fixture();
         let request = ClaudeCodeAdapter

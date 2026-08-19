@@ -55,7 +55,7 @@ pub enum StoreError {
     #[error("settings are not valid JSON: {0}")]
     Decode(serde_json::Error),
     #[error("settings version {found} is newer than the maximum supported version {supported}")]
-    UnsupportedVersion { found: u32, supported: u32 },
+    UnsupportedVersion { found: u64, supported: u32 },
     #[error("settings could not be encoded: {0}")]
     Encode(serde_json::Error),
     #[error("settings temporary file could not be written: {0}")]
@@ -77,14 +77,23 @@ impl SettingsStore {
         reject_symlink(&self.path).map_err(StoreError::Read)?;
         match fs::read(&self.path) {
             Ok(bytes) => {
-                let mut settings: StoredSettings =
+                // Read the version envelope before decoding the current complete
+                // shape. A future version may legitimately remove today's required
+                // fields, but it should still get the accurate version error.
+                let value: serde_json::Value =
                     serde_json::from_slice(&bytes).map_err(StoreError::Decode)?;
-                if settings.settings_version > CURRENT_SETTINGS_VERSION {
+                let found_version = value
+                    .get("settingsVersion")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                if found_version > u64::from(CURRENT_SETTINGS_VERSION) {
                     return Err(StoreError::UnsupportedVersion {
-                        found: settings.settings_version,
+                        found: found_version,
                         supported: CURRENT_SETTINGS_VERSION,
                     });
                 }
+                let mut settings: StoredSettings =
+                    serde_json::from_value(value).map_err(StoreError::Decode)?;
                 if settings.settings_version == 0 {
                     // v0.1.0-dev.1 persisted the old default (`false`) with no
                     // settings schema version. There is no way to distinguish that
@@ -275,6 +284,24 @@ mod tests {
         let loaded = store.load().expect("load versioned settings");
         assert_eq!(loaded.settings_version, CURRENT_SETTINGS_VERSION);
         assert!(!loaded.preferences.agent_details_enabled);
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn rejects_a_future_settings_version_before_decoding_its_shape() {
+        let (directory, path) = temporary_settings_path("future-version");
+        fs::write(&path, r#"{"settingsVersion":2,"futureShape":true}"#)
+            .expect("write future settings");
+        let store = SettingsStore::new(path);
+
+        let error = store.load().expect_err("future settings must be rejected");
+        assert!(matches!(
+            error,
+            super::StoreError::UnsupportedVersion {
+                found: 2,
+                supported: CURRENT_SETTINGS_VERSION
+            }
+        ));
         fs::remove_dir_all(directory).expect("temporary directory should be removable");
     }
 }

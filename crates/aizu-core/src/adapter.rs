@@ -19,9 +19,10 @@ const NOTIFICATION_EXCERPT_MAX_CHARS: usize = 240;
 const REDACTED_PLACEHOLDER: &str = "[redacted]";
 /// Placeholder substituted for a redacted private filesystem path.
 const PATH_PLACEHOLDER: &str = "[path]";
-/// Substrings that mark a token as an actual credential value. Any token that
-/// contains one of these is masked in full.
-const CREDENTIAL_VALUE_MARKERS: &[&str] = &[
+/// Provider-issued credential prefixes. These are matched only at the start of a
+/// token and require a plausible credential length; substring matching would corrupt
+/// normal words such as `risk-based`, `task-specific`, `Asia`, or `Aizawa`.
+const PROVIDER_TOKEN_PREFIXES: &[&str] = &[
     "ghp_",
     "gho_",
     "ghu_",
@@ -40,12 +41,8 @@ const CREDENTIAL_VALUE_MARKERS: &[&str] = &[
     "xoxp-",
     "xoxa-",
     "xoxr-",
-    "akia",
-    "asia",
-    "aiza",
+    "xapp-",
     "ya29.",
-    "-----begin",
-    "-----end",
 ];
 /// Keys whose `key=value` / `key: value` pair carries a secret value. The value
 /// is masked while the key is preserved so the sentence stays readable.
@@ -307,16 +304,17 @@ fn redact_sensitive(value: &str) -> String {
     for line in value.split('\n') {
         let uppercase = line.to_ascii_uppercase();
         if state.in_private_key {
-            if uppercase.contains("-----END") && uppercase.contains("PRIVATE KEY-----") {
+            if uppercase.contains("-----END") {
                 state.in_private_key = false;
             }
             // Keep the original line count without exposing any bytes from the key body.
             redacted.push(String::new());
             continue;
         }
-        if let Some(begin) = uppercase.find("-----BEGIN")
-            && uppercase[begin..].contains("PRIVATE KEY-----")
-        {
+        // Fail closed for complete and malformed/split PEM-like blocks. A partial
+        // `-----BEGIN PRIVATE` followed by `KEY-----` on the next line must not
+        // expose the body while waiting for the exact full marker.
+        if let Some(begin) = uppercase.find("-----BEGIN") {
             let prefix = line.get(..begin).unwrap_or_default();
             let prefix = redact_line(prefix, &mut state);
             redacted.push(if prefix.is_empty() {
@@ -324,7 +322,7 @@ fn redact_sensitive(value: &str) -> String {
             } else {
                 format!("{prefix} [redacted private key]")
             });
-            state.in_private_key = !uppercase[begin..].contains("-----END");
+            state.in_private_key = !uppercase.contains("-----END");
             continue;
         }
         redacted.push(redact_line(line, &mut state));
@@ -346,23 +344,23 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         let token = tokens[index];
         let lower = token.to_ascii_lowercase();
 
-        if state.expect_secret_value {
-            if matches!(lower.as_str(), "=" | ":" | "bearer" | "basic" | "token") {
-                out.push(token.to_owned());
-            } else {
-                out.push(REDACTED_PLACEHOLDER.to_owned());
-                state.expect_secret_value = false;
-            }
+        if let Some(masked) = redact_expected_secret(token, state) {
+            out.push(masked);
             index += 1;
             continue;
         }
-        if looks_like_private_path(token) {
-            out.push(PATH_PLACEHOLDER.to_owned());
+        if let Some(masked) = redact_file_url(token) {
+            out.push(masked);
             index += 1;
             continue;
         }
         if let Some(masked) = redact_url_userinfo(token) {
             out.push(masked);
+            index += 1;
+            continue;
+        }
+        if looks_like_private_path(token) {
+            out.push(PATH_PLACEHOLDER.to_owned());
             index += 1;
             continue;
         }
@@ -383,6 +381,19 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
             continue;
         }
 
+        // Authorization with whitespace around the delimiter, e.g.
+        // `Authorization : Bearer value` or `Authorization =Bearer value`.
+        if lower == "authorization"
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| split_leading_separator(next).is_some())
+        {
+            out.push(token.to_owned());
+            state.expect_secret_value = true;
+            index += 1;
+            continue;
+        }
+
         if let Some(redaction) = redact_authorization_header(token) {
             out.push(redaction.label);
             state.expect_secret_value = redaction.needs_value;
@@ -396,7 +407,7 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         if matches!(lower.as_str(), "bearer" | "basic")
             && tokens
                 .get(index + 1)
-                .is_some_and(|value| looks_like_credential_value(value))
+                .is_some_and(|value| looks_like_secret_candidate(value))
         {
             out.push(token.to_owned());
             out.push(REDACTED_PLACEHOLDER.to_owned());
@@ -410,7 +421,7 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         if is_sensitive_key(token)
             && tokens
                 .get(index + 1)
-                .is_some_and(|separator| matches!(*separator, "=" | ":"))
+                .is_some_and(|separator| split_leading_separator(separator).is_some())
         {
             out.push(token.to_owned());
             state.expect_secret_value = true;
@@ -418,10 +429,52 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
             continue;
         }
 
+        // Human-readable phrases emitted by agents sometimes say `Token <value>` or
+        // `Secret value <value>` rather than using key/value punctuation.
+        if is_sensitive_key(token) {
+            let filler = tokens
+                .get(index + 1)
+                .is_some_and(|next| matches!(next.to_ascii_lowercase().as_str(), "value" | "is"));
+            let candidate_index = index + usize::from(filler) + 1;
+            if tokens
+                .get(candidate_index)
+                .is_some_and(|candidate| looks_like_secret_candidate(candidate))
+            {
+                out.push(token.to_owned());
+                if filler {
+                    out.push(tokens[index + 1].to_owned());
+                }
+                out.push(REDACTED_PLACEHOLDER.to_owned());
+                index = candidate_index + 1;
+                continue;
+            }
+        }
+
         out.push(token.to_owned());
         index += 1;
     }
     out.join(" ")
+}
+
+fn redact_expected_secret(token: &str, state: &mut RedactionState) -> Option<String> {
+    if !state.expect_secret_value {
+        return None;
+    }
+    let lower = token.to_ascii_lowercase();
+    if matches!(lower.as_str(), "=" | ":" | "bearer" | "basic" | "token") {
+        return Some(token.to_owned());
+    }
+    if let Some((separator, remainder)) = split_leading_separator(token) {
+        let lower_remainder = remainder.to_ascii_lowercase();
+        if remainder.is_empty() || matches!(lower_remainder.as_str(), "bearer" | "basic" | "token")
+        {
+            return Some(token.to_owned());
+        }
+        state.expect_secret_value = false;
+        return Some(format!("{separator}{REDACTED_PLACEHOLDER}"));
+    }
+    state.expect_secret_value = false;
+    Some(REDACTED_PLACEHOLDER.to_owned())
 }
 
 /// Masks the value half of a `key=value` or `key: value` token when the key names a
@@ -509,9 +562,28 @@ fn is_sensitive_key(value: &str) -> bool {
     SENSITIVE_KEYS.contains(&normalized.as_str())
 }
 
+fn split_leading_separator(token: &str) -> Option<(char, &str)> {
+    let separator = token
+        .chars()
+        .next()
+        .filter(|value| matches!(value, ':' | '='))?;
+    Some((separator, token.get(separator.len_utf8()..)?))
+}
+
+fn redact_file_url(token: &str) -> Option<String> {
+    let lower = token.to_ascii_lowercase();
+    lower
+        .starts_with("file:")
+        .then(|| format!("{}{}", token.get(..5).unwrap_or("file:"), PATH_PLACEHOLDER))
+}
+
 fn redact_url_userinfo(token: &str) -> Option<String> {
     let scheme_end = token.find("://")? + 3;
-    let at = token.get(scheme_end..)?.find('@')? + scheme_end;
+    let remainder = token.get(scheme_end..)?;
+    let authority_end = remainder
+        .find(['/', '?', '#'])
+        .map_or(token.len(), |offset| scheme_end + offset);
+    let at = token.get(scheme_end..authority_end)?.find('@')? + scheme_end;
     (at > scheme_end).then(|| {
         format!(
             "{}{REDACTED_PLACEHOLDER}@{}",
@@ -528,12 +600,55 @@ fn looks_like_credential_value(token: &str) -> bool {
             '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '"' | '\'' | '`'
         )
     });
-    let lower = token.to_ascii_lowercase();
-    CREDENTIAL_VALUE_MARKERS
-        .iter()
-        .any(|marker| lower.contains(marker))
+    looks_like_provider_token(token)
+        || looks_like_aws_access_key(token)
+        || looks_like_google_api_key(token)
         || looks_like_jwt(token)
         || looks_like_high_entropy_blob(token)
+}
+
+fn looks_like_provider_token(token: &str) -> bool {
+    PROVIDER_TOKEN_PREFIXES.iter().any(|prefix| {
+        token.starts_with(prefix)
+            && token.len() >= prefix.len() + 8
+            && token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    })
+}
+
+fn looks_like_aws_access_key(token: &str) -> bool {
+    token.len() == 20
+        && (token.starts_with("AKIA") || token.starts_with("ASIA"))
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
+fn looks_like_google_api_key(token: &str) -> bool {
+    token.starts_with("AIza")
+        && token.len() >= 30
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn looks_like_secret_candidate(token: &str) -> bool {
+    if looks_like_credential_value(token) {
+        return true;
+    }
+    let token = token.trim_matches(|character: char| {
+        matches!(
+            character,
+            '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '"' | '\'' | '`'
+        )
+    });
+    (token.len() >= 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        || (token.len() >= 6
+            && token.bytes().any(|byte| byte.is_ascii_digit())
+            && token.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'_' | b'-' | b'=')
+            }))
 }
 
 fn looks_like_jwt(token: &str) -> bool {
@@ -548,11 +663,12 @@ fn looks_like_jwt(token: &str) -> bool {
 }
 
 fn looks_like_high_entropy_blob(token: &str) -> bool {
-    if token.len() < 40
-        || token
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
-    {
+    if token.len() < 40 {
+        return false;
+    }
+    if token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        // Long hexadecimal strings are often checksums or commit IDs. They are
+        // redacted only when a preceding secret-key cue marks them as a value.
         return false;
     }
     let mut lower = false;
@@ -568,7 +684,7 @@ fn looks_like_high_entropy_blob(token: &str) -> bool {
             _ => return false,
         }
     }
-    lower && upper && digit && (base64_symbol || token.len() >= 48)
+    lower && upper && digit && (base64_symbol || token.len() >= 40)
 }
 
 fn looks_like_private_path(token: &str) -> bool {
@@ -578,14 +694,30 @@ fn looks_like_private_path(token: &str) -> bool {
             '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '"' | '\'' | '`'
         )
     });
-    token.starts_with("/Users/")
-        || token.starts_with("/home/")
-        || token.starts_with("/private/")
-        || token.starts_with("/tmp/")
-        || token.starts_with("/var/folders/")
-        || token.starts_with("~/")
-        || (token.as_bytes().get(1) == Some(&b':')
-            && matches!(token.as_bytes().get(2), Some(b'\\' | b'/')))
+    [
+        "/Users/",
+        "/home/",
+        "/private/",
+        "/tmp/",
+        "/var/folders/",
+        "~/",
+    ]
+    .iter()
+    .any(|prefix| token.contains(prefix))
+        || token
+            .as_bytes()
+            .windows(3)
+            .enumerate()
+            .any(|(index, window)| {
+                window[0].is_ascii_alphabetic()
+                    && window[1] == b':'
+                    && matches!(window[2], b'\\' | b'/')
+                    && (index == 0
+                        || matches!(
+                            token.as_bytes()[index - 1],
+                            b'=' | b'"' | b'\'' | b'`' | b'(' | b'[' | b'{'
+                        ))
+            })
 }
 
 fn adapter_metadata(
@@ -841,8 +973,26 @@ mod tests {
                 "Authorization:\nBearer\n[redacted]",
             ),
             (
+                "Authorization : Bearer abc123",
+                "Authorization : Bearer [redacted]",
+            ),
+            (
+                "Authorization = Bearer abc123",
+                "Authorization = Bearer [redacted]",
+            ),
+            ("password :hunter2", "password :[redacted]"),
+            ("Bearer hunter2", "Bearer [redacted]"),
+            (
                 "Fetch https://alice:hunter2@example.com/resource",
                 "Fetch https://[redacted]@example.com/resource",
+            ),
+            (
+                "See https://example.com/@scope/docs",
+                "See https://example.com/@scope/docs",
+            ),
+            (
+                "Open file:///Users/alice/.ssh/id_ed25519",
+                "Open file:[path]",
             ),
             (
                 "AWS_SECRET_ACCESS_KEY = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -858,8 +1008,20 @@ mod tests {
             ),
             ("GitLab glpat-1234567890abcdefghijkl", "GitLab [redacted]"),
             (
+                "Slack app token xapp-1-A1234567890-1234567890-abcdef",
+                "Slack app token [redacted]",
+            ),
+            (
                 "OpenAI sk-1234567890abcdefghijklmnopqrstuvwxyz",
                 "OpenAI [redacted]",
+            ),
+            (
+                "Token aB1cD2eF3gH4iJ5kL6mN7pQ8rS9tU0vW1xY2zA3b",
+                "Token [redacted]",
+            ),
+            (
+                "Secret value 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "Secret value [redacted]",
             ),
             (
                 "JWT eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
@@ -877,6 +1039,14 @@ mod tests {
                 "Bearer plants grow well here",
                 "Bearer plants grow well here",
             ),
+            (
+                "Deploy to Asia after the checks",
+                "Deploy to Asia after the checks",
+            ),
+            ("Use a risk-based rollout", "Use a risk-based rollout"),
+            ("Run task-specific checks", "Run task-specific checks"),
+            ("Use disk-backed storage", "Use disk-backed storage"),
+            ("Ask Aizawa for review", "Ask Aizawa for review"),
         ] {
             assert_eq!(
                 safe_agent_excerpt(message).as_deref(),
@@ -904,6 +1074,19 @@ mod tests {
         assert!(!excerpt.contains("another-key-body-line"));
         assert!(!excerpt.contains("BEGIN PRIVATE KEY"));
         assert!(!excerpt.contains("END PRIVATE KEY"));
+
+        let split_marker = concat!(
+            "-----BEGIN PRIVATE\n",
+            "KEY-----\n",
+            "shortSecretBody\n",
+            "-----END PRIVATE KEY-----\n",
+            "safe ending"
+        );
+        let excerpt = safe_agent_excerpt(split_marker).expect("malformed key block is redacted");
+        assert!(excerpt.contains("[redacted private key]"));
+        assert!(excerpt.contains("safe ending"));
+        assert!(!excerpt.contains("shortSecretBody"));
+        assert!(!excerpt.contains("KEY-----"));
     }
 
     #[test]
