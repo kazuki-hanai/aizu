@@ -44,7 +44,10 @@ non-interactive SSH child. Opening a fresh SSH connection would not return to th
    notification-ID-to-target entries. It does not create a task, future, or waiter per
    notification. A default click atomically consumes one entry and runs the same fixed adapter on
    a background task; dismiss and other actions only remove the entry. New entries evict the
-   oldest target when the bound is reached, without affecting notification display.
+   oldest target when the bound is reached, without affecting notification display. Response
+   delegate setup is best-effort: an unavailable bundle identity or native handler disables only
+   click activation for System notifications and must not prevent Aizu Banner or the app worker
+   from starting.
 8. Notification activation never opens the Aizu main window. Explicit tray Open and launching a
    second app instance remain the supported ways to show the main window.
 

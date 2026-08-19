@@ -36,49 +36,70 @@ pub trait Notifier: Send + Sync {
 pub struct SystemNotifier {
     app: AppHandle<Wry>,
     #[cfg(target_os = "macos")]
-    responses: Arc<Mutex<SystemActivationRegistry>>,
-    #[cfg(target_os = "macos")]
-    _response_manager: NotifyManager,
+    response_handler: Option<SystemResponseHandler>,
 }
 
 impl SystemNotifier {
-    pub fn new(app: AppHandle<Wry>) -> Result<Self, NotifyError> {
+    #[must_use]
+    pub fn new(app: AppHandle<Wry>) -> Self {
         #[cfg(target_os = "macos")]
         {
-            // Initialize mac-usernotifications first because its worker installs a delegate once.
-            // The app-owned delegate registered below must remain the final center delegate.
-            system_permission_status(&app)?;
-
-            let responses = Arc::new(Mutex::new(SystemActivationRegistry::default()));
-            let response_manager = NotifyManager::try_new("dev.aizu.desktop", None)
-                .map_err(|error| NotifyError::ResponseHandler(error.to_string()))?;
-            let callback_responses = Arc::clone(&responses);
-            response_manager
-                .register(
-                    Box::new(move |response| {
-                        if let Some(activation) = take_system_response(
-                            &callback_responses,
-                            &response.notification_id,
-                            &response.action,
-                        ) {
-                            drop(tauri::async_runtime::spawn_blocking(move || {
-                                let _ = crate::terminal_activation::activate(&activation);
-                            }));
-                        }
-                    }),
-                    Vec::new(),
-                )
-                .map_err(|error| NotifyError::ResponseHandler(error.to_string()))?;
-
-            Ok(Self {
+            Self {
+                response_handler: optional_response_handler(|| {
+                    initialize_system_response_handler(&app)
+                }),
                 app,
-                responses,
-                _response_manager: response_manager,
-            })
+            }
         }
         #[cfg(not(target_os = "macos"))]
-        Ok(Self { app })
+        Self { app }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn optional_response_handler<T>(initialize: impl FnOnce() -> Result<T, NotifyError>) -> Option<T> {
+    initialize().ok()
+}
+
+#[cfg(target_os = "macos")]
+struct SystemResponseHandler {
+    responses: Arc<Mutex<SystemActivationRegistry>>,
+    _manager: NotifyManager,
+}
+
+#[cfg(target_os = "macos")]
+fn initialize_system_response_handler(
+    app: &AppHandle<Wry>,
+) -> Result<SystemResponseHandler, NotifyError> {
+    // mac-usernotifications installs its delegate on first use. The app-owned
+    // response delegate must be installed afterwards so it remains final.
+    system_permission_status(app)?;
+
+    let responses = Arc::new(Mutex::new(SystemActivationRegistry::default()));
+    let manager = NotifyManager::try_new("dev.aizu.desktop", None)
+        .map_err(|error| NotifyError::ResponseHandler(error.to_string()))?;
+    let callback_responses = Arc::clone(&responses);
+    manager
+        .register(
+            Box::new(move |response| {
+                if let Some(activation) = take_system_response(
+                    &callback_responses,
+                    &response.notification_id,
+                    &response.action,
+                ) {
+                    drop(tauri::async_runtime::spawn_blocking(move || {
+                        let _ = crate::terminal_activation::activate(&activation);
+                    }));
+                }
+            }),
+            Vec::new(),
+        )
+        .map_err(|error| NotifyError::ResponseHandler(error.to_string()))?;
+
+    Ok(SystemResponseHandler {
+        responses,
+        _manager: manager,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -178,7 +199,12 @@ impl Notifier for SystemNotifier {
             return crate::banner::show(&self.app, notification);
         }
         #[cfg(target_os = "macos")]
-        return show_system_notification(&self.responses, notification);
+        return show_system_notification(
+            self.response_handler
+                .as_ref()
+                .map(|handler| handler.responses.as_ref()),
+            notification,
+        );
         #[cfg(not(target_os = "macos"))]
         show_system_notification(&self.app, notification)
     }
@@ -247,16 +273,18 @@ fn request_system_permission(app: &AppHandle<Wry>) -> Result<PermissionStatus, N
 
 #[cfg(target_os = "macos")]
 fn show_system_notification(
-    responses: &Mutex<SystemActivationRegistry>,
+    responses: Option<&Mutex<SystemActivationRegistry>>,
     notification: &Notification,
 ) -> Result<(), NotifyError> {
     let identifier = macos_notification_id(notification.id);
-    let token = responses
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .replace(&identifier, notification.activation.clone());
+    let token = responses.and_then(|responses| {
+        responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(&identifier, notification.activation.clone())
+    });
     let scheduled = mac_usernotifications::blocking::send(build_macos_notification(notification));
-    if let (Err(error), Some(token)) = (&scheduled, token) {
+    if let (Err(error), Some((responses, token))) = (&scheduled, responses.zip(token)) {
         responses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -422,7 +450,7 @@ mod tests {
     use super::{
         MAX_SYSTEM_ACTIVATIONS, PermissionStatus, SystemActivationRegistry,
         build_macos_notification, macos_notification_id, map_macos_permission, map_macos_settings,
-        native_sound_name, take_system_response,
+        native_sound_name, optional_response_handler, take_system_response,
     };
     use user_notify_reborn::NotifyResponseAction;
 
@@ -468,6 +496,17 @@ mod tests {
             map_macos_settings(settings),
             PermissionStatus::AlertsDisabled
         );
+    }
+
+    #[test]
+    fn response_handler_failure_does_not_abort_notifier_startup() {
+        let handler = optional_response_handler(|| {
+            Err::<u8, _>(super::NotifyError::ResponseHandler(
+                "unavailable".to_owned(),
+            ))
+        });
+
+        assert!(handler.is_none());
     }
 
     #[test]
