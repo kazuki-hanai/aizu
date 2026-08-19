@@ -580,15 +580,17 @@ fn redact_expected_explicit_value(token: &str, state: &mut RedactionState) -> Op
     if state.secret != SecretState::AwaitExplicitValue {
         return None;
     }
-    if matches!(token.to_ascii_lowercase().as_str(), "bearer" | "basic") {
-        return Some(token.to_owned());
-    }
-    if let Some((separator, remainder)) = split_leading_separator(token) {
-        if remainder.is_empty() {
+    let separator_length = token
+        .bytes()
+        .take_while(|byte| matches!(byte, b':' | b'='))
+        .count();
+    if separator_length > 0 {
+        if separator_length == token.len() {
             return Some(token.to_owned());
         }
         state.secret = SecretState::None;
-        return Some(format!("{separator}{REDACTED_PLACEHOLDER}"));
+        let separators = token.get(..separator_length).unwrap_or_default();
+        return Some(format!("{separators}{REDACTED_PLACEHOLDER}"));
     }
     state.secret = SecretState::None;
     Some(REDACTED_PLACEHOLDER.to_owned())
@@ -1354,7 +1356,7 @@ mod tests {
         for (message, expected) in [
             ("Use password=hunter2", "Use password=[redacted]"),
             ("Read /Users/alice/private.txt", "Read [path]"),
-            ("token: Bearer abc123", "token: Bearer [redacted]"),
+            ("token: Bearer abc123", "token: [redacted] abc123"),
             ("Read `/home/user/private.txt` next", "Read [path] next"),
             ("Open `/Users/alice/private.txt` next", "Open [path] next"),
             ("Inspect `/tmp/aizu-debug.log` next", "Inspect [path] next"),
@@ -1769,6 +1771,17 @@ mod tests {
             ("Blob value", "Blob [redacted]"),
             ("Token value", "Token [redacted]"),
             ("Encoded value", "Encoded [redacted]"),
+            (
+                "Bearer Bearer secret after",
+                "Bearer [redacted] secret after",
+            ),
+            (
+                "Bearer Basic secret after",
+                "Bearer [redacted] secret after",
+            ),
+            ("Bearer := secret after", "Bearer := [redacted] after"),
+            ("Bearer == secret after", "Bearer == [redacted] after"),
+            ("Bearer\n:=\nsecret after", "Bearer\n:=\n[redacted] after"),
             (
                 "Bearer abcdefghijklmnopqrstuvwxyzabcdef",
                 "Bearer [redacted]",

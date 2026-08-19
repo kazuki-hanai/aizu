@@ -613,6 +613,31 @@ mod tests {
             ("Token value", "Token [redacted]", "Token value"),
             ("Encoded value", "Encoded [redacted]", "Encoded value"),
             (
+                "Bearer Bearer secret after",
+                "Bearer [redacted] secret after",
+                "Bearer Bearer",
+            ),
+            (
+                "Bearer Basic secret after",
+                "Bearer [redacted] secret after",
+                "Bearer Basic",
+            ),
+            (
+                "Bearer := secret after",
+                "Bearer := [redacted] after",
+                "secret",
+            ),
+            (
+                "Bearer == secret after",
+                "Bearer == [redacted] after",
+                "secret",
+            ),
+            (
+                "Bearer\n:=\nsecret after",
+                "Bearer\n:=\n[redacted] after",
+                "secret",
+            ),
+            (
                 "Secret value 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "Secret value [redacted]",
                 "0123456789abcdef",
