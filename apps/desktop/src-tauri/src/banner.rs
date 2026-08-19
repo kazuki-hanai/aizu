@@ -17,7 +17,7 @@ use crate::{
     notifier::NotifyError,
 };
 
-const BANNER_WINDOW: &str = "banner";
+pub(crate) const BANNER_WINDOW: &str = "banner";
 const MAX_VISIBLE_BANNERS: usize = 3;
 const BANNER_WIDTH: f64 = 420.0;
 const MIN_BANNER_HEIGHT: f64 = 104.0;
@@ -81,10 +81,16 @@ impl BannerState {
             self.dirty.store(true, Ordering::Release);
             return Ok(());
         }
-        if banners.len() == MAX_VISIBLE_BANNERS
-            && let Some(evicted) = banners.pop_front()
-        {
-            activation_claims.remove(&evicted.id);
+        if banners.len() == MAX_VISIBLE_BANNERS {
+            let eviction = banners.iter().position(|banner| banner.approval.is_none());
+            let Some(eviction) = eviction else {
+                return Err(NotifyError::Scheduling(
+                    "all Aizu banner slots are waiting for approval".to_owned(),
+                ));
+            };
+            if let Some(evicted) = banners.remove(eviction) {
+                activation_claims.remove(&evicted.id);
+            }
         }
         banners.push_back(notification);
         self.dirty.store(true, Ordering::Release);
@@ -228,6 +234,19 @@ impl BannerState {
         Ok(true)
     }
 
+    fn clear_passive(&self) -> Result<(), NotifyError> {
+        let ids = self
+            .snapshot()?
+            .into_iter()
+            .filter(|banner| banner.approval.is_none())
+            .map(|banner| banner.id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.dismiss(id)?;
+        }
+        Ok(())
+    }
+
     fn begin_presentation(&self, now: Instant) -> Option<u64> {
         if self.presentation_scheduled.swap(true, Ordering::AcqRel) {
             return None;
@@ -293,6 +312,7 @@ impl BannerState {
             })
     }
 
+    #[cfg(test)]
     fn clear_pending(&self) -> Result<(), NotifyError> {
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.dirty.store(false, Ordering::Release);
@@ -354,7 +374,11 @@ fn ensure_window(app: &AppHandle<Wry>) -> Result<tauri::WebviewWindow<Wry>, Noti
 
 pub fn show(app: &AppHandle<Wry>, notification: &Notification) -> Result<(), NotifyError> {
     app.state::<BannerState>().push(notification.clone())?;
-    request_present(app)
+    if let Err(error) = request_present(app) {
+        let _ = app.state::<BannerState>().dismiss(notification.id);
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub fn request_present(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
@@ -402,10 +426,15 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     }
     let window = ensure_window(app)?;
     resize(app, MIN_BANNER_HEIGHT)?;
-    app.emit_to(BANNER_WINDOW, "aizu://banners-changed", &snapshot)
-        .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
     window
         .show()
+        .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
+    if let Some(broker) = app.try_state::<crate::approval_broker::ApprovalBroker>() {
+        for banner in snapshot.iter().filter(|banner| banner.approval.is_some()) {
+            let _ = broker.mark_window_shown(banner.id);
+        }
+    }
+    app.emit_to(BANNER_WINDOW, "aizu://banners-changed", &snapshot)
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
     if let Some(sound) = app.state::<BannerState>().take_pending_sound(generation)? {
         play_sound(sound);
@@ -415,6 +444,14 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
 
 pub fn banners(app: &AppHandle<Wry>) -> Result<Vec<Notification>, NotifyError> {
     app.state::<BannerState>().snapshot()
+}
+
+pub fn has_approval(app: &AppHandle<Wry>, id: i32) -> Result<bool, NotifyError> {
+    Ok(app
+        .state::<BannerState>()
+        .snapshot()?
+        .iter()
+        .any(|banner| banner.id == id && banner.approval.is_some()))
 }
 
 pub fn update_text_size(app: &AppHandle<Wry>, text_size: TextSize) -> Result<(), NotifyError> {
@@ -454,22 +491,9 @@ pub fn complete_activation(
     Ok(())
 }
 
-pub fn clear(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
-    let ids = app
-        .state::<BannerState>()
-        .snapshot()?
-        .into_iter()
-        .map(|banner| banner.id)
-        .collect::<Vec<_>>();
-    for id in ids {
-        app.state::<BannerState>().dismiss(id)?;
-    }
-    app.state::<BannerState>().clear_pending()?;
-    if let Some(window) = app.get_webview_window(BANNER_WINDOW) {
-        window
-            .hide()
-            .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
-    }
+pub fn clear_passive(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
+    app.state::<BannerState>().clear_passive()?;
+    let _ = request_present(app);
     Ok(())
 }
 
@@ -558,6 +582,7 @@ mod tests {
             language: crate::model::LanguagePreference::English,
             text_size: crate::model::TextSize::Standard,
             can_activate_terminal: false,
+            approval: None,
             activation: None,
         }
     }
@@ -578,6 +603,46 @@ mod tests {
         assert_eq!(banners.len(), MAX_VISIBLE_BANNERS);
         assert_eq!(banners[0].id, 2);
         assert_eq!(banners[1].body, "replacement");
+    }
+
+    #[test]
+    fn ordinary_notifications_do_not_evict_a_pending_command_approval() {
+        let state = BannerState::default();
+        state.push(notification(1, "first")).unwrap();
+        let mut approval = notification(-1, "review command");
+        approval.approval = Some(crate::model::ApprovalPresentation {
+            agent: crate::model::AgentKind::Codex,
+            tool_name: "Bash".to_owned(),
+            command: "printf approved".to_owned(),
+        });
+        state.push(approval).unwrap();
+        state.push(notification(2, "second")).unwrap();
+        state.push(notification(3, "third")).unwrap();
+
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(snapshot.len(), MAX_VISIBLE_BANNERS);
+        assert!(snapshot.iter().any(|banner| banner.id == -1));
+        assert!(!snapshot.iter().any(|banner| banner.id == 1));
+    }
+
+    #[test]
+    fn clearing_passive_notifications_preserves_command_approvals() {
+        let state = BannerState::default();
+        state.push(notification(1, "ordinary")).unwrap();
+        let mut approval = notification(-1, "review command");
+        approval.approval = Some(crate::model::ApprovalPresentation {
+            agent: crate::model::AgentKind::Codex,
+            tool_name: "Bash".to_owned(),
+            command: "printf approved".to_owned(),
+        });
+        state.push(approval).unwrap();
+
+        state.clear_passive().unwrap();
+
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].id, -1);
+        assert!(snapshot[0].approval.is_some());
     }
 
     #[test]

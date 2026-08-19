@@ -66,6 +66,31 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
     }
   }, [client, refresh]);
 
+  const acknowledgeApproval = useCallback(async (id: number) => {
+    try {
+      await client.acknowledgeApproval(id);
+      setUnavailable(false);
+      return true;
+    } catch {
+      setUnavailable(true);
+      return false;
+    }
+  }, [client]);
+
+  const decideApproval = useCallback(async (id: number, decision: "allowOnce" | "deny") => {
+    try {
+      await client.decideApproval(id, decision);
+      refreshGeneration.current += 1;
+      setBanners((current) => current.filter((banner) => banner.id !== id));
+      setUnavailable(false);
+      await refresh();
+      return true;
+    } catch {
+      setUnavailable(true);
+      return false;
+    }
+  }, [client, refresh]);
+
   useEffect(() => {
     let active = true;
     let unsubscribe: (() => void) | undefined;
@@ -114,7 +139,9 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
         <SwipeDismissBanner
           banner={banner}
           key={banner.id}
+          onAcknowledgeApproval={acknowledgeApproval}
           onActivate={activate}
+          onDecideApproval={decideApproval}
           onDismiss={dismiss}
         />
       ))}

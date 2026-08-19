@@ -30,11 +30,15 @@ const EXIT_DURATION = 160;
 
 export function SwipeDismissBanner({
   banner,
+  onAcknowledgeApproval,
   onActivate,
+  onDecideApproval,
   onDismiss,
 }: {
   banner: BannerNotification;
+  onAcknowledgeApproval: (id: number) => Promise<boolean>;
   onActivate: (id: number) => Promise<boolean>;
+  onDecideApproval: (id: number, decision: "allowOnce" | "deny") => Promise<boolean>;
   onDismiss: (id: number) => Promise<boolean>;
 }) {
   const bannerRef = useRef<HTMLElement>(null);
@@ -43,11 +47,27 @@ export function SwipeDismissBanner({
   const dismissTimer = useRef<number | null>(null);
   const dismissStarted = useRef(false);
   const activationStarted = useRef(false);
+  const approvalStarted = useRef(false);
   const suppressActivation = useRef(false);
   const suppressionTimer = useRef<number | null>(null);
   const [renderedOffset, setRenderedOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [exitDirection, setExitDirection] = useState<-1 | 1 | null>(null);
+  const [approvalPending, setApprovalPending] = useState(false);
+  const requiresApproval = banner.approval !== null;
+  const [acknowledgedApprovalId, setAcknowledgedApprovalId] = useState<number | null>(null);
+  const approvalReady = !requiresApproval || acknowledgedApprovalId === banner.id;
+
+  useEffect(() => {
+    if (!requiresApproval) return;
+    let active = true;
+    void onAcknowledgeApproval(banner.id).then((acknowledged) => {
+      if (active && acknowledged) setAcknowledgedApprovalId(banner.id);
+    });
+    return () => {
+      active = false;
+    };
+  }, [banner.id, onAcknowledgeApproval, requiresApproval]);
 
   const reset = useCallback(() => {
     swipe.current = null;
@@ -57,6 +77,8 @@ export function SwipeDismissBanner({
     setExitDirection(null);
     dismissStarted.current = false;
     activationStarted.current = false;
+    approvalStarted.current = false;
+    setApprovalPending(false);
   }, []);
 
   useEffect(() => () => {
@@ -112,6 +134,7 @@ export function SwipeDismissBanner({
       swipe.current ||
       dismissStarted.current ||
       activationStarted.current ||
+      approvalStarted.current ||
       exitDirection !== null
     ) return false;
     if (target instanceof Element && target.closest("button")) return false;
@@ -183,7 +206,7 @@ export function SwipeDismissBanner({
     exitDirection === 1 ? "aizu-banner--dismiss-right" : "",
   ].filter(Boolean).join(" ");
   const dismissImmediately = () => {
-    if (dismissStarted.current || activationStarted.current) return;
+    if (dismissStarted.current || activationStarted.current || approvalStarted.current) return;
     dismissStarted.current = true;
     void onDismiss(banner.id).then((dismissed) => {
       if (!dismissed) reset();
@@ -206,6 +229,19 @@ export function SwipeDismissBanner({
       if (!activated) reset();
     });
   };
+  const decideApproval = (decision: "allowOnce" | "deny") => {
+    if (
+      !banner.approval ||
+      !approvalReady ||
+      approvalStarted.current ||
+      dismissStarted.current
+    ) return;
+    approvalStarted.current = true;
+    setApprovalPending(true);
+    void onDecideApproval(banner.id, decision).then((decided) => {
+      if (!decided) reset();
+    });
+  };
 
   return (
     <article
@@ -213,6 +249,7 @@ export function SwipeDismissBanner({
       data-banner-id={banner.id}
       data-text-size={banner.textSize}
       data-terminal-activation={banner.canActivateTerminal ? "available" : "unavailable"}
+      data-command-approval={banner.approval ? "available" : "unavailable"}
       lang={banner.language === "system" ? undefined : banner.language}
       onMouseDown={(event) => {
         if (event.button === 0) begin("mouse", 0, event.clientX, event.clientY, event.target);
@@ -253,10 +290,34 @@ export function SwipeDismissBanner({
         title={banner.canActivateTerminal ? messages(banner.language).returnToTerminal : undefined}
       >
         <span className="aizu-banner__mark"><BrandMark small /></span>
-        <span className="aizu-banner__copy">
+        <div className="aizu-banner__copy">
           <strong>{banner.title}</strong>
           {banner.body ? <span className="aizu-banner__body">{banner.body}</span> : null}
-        </span>
+          {banner.approval ? (
+            <>
+              <span className="aizu-banner__approval-tool">{banner.approval.toolName}</span>
+              <pre className="aizu-banner__command">{banner.approval.command}</pre>
+              <div className="aizu-banner__actions">
+                <button
+                  className="aizu-banner__action aizu-banner__action--deny"
+                  disabled={!approvalReady || approvalPending}
+                  onClick={() => decideApproval("deny")}
+                  type="button"
+                >
+                  {messages(banner.language).deny}
+                </button>
+                <button
+                  className="aizu-banner__action aizu-banner__action--allow"
+                  disabled={!approvalReady || approvalPending}
+                  onClick={() => decideApproval("allowOnce")}
+                  type="button"
+                >
+                  {messages(banner.language).allowOnce}
+                </button>
+              </div>
+            </>
+          ) : null}
+        </div>
       </div>
       <button
         aria-label={messages(banner.language).dismissNotification}

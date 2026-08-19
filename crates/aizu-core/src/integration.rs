@@ -6,6 +6,7 @@ use thiserror::Error;
 use crate::AgentKind;
 
 const HOOK_TIMEOUT_SECONDS: u8 = 5;
+const PERMISSION_REQUEST_TIMEOUT_SECONDS: u8 = 50;
 
 /// Builds a first-party user hook configuration without reading or modifying
 /// the agent's configuration files.
@@ -82,8 +83,14 @@ fn is_generated_aizu_handler(handler: &Value, agent: AgentKind, event: &str) -> 
     let Some(handler) = handler.as_object() else {
         return false;
     };
-    if handler.get("type").and_then(Value::as_str) != Some("command")
-        || handler.get("timeout").and_then(Value::as_u64) != Some(u64::from(HOOK_TIMEOUT_SECONDS))
+    if handler.get("type").and_then(Value::as_str) != Some("command") {
+        return false;
+    }
+    let Some(timeout) = handler.get("timeout").and_then(Value::as_u64) else {
+        return false;
+    };
+    if timeout != u64::from(hook_timeout_seconds(event))
+        && !(event == "PermissionRequest" && timeout == u64::from(HOOK_TIMEOUT_SECONDS))
     {
         return false;
     }
@@ -174,14 +181,14 @@ fn codex_configuration(executable: &str) -> Value {
                 "hooks": [{
                     "type": "command",
                     "command": command("Stop"),
-                    "timeout": HOOK_TIMEOUT_SECONDS
+                    "timeout": hook_timeout_seconds("Stop")
                 }]
             }],
             "PermissionRequest": [{
                 "hooks": [{
                     "type": "command",
                     "command": command("PermissionRequest"),
-                    "timeout": HOOK_TIMEOUT_SECONDS
+                    "timeout": hook_timeout_seconds("PermissionRequest")
                 }]
             }]
         }
@@ -196,7 +203,7 @@ fn claude_code_configuration(executable: &str) -> Value {
                 "{} hook --agent claude-code --event {event}",
                 shell_quote(executable)
             ),
-            "timeout": HOOK_TIMEOUT_SECONDS
+            "timeout": hook_timeout_seconds(event)
         })
     };
     json!({
@@ -206,6 +213,14 @@ fn claude_code_configuration(executable: &str) -> Value {
             "PermissionRequest": [{"hooks": [handler("PermissionRequest")]}]
         }
     })
+}
+
+fn hook_timeout_seconds(event: &str) -> u8 {
+    if event == "PermissionRequest" {
+        PERMISSION_REQUEST_TIMEOUT_SECONDS
+    } else {
+        HOOK_TIMEOUT_SECONDS
+    }
 }
 
 fn shell_quote(value: &str) -> String {
@@ -241,6 +256,10 @@ mod tests {
         let config = hook_configuration(AgentKind::Codex, Path::new("/Users/me/.local/bin/aizu"))
             .expect("configuration");
         assert_eq!(config["hooks"]["Stop"][0]["hooks"][0]["timeout"], 5);
+        assert_eq!(
+            config["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
+            50
+        );
         assert_eq!(
             config["hooks"]["PermissionRequest"][0]["hooks"][0].get("async"),
             None

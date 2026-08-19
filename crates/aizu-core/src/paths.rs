@@ -52,6 +52,12 @@ impl StatePaths {
         self.root.join("desktop.sqlite3")
     }
 
+    /// Ephemeral local socket used to return one-shot agent approval decisions.
+    #[must_use]
+    pub fn approval_socket(&self) -> PathBuf {
+        self.root.join("approval.sock")
+    }
+
     #[must_use]
     pub fn identity_backup_dir(&self) -> PathBuf {
         self.root.join("backups")

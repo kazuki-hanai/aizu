@@ -251,6 +251,7 @@ mod tests {
         let migrated = store.load().expect("old settings migrate");
         assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
         assert!(!migrated.preferences.agent_details_enabled);
+        assert!(migrated.preferences.command_approvals_enabled);
 
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).expect("read migrated settings"))
