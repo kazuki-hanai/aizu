@@ -9,15 +9,32 @@ use thiserror::Error;
 
 use crate::model::Preferences;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+const CURRENT_SETTINGS_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredSettings {
+    #[serde(default)]
+    pub settings_version: u32,
     pub onboarding_complete: bool,
     pub paused: bool,
     pub preferences: Preferences,
     pub remote_sources: Vec<RemoteSourceConfig>,
     #[serde(default)]
     pub codex_hook_trust_confirmed: bool,
+}
+
+impl Default for StoredSettings {
+    fn default() -> Self {
+        Self {
+            settings_version: CURRENT_SETTINGS_VERSION,
+            onboarding_complete: false,
+            paused: false,
+            preferences: Preferences::default(),
+            remote_sources: Vec::new(),
+            codex_hook_trust_confirmed: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +54,8 @@ pub enum StoreError {
     Read(io::Error),
     #[error("settings are not valid JSON: {0}")]
     Decode(serde_json::Error),
+    #[error("settings version {found} is newer than the maximum supported version {supported}")]
+    UnsupportedVersion { found: u64, supported: u32 },
     #[error("settings could not be encoded: {0}")]
     Encode(serde_json::Error),
     #[error("settings temporary file could not be written: {0}")]
@@ -57,7 +76,34 @@ impl SettingsStore {
     pub fn load(&self) -> Result<StoredSettings, StoreError> {
         reject_symlink(&self.path).map_err(StoreError::Read)?;
         match fs::read(&self.path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(StoreError::Decode),
+            Ok(bytes) => {
+                // Read the version envelope before decoding the current complete
+                // shape. A future version may legitimately remove today's required
+                // fields, but it should still get the accurate version error.
+                let value: serde_json::Value =
+                    serde_json::from_slice(&bytes).map_err(StoreError::Decode)?;
+                let found_version = value
+                    .get("settingsVersion")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                if found_version > u64::from(CURRENT_SETTINGS_VERSION) {
+                    return Err(StoreError::UnsupportedVersion {
+                        found: found_version,
+                        supported: CURRENT_SETTINGS_VERSION,
+                    });
+                }
+                let mut settings: StoredSettings =
+                    serde_json::from_value(value).map_err(StoreError::Decode)?;
+                if settings.settings_version == 0 {
+                    // Pre-versioned settings cannot distinguish the old `false`
+                    // default from an intentional privacy opt-out. Preserve the
+                    // stored value; only a missing field receives the new `true`
+                    // serde default.
+                    settings.settings_version = CURRENT_SETTINGS_VERSION;
+                    self.save(&settings)?;
+                }
+                Ok(settings)
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(StoredSettings::default()),
             Err(error) => Err(StoreError::Read(error)),
         }
@@ -135,16 +181,23 @@ fn set_private_directory(_path: &std::path::Path) -> io::Result<()> {
 mod tests {
     use std::{fs, time::SystemTime};
 
-    use super::{SettingsStore, StoredSettings};
+    use super::{CURRENT_SETTINGS_VERSION, SettingsStore, StoredSettings};
 
-    #[test]
-    fn persists_settings_without_resetting_defaults() {
+    fn temporary_settings_path(test_name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let suffix = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("test clock should be after Unix epoch")
             .as_nanos();
-        let directory = std::env::temp_dir().join(format!("aizu-desktop-store-{suffix}"));
+        let directory =
+            std::env::temp_dir().join(format!("aizu-desktop-store-{test_name}-{suffix}"));
         let path = directory.join("settings.json");
+        fs::create_dir_all(&directory).expect("temporary settings directory");
+        (directory, path)
+    }
+
+    #[test]
+    fn persists_settings_without_resetting_defaults() {
+        let (directory, path) = temporary_settings_path("persist");
         let store = SettingsStore::new(path);
         let mut expected = StoredSettings {
             onboarding_complete: true,
@@ -157,6 +210,131 @@ mod tests {
 
         assert!(actual.onboarding_complete);
         assert!(actual.preferences.launch_at_login);
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn versions_pre_versioned_settings_without_overriding_agent_details_opt_out() {
+        let (directory, path) = temporary_settings_path("migrate-agent-details");
+        // Full shape written by the pre-versioned v0.1.0-dev.1 settings model.
+        fs::write(
+            &path,
+            serde_json::json!({
+                "onboardingComplete": true,
+                "paused": false,
+                "preferences": {
+                    "language": "system",
+                    "textSize": "standard",
+                    "completionEnabled": true,
+                    "questionEnabled": true,
+                    "agentDetailsEnabled": false,
+                    "soundEnabled": true,
+                    "notificationDelivery": "aizuBanner",
+                    "notificationSound": "default",
+                    "privacyMode": "generic",
+                    "launchAtLogin": false,
+                    "quietHours": {
+                        "enabled": false,
+                        "start": "22:00",
+                        "end": "07:00",
+                        "questionsBypass": false
+                    }
+                },
+                "remoteSources": [],
+                "codexHookTrustConfirmed": false
+            })
+            .to_string(),
+        )
+        .expect("write old settings fixture");
+
+        let store = SettingsStore::new(path.clone());
+        let migrated = store.load().expect("old settings migrate");
+        assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
+        assert!(!migrated.preferences.agent_details_enabled);
+
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read migrated settings"))
+                .expect("valid persisted JSON");
+        assert_eq!(
+            persisted
+                .get("settingsVersion")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(CURRENT_SETTINGS_VERSION))
+        );
+        assert_eq!(
+            persisted
+                .pointer("/preferences/agentDetailsEnabled")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn pre_versioned_missing_agent_details_uses_the_new_true_default() {
+        let (directory, path) = temporary_settings_path("default-agent-details");
+        let fixture = serde_json::json!({
+            "onboardingComplete": true,
+            "paused": false,
+            "preferences": {
+                "language": "system",
+                "textSize": "standard",
+                "completionEnabled": true,
+                "questionEnabled": true,
+                "soundEnabled": true,
+                "notificationDelivery": "aizuBanner",
+                "notificationSound": "default",
+                "privacyMode": "generic",
+                "launchAtLogin": false,
+                "quietHours": {
+                    "enabled": false,
+                    "start": "22:00",
+                    "end": "07:00",
+                    "questionsBypass": false
+                }
+            },
+            "remoteSources": [],
+            "codexHookTrustConfirmed": false
+        });
+        fs::write(&path, fixture.to_string()).expect("write old settings fixture");
+
+        let store = SettingsStore::new(path);
+        let migrated = store.load().expect("old settings migrate");
+
+        assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
+        assert!(migrated.preferences.agent_details_enabled);
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn preserves_an_explicit_agent_details_opt_out_after_migration() {
+        let (directory, path) = temporary_settings_path("preserve-opt-out");
+        let mut settings = StoredSettings::default();
+        settings.preferences.agent_details_enabled = false;
+        let store = SettingsStore::new(path);
+        store.save(&settings).expect("save versioned opt-out");
+
+        let loaded = store.load().expect("load versioned settings");
+        assert_eq!(loaded.settings_version, CURRENT_SETTINGS_VERSION);
+        assert!(!loaded.preferences.agent_details_enabled);
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn rejects_a_future_settings_version_before_decoding_its_shape() {
+        let (directory, path) = temporary_settings_path("future-version");
+        fs::write(&path, r#"{"settingsVersion":2,"futureShape":true}"#)
+            .expect("write future settings");
+        let store = SettingsStore::new(path);
+
+        let error = store.load().expect_err("future settings must be rejected");
+        assert!(matches!(
+            error,
+            super::StoreError::UnsupportedVersion {
+                found: 2,
+                supported: CURRENT_SETTINGS_VERSION
+            }
+        ));
         fs::remove_dir_all(directory).expect("temporary directory should be removable");
     }
 }

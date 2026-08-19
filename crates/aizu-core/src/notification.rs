@@ -17,7 +17,9 @@ pub struct NotificationPolicy {
     pub paused: bool,
     pub completion_enabled: bool,
     pub question_enabled: bool,
-    /// Shows a bounded agent-provided summary for first-party adapters only.
+    /// Shows a bounded agent-provided message for first-party adapters. Enabled by
+    /// default so notifications carry the agent's message; sensitive tokens inside the
+    /// message are masked rather than hiding the whole message.
     pub agent_details_enabled: bool,
     pub max_completion_age: Duration,
     pub quiet_hours: Option<QuietHours>,
@@ -29,7 +31,7 @@ impl Default for NotificationPolicy {
             paused: false,
             completion_enabled: true,
             question_enabled: true,
-            agent_details_enabled: false,
+            agent_details_enabled: true,
             max_completion_age: Duration::hours(24),
             quiet_hours: None,
         }
@@ -395,6 +397,9 @@ mod tests {
         );
         event.title = "Claude Code task failed".to_owned();
         event.source.agent = "claude-code".to_owned();
+        // No agent message on this event, so the body falls back to the safe location
+        // template even though agent details are enabled by default.
+        event.body = None;
         event.metadata = Some(serde_json::Map::from_iter([(
             "aizu_adapter".to_owned(),
             serde_json::Value::String("claude-code-v1".to_owned()),
@@ -417,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_details_are_opt_in_and_require_a_first_party_adapter() {
+    fn agent_details_show_by_default_and_redact_secrets_for_first_party_adapters() {
         let mut event = event(EventKind::AgentQuestion, None, timestamp(12));
         event.title = "Codex is waiting for permission".to_owned();
         event.source.agent = "codex".to_owned();
@@ -435,41 +440,41 @@ mod tests {
             local_minute: None,
         };
 
-        let NotificationDecision::Notify(hidden) =
+        // Agent details are on by default, so the agent message reaches the notification.
+        let NotificationDecision::Notify(visible) =
             NotificationPolicy::default().decide(&event, "My Mac", context)
         else {
             panic!("expected notification")
         };
-        assert_eq!(hidden.body, "Bash approval is needed in aizu on My Mac");
-
-        let NotificationDecision::Notify(visible) = NotificationPolicy {
-            agent_details_enabled: true,
-            ..NotificationPolicy::default()
-        }
-        .decide(&event, "My Mac", context) else {
-            panic!("expected notification")
-        };
         assert_eq!(visible.body, "Run the release checks?\naizu on My Mac");
 
-        event.title = "Authorization: Bearer attacker-controlled".to_owned();
-        event.body = Some("Read `/Users/alice/.ssh/id_ed25519`?".to_owned());
-        let NotificationDecision::Notify(filtered) = NotificationPolicy {
-            agent_details_enabled: true,
+        // Turning the setting off falls back to the safe generic template.
+        let NotificationDecision::Notify(hidden) = NotificationPolicy {
+            agent_details_enabled: false,
             ..NotificationPolicy::default()
         }
         .decide(&event, "My Mac", context) else {
             panic!("expected notification")
         };
-        assert_eq!(filtered.title, "Codex is waiting for permission");
-        assert_eq!(filtered.body, "Bash approval is needed in aizu on My Mac");
-        assert!(!filtered.body.contains("id_ed25519"));
+        assert_eq!(hidden.body, "Bash approval is needed in aizu on My Mac");
 
+        // A secret inside the message is masked in place, but the message still shows.
+        event.title = "Authorization: Bearer attacker-controlled".to_owned();
+        event.body = Some("Read `/Users/alice/.ssh/id_ed25519`?".to_owned());
+        let NotificationDecision::Notify(redacted) =
+            NotificationPolicy::default().decide(&event, "My Mac", context)
+        else {
+            panic!("expected notification")
+        };
+        assert_eq!(redacted.title, "Codex is waiting for permission");
+        assert_eq!(redacted.body, "Read [path]?\naizu on My Mac");
+        assert!(!redacted.body.contains("id_ed25519"));
+
+        // Untrusted / non-first-party events never expose the raw body.
         event.metadata = None;
-        let NotificationDecision::Notify(untrusted) = NotificationPolicy {
-            agent_details_enabled: true,
-            ..NotificationPolicy::default()
-        }
-        .decide(&event, "My Mac", context) else {
+        let NotificationDecision::Notify(untrusted) =
+            NotificationPolicy::default().decide(&event, "My Mac", context)
+        else {
             panic!("expected notification")
         };
         assert_eq!(untrusted.body, "Agent is waiting for input on My Mac");

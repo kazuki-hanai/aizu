@@ -131,7 +131,7 @@ const defaultPreferences: Preferences = {
   textSize: "standard",
   completionEnabled: true,
   questionEnabled: true,
-  agentDetailsEnabled: false,
+  agentDetailsEnabled: true,
   soundEnabled: true,
   notificationDelivery: "aizuBanner",
   notificationSound: "default",

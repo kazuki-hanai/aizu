@@ -15,10 +15,55 @@ pub trait AgentAdapter {
 pub struct ClaudeCodeAdapter;
 
 const NOTIFICATION_EXCERPT_MAX_CHARS: usize = 240;
-const SENSITIVE_MARKERS: &[&str] = &[
+const MAX_PERCENT_DECODE_ROUNDS: usize = 8;
+const MAX_CLASSIFICATION_BYTES: usize = 4_096;
+/// Placeholder substituted for a redacted credential-like token.
+const REDACTED_PLACEHOLDER: &str = "[redacted]";
+/// Placeholder substituted for a redacted private filesystem path.
+const PATH_PLACEHOLDER: &str = "[path]";
+const PRIVATE_KEY_LABELS: &[&str] = &[
+    "PRIVATE KEY",
+    "RSA PRIVATE KEY",
+    "EC PRIVATE KEY",
+    "DSA PRIVATE KEY",
+    "OPENSSH PRIVATE KEY",
+    "ENCRYPTED PRIVATE KEY",
+    "SECRET KEY",
+    "PGP PRIVATE KEY BLOCK",
+];
+/// Provider-issued credential prefixes. These are matched only at the start of a
+/// token and require a plausible credential length; substring matching would corrupt
+/// normal words such as `risk-based`, `task-specific`, `Asia`, or `Aizawa`.
+const PROVIDER_TOKEN_PREFIXES: &[&str] = &[
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "glpat-",
+    "gldt-",
+    "sk-",
+    "sk-ant-",
+    "sk-proj-",
+    "sk_live_",
+    "rk_live_",
+    "sk_test_",
+    "xoxb-",
+    "xoxp-",
+    "xoxa-",
+    "xoxr-",
+    "xapp-",
+    "ya29.",
+];
+/// Keys whose `key=value` / `key: value` pair carries a secret value. The value
+/// is masked while the key is preserved so the sentence stays readable.
+const SENSITIVE_KEYS: &[&str] = &[
     "password",
     "passwd",
     "secret",
+    "secret_key",
+    "secret-key",
     "api_key",
     "api-key",
     "apikey",
@@ -26,17 +71,19 @@ const SENSITIVE_MARKERS: &[&str] = &[
     "access-token",
     "refresh_token",
     "refresh-token",
-    "authorization:",
-    "bearer ",
-    "private key",
-    "-----begin ",
-    "ghp_",
-    "github_pat_",
-    "sk-ant-",
-    "sk-proj-",
-    "xoxb-",
-    "xoxp-",
-    "akia",
+    "token",
+    "client_secret",
+    "client-secret",
+    "consumer_secret",
+    "consumer-secret",
+    "private_key",
+    "private-key",
+    "secret_access_key",
+    "secret-access-key",
+    "aws_secret_access_key",
+    "aws-secret-access-key",
+    "aws_session_token",
+    "aws-session-token",
 ];
 
 impl AgentAdapter for ClaudeCodeAdapter {
@@ -211,11 +258,15 @@ fn permission_description(
     Ok(tool_name.map(|name| format!("Allow this {name} request?")))
 }
 
-/// Produces the bounded excerpt allowed in agent notifications and activity.
+/// Produces the bounded excerpt shown in agent notifications and activity.
 ///
-/// Values containing credential markers, private absolute paths, or unusable control
-/// characters are rejected rather than partially redacted. Horizontal whitespace is
-/// normalized while line and paragraph breaks are retained for the Aizu banner.
+/// The agent message is preserved so it appears in every notification. Credential
+/// values and private absolute paths are masked in place (`[redacted]` / `[path]`)
+/// rather than causing the whole message to be dropped, so a single sensitive token
+/// no longer silently hides the entire message. Values with unusable, non-whitespace
+/// control characters are rejected because they cannot be rendered safely. Horizontal
+/// whitespace is normalized while line and paragraph breaks are retained for the Aizu
+/// banner.
 #[must_use]
 pub fn safe_agent_excerpt(value: &str) -> Option<String> {
     if value
@@ -226,13 +277,18 @@ pub fn safe_agent_excerpt(value: &str) -> Option<String> {
     }
 
     let normalized = normalize_excerpt(value);
-    if normalized.is_empty() || looks_sensitive(&normalized) {
+    if has_obfuscated_private_key_begin(&normalized) {
+        return Some("[redacted private key]".to_owned());
+    }
+    let normalized = redact_sensitive(&normalized);
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
         return None;
     }
 
     let length = normalized.chars().count();
     if length <= NOTIFICATION_EXCERPT_MAX_CHARS {
-        return Some(normalized);
+        return Some(normalized.to_owned());
     }
 
     let prefix: String = normalized
@@ -257,33 +313,1288 @@ fn normalize_excerpt(value: &str) -> String {
     normalized
 }
 
-fn looks_sensitive(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    if SENSITIVE_MARKERS
-        .iter()
-        .any(|marker| lower.contains(marker))
-    {
-        return true;
+/// Masks credential values and private paths token by token while keeping the rest
+/// of the message intact. Line breaks are preserved so multi-line agent messages
+/// still render in the banner.
+fn redact_sensitive(value: &str) -> String {
+    let mut state = RedactionState::default();
+    let mut redacted = Vec::new();
+    let value = redact_quoted_sensitive_spans(value);
+    for line in value.split('\n') {
+        let uppercase = line.to_ascii_uppercase();
+        if state.block == BlockState::PrivateKey {
+            if private_key_end(&uppercase) {
+                state.block = BlockState::None;
+            }
+            // Keep the original line count without exposing any bytes from the key body.
+            redacted.push(String::new());
+            continue;
+        }
+        // Enter fail-closed mode only for private/secret-key blocks. Public
+        // certificates and ordinary BEGIN/END report markers remain visible.
+        if let Some(begin) = private_key_begin(&uppercase) {
+            let prefix = line.get(..begin).unwrap_or_default();
+            let prefix = redact_line(prefix, &mut state);
+            redacted.push(if prefix.is_empty() {
+                "[redacted private key]".to_owned()
+            } else {
+                format!("{prefix} [redacted private key]")
+            });
+            if !private_key_end(&uppercase) {
+                state.block = BlockState::PrivateKey;
+            }
+            continue;
+        }
+        if state.block == BlockState::PublicCertificate {
+            if uppercase.contains("-----END CERTIFICATE-----") {
+                state.block = BlockState::None;
+                redacted.push(if line.trim() == "-----END CERTIFICATE-----" {
+                    line.to_owned()
+                } else {
+                    redact_line(line, &mut state)
+                });
+            } else if is_certificate_payload(line) && !looks_like_known_credential(line.trim()) {
+                redacted.push(line.to_owned());
+            } else {
+                redacted.push(redact_line(line, &mut state));
+            }
+            continue;
+        }
+        // Private markers take precedence if malformed input places both public and
+        // private BEGIN markers on one line.
+        if uppercase.contains("-----BEGIN CERTIFICATE-----") {
+            let complete = uppercase.contains("-----END CERTIFICATE-----");
+            if !complete {
+                state.block = BlockState::PublicCertificate;
+            }
+            redacted.push(if line.trim() == "-----BEGIN CERTIFICATE-----" {
+                line.to_owned()
+            } else {
+                redact_line(line, &mut state)
+            });
+            continue;
+        }
+        redacted.push(redact_line(line, &mut state));
     }
-
-    value.split_whitespace().any(looks_like_private_path)
+    redacted.join("\n")
 }
 
-fn looks_like_private_path(token: &str) -> bool {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum BlockState {
+    #[default]
+    None,
+    PrivateKey,
+    PublicCertificate,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum SecretState {
+    #[default]
+    None,
+    AwaitDelimiter,
+    AwaitAssignmentDelimiter,
+    AwaitValue,
+    AwaitAssignmentValue,
+    AwaitExplicitValue,
+    RedactLineTail,
+}
+
+#[derive(Default)]
+struct RedactionState {
+    block: BlockState,
+    secret: SecretState,
+    explicit_fillers: u8,
+    value_fillers: u8,
+}
+
+const MAX_VALUE_FILLERS: u8 = 2;
+
+fn private_key_begin(uppercase: &str) -> Option<usize> {
+    pem_labels(uppercase, "-----BEGIN")
+        .find_map(|(offset, label)| is_private_key_label(label).then_some(offset))
+}
+
+fn private_key_end(uppercase: &str) -> bool {
+    pem_labels(uppercase, "-----END").any(|(_, label)| is_private_key_label(label))
+}
+
+fn pem_labels<'a>(line: &'a str, marker: &'static str) -> impl Iterator<Item = (usize, &'a str)> {
+    line.match_indices(marker).filter_map(move |(offset, _)| {
+        let remainder = line.get(offset + marker.len()..)?.trim_start();
+        let end = remainder.find("-----")?;
+        let label = remainder.get(..end)?.trim();
+        (!label.is_empty()).then_some((offset, label))
+    })
+}
+
+fn is_private_key_label(label: &str) -> bool {
+    PRIVATE_KEY_LABELS.contains(&label)
+}
+
+fn has_obfuscated_private_key_begin(value: &str) -> bool {
+    let uppercase = value.to_ascii_uppercase();
+    if uppercase
+        .lines()
+        .any(|line| private_key_begin(line).is_some())
+    {
+        return false;
+    }
+    let collapsed: String = uppercase
+        .chars()
+        .filter(|character| !character.is_whitespace() && !is_default_ignorable_format(*character))
+        .collect();
+    PRIVATE_KEY_LABELS.iter().any(|label| {
+        let label: String = label
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        collapsed.contains(&format!("-----BEGIN{label}-----"))
+            || collapsed.contains(&format!("-----BEGIN{label}"))
+    })
+}
+
+fn is_default_ignorable_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{00AD}'
+    )
+}
+
+fn security_classification_view(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !is_default_ignorable_format(*character))
+        .collect()
+}
+
+fn is_certificate_payload(line: &str) -> bool {
+    let line = line.trim();
+    line.len() >= 20
+        && line.len().is_multiple_of(4)
+        && line
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+}
+
+fn redact_quoted_sensitive_spans(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut output = String::with_capacity(line.len());
+    let mut copied_until = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let quote = bytes[index];
+        if !matches!(quote, b'"' | b'\'' | b'`') || byte_is_escaped(bytes, index) {
+            index += 1;
+            continue;
+        }
+        let mut end = index + 1;
+        while end < bytes.len() && (bytes[end] != quote || byte_is_escaped(bytes, end)) {
+            end += 1;
+        }
+        let closed = end < bytes.len();
+        let content = line.get(index + 1..end).unwrap_or_default();
+        let placeholder = if looks_like_private_path(content) {
+            Some(PATH_PLACEHOLDER)
+        } else if quoted_value_has_sensitive_key(line.get(..index).unwrap_or_default()) {
+            Some(REDACTED_PLACEHOLDER)
+        } else {
+            None
+        };
+        if let Some(placeholder) = placeholder {
+            output.push_str(line.get(copied_until..index).unwrap_or_default());
+            output.push_str(placeholder);
+            copied_until = end + usize::from(closed);
+        }
+        if !closed {
+            break;
+        }
+        index = end + 1;
+    }
+    output.push_str(line.get(copied_until..).unwrap_or_default());
+    output
+}
+
+fn byte_is_escaped(bytes: &[u8], index: usize) -> bool {
+    let mut backslashes = 0;
+    let mut cursor = index;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        backslashes += 1;
+        cursor -= 1;
+    }
+    backslashes % 2 == 1
+}
+
+fn quoted_value_has_sensitive_key(prefix: &str) -> bool {
+    let prefix = prefix.trim_end();
+    let separator_start = prefix.trim_end_matches([':', '=']).trim_end();
+    if separator_start.len() != prefix.len() {
+        let key = if let Some(quote) = separator_start
+            .as_bytes()
+            .last()
+            .copied()
+            .filter(|quote| matches!(quote, b'"' | b'\'' | b'`'))
+        {
+            separator_start
+                .get(..separator_start.len().saturating_sub(1))
+                .and_then(|value| {
+                    value
+                        .rfind(char::from(quote))
+                        .map(|start| &value[start + 1..])
+                })
+                .unwrap_or_default()
+        } else {
+            separator_start
+                .rsplit(|character: char| {
+                    character.is_whitespace() || matches!(character, '{' | ',')
+                })
+                .next()
+                .unwrap_or_default()
+        };
+        if is_sensitive_assignment_key(key) || key.eq_ignore_ascii_case("authorization") {
+            return true;
+        }
+    }
+
+    let mut reversed = separator_start.split_whitespace().rev();
+    let mut fillers = 0;
+    let first_label = loop {
+        let Some(token) = reversed.next() else {
+            return false;
+        };
+        if is_value_filler(token) {
+            fillers += 1;
+            if fillers > usize::from(MAX_VALUE_FILLERS) {
+                return true;
+            }
+        } else {
+            break token;
+        }
+    };
+    let mut tokens = vec![first_label];
+    tokens.extend(reversed.take(MAX_SENSITIVE_LABEL_TOKENS.saturating_sub(1)));
+    tokens.reverse();
+    sensitive_label_suffix(&tokens)
+}
+
+fn contextual_fillers_exceeded(tokens: &[&str], candidate_index: usize, fillers: usize) -> bool {
+    fillers == usize::from(MAX_VALUE_FILLERS)
+        && tokens
+            .get(candidate_index)
+            .is_some_and(|token| is_value_filler(token))
+        && tokens.get(candidate_index + 1).is_some()
+}
+
+fn contextual_redacted_prefix(
+    tokens: &[&str],
+    index: usize,
+    candidate_index: usize,
+) -> Vec<String> {
+    let mut masked = tokens[index..candidate_index]
+        .iter()
+        .map(|token| (*token).to_owned())
+        .collect::<Vec<_>>();
+    masked.push(REDACTED_PLACEHOLDER.to_owned());
+    masked
+}
+
+fn redact_contextual_candidate(
+    tokens: &[&str],
+    index: usize,
+    candidate_index: usize,
+) -> Vec<String> {
+    let candidate = tokens[candidate_index];
+    let mut masked = tokens[index..candidate_index]
+        .iter()
+        .map(|token| (*token).to_owned())
+        .collect::<Vec<_>>();
+    if candidate.contains(REDACTED_PLACEHOLDER) {
+        masked.push(candidate.to_owned());
+    } else {
+        masked.push(REDACTED_PLACEHOLDER.to_owned());
+    }
+    masked
+}
+
+const MAX_SENSITIVE_LABEL_TOKENS: usize = 4;
+
+fn sensitive_label_suffix(tokens: &[&str]) -> bool {
+    (1..=tokens.len().min(MAX_SENSITIVE_LABEL_TOKENS))
+        .any(|length| sensitive_label(&tokens[tokens.len() - length..]))
+}
+
+fn sensitive_label(tokens: &[&str]) -> bool {
+    let normalized = tokens
+        .iter()
+        .map(|token| {
+            security_classification_view(token)
+                .trim_matches(|character: char| {
+                    !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+                })
+                .to_ascii_lowercase()
+        })
+        .collect::<Vec<_>>();
+    if normalized.iter().any(String::is_empty) {
+        return false;
+    }
+    is_sensitive_assignment_key(&normalized.join("_"))
+}
+
+fn path_sentence_suffix(token: &str) -> &str {
+    let trimmed = token.trim_end_matches([',', ';', ')', ']', '}', '>']);
+    token.get(trimmed.len()..).unwrap_or_default()
+}
+
+fn consume_path_continuation(tokens: &[&str], index: usize) -> (usize, String, bool) {
+    let mut cursor = index + 1;
+    let mut previous = tokens[index];
+    let mut suffix = path_sentence_suffix(previous).to_owned();
+    let mut consumed_continuation = false;
+    while let Some(next) = tokens.get(cursor) {
+        let next_suffix = path_sentence_suffix(next);
+        if !previous.ends_with('\\') && !next.contains(['/', '\\']) && next_suffix.is_empty() {
+            break;
+        }
+        consumed_continuation = true;
+        next_suffix.clone_into(&mut suffix);
+        previous = next;
+        cursor += 1;
+        if !suffix.is_empty() {
+            break;
+        }
+    }
+    let path_core = previous.trim_end_matches([',', ';', ')', ']', '}', '>']);
+    let final_component_has_extension = path_core
+        .rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|component| component.contains('.'));
+    let redact_line_tail = cursor < tokens.len()
+        && suffix.is_empty()
+        && !consumed_continuation
+        && !final_component_has_extension;
+    (cursor, suffix, redact_line_tail)
+}
+
+fn redact_line(line: &str, state: &mut RedactionState) -> String {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+    while index < tokens.len() {
+        if state.secret == SecretState::RedactLineTail {
+            index += 1;
+            continue;
+        }
+        let token = tokens[index];
+        let lower = token.to_ascii_lowercase();
+
+        let has_following_token = tokens.get(index + 1).is_some();
+        if let Some(masked) = redact_expected_explicit_value(token, state, has_following_token) {
+            out.push(masked);
+            index += 1;
+            continue;
+        }
+        if let Some(masked) = redact_direct_token(token, state, has_following_token) {
+            out.push(masked);
+            index += 1;
+            continue;
+        }
+        // Authorization with whitespace around the delimiter, e.g.
+        // `Authorization : Bearer value` or `Authorization =Bearer value`.
+        if lower == "authorization"
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| split_leading_separator(next).is_some())
+        {
+            out.push(token.to_owned());
+            state.secret = SecretState::AwaitValue;
+            state.value_fillers = 0;
+            index += 1;
+            continue;
+        }
+
+        if looks_like_non_file_uri(token) {
+            out.push(token.to_owned());
+            index += 1;
+            continue;
+        }
+        if looks_like_private_path(token) {
+            let (next_index, suffix, redact_line_tail) = consume_path_continuation(&tokens, index);
+            out.push(format!("{PATH_PLACEHOLDER}{suffix}"));
+            if redact_line_tail {
+                state.secret = SecretState::RedactLineTail;
+            }
+            index = next_index;
+            continue;
+        }
+        if looks_like_credential_value(token) {
+            out.push(REDACTED_PLACEHOLDER.to_owned());
+            index += 1;
+            continue;
+        }
+
+        // Handle whitespace-separated assignments such as
+        // `AWS_SECRET_ACCESS_KEY = value` without treating normal prose that happens
+        // to contain the word "password" as an assignment.
+        if is_sensitive_assignment_key(token)
+            && tokens
+                .get(index + 1)
+                .is_some_and(|separator| split_leading_separator(separator).is_some())
+        {
+            out.push(token.to_owned());
+            state.secret = SecretState::AwaitAssignmentValue;
+            index += 1;
+            continue;
+        }
+
+        if let Some((masked, next_index)) = redact_contextual_phrase(&tokens, index) {
+            out.extend(masked);
+            index = next_index;
+            continue;
+        }
+
+        // Keep the key/header visible and carry only the delimiter expectation across
+        // a line boundary. If the next line is ordinary prose rather than `:`/`=`,
+        // the pending state is cancelled without redacting it.
+        if index + 1 == tokens.len()
+            && (is_sensitive_assignment_key(token) || lower == "authorization")
+        {
+            out.push(token.to_owned());
+            state.secret = if lower == "authorization" {
+                SecretState::AwaitDelimiter
+            } else {
+                SecretState::AwaitAssignmentDelimiter
+            };
+            index += 1;
+            continue;
+        }
+
+        out.push(token.to_owned());
+        index += 1;
+    }
+    if state.secret == SecretState::RedactLineTail {
+        state.secret = SecretState::None;
+    }
+    out.join(" ")
+}
+
+enum ExplicitContextAction {
+    AwaitValue(String),
+    Inline(String),
+}
+
+fn redact_explicit_context(token: &str) -> Option<ExplicitContextAction> {
+    if let Some(position) = token.find([':', '=']) {
+        let label = token.get(..position)?;
+        if !is_explicit_context_label(label) {
+            return None;
+        }
+        let separator_length = token
+            .get(position..)?
+            .bytes()
+            .take_while(|byte| matches!(byte, b':' | b'='))
+            .count();
+        let separators = token.get(position..position + separator_length)?;
+        let value = token.get(position + separator_length..)?;
+        return Some(if value.is_empty() {
+            ExplicitContextAction::AwaitValue(token.to_owned())
+        } else {
+            ExplicitContextAction::Inline(format!("{label}{separators}{REDACTED_PLACEHOLDER}"))
+        });
+    }
+    is_explicit_context_label(token).then(|| ExplicitContextAction::AwaitValue(token.to_owned()))
+}
+
+fn is_explicit_context_label(value: &str) -> bool {
+    let value = security_classification_view(value);
+    let value = value.trim_matches(|character: char| !character.is_ascii_alphanumeric());
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "bearer" | "basic" | "token" | "blob" | "base64" | "encoded"
+    )
+}
+
+fn is_value_filler(token: &str) -> bool {
+    matches!(
+        security_token_core(token).to_ascii_lowercase().as_str(),
+        "value" | "is" | "was" | "equals"
+    )
+}
+
+fn redact_expected_explicit_value(
+    token: &str,
+    state: &mut RedactionState,
+    has_following_token: bool,
+) -> Option<String> {
+    if state.secret != SecretState::AwaitExplicitValue {
+        return None;
+    }
+    let separator_length = token
+        .bytes()
+        .take_while(|byte| matches!(byte, b':' | b'='))
+        .count();
+    if separator_length > 0 {
+        if separator_length == token.len() {
+            return Some(token.to_owned());
+        }
+        state.secret = SecretState::None;
+        state.explicit_fillers = 0;
+        let separators = token.get(..separator_length).unwrap_or_default();
+        return Some(format!("{separators}{REDACTED_PLACEHOLDER}"));
+    }
+    if token.chars().all(|character| !character.is_alphanumeric()) {
+        return Some(token.to_owned());
+    }
+    if has_following_token && is_value_filler(token) {
+        if state.explicit_fillers < MAX_VALUE_FILLERS {
+            state.explicit_fillers += 1;
+            return Some(token.to_owned());
+        }
+        state.secret = SecretState::RedactLineTail;
+        state.explicit_fillers = 0;
+        return Some(REDACTED_PLACEHOLDER.to_owned());
+    }
+    state.secret = SecretState::None;
+    state.explicit_fillers = 0;
+    Some(REDACTED_PLACEHOLDER.to_owned())
+}
+
+fn redact_direct_token(
+    token: &str,
+    state: &mut RedactionState,
+    has_following_token: bool,
+) -> Option<String> {
+    let canonical = security_classification_view(token);
+    if canonical != token
+        && let Some(masked) = redact_direct_token(&canonical, state, has_following_token)
+    {
+        return Some(masked);
+    }
+    if let Some(masked) = redact_expected_delimiter(token, state, has_following_token)
+        .or_else(|| redact_expected_secret(token, state, has_following_token))
+    {
+        return Some(masked);
+    }
+    if let Some(redaction) = redact_key_value(token) {
+        return Some(match redaction {
+            KeyValueRedaction::Inline {
+                masked,
+                redact_line_tail,
+            } => {
+                if redact_line_tail {
+                    state.secret = SecretState::RedactLineTail;
+                }
+                masked
+            }
+            KeyValueRedaction::NeedsValue(label) => {
+                state.secret = SecretState::AwaitAssignmentValue;
+                label
+            }
+            KeyValueRedaction::ExplicitScheme(label) => {
+                state.secret = SecretState::AwaitValue;
+                state.value_fillers = 0;
+                label
+            }
+        });
+    }
+    if let Some(action) = redact_explicit_context(token) {
+        return Some(match action {
+            ExplicitContextAction::AwaitValue(label) => {
+                state.secret = SecretState::AwaitExplicitValue;
+                state.explicit_fillers = 0;
+                label
+            }
+            ExplicitContextAction::Inline(masked) => masked,
+        });
+    }
+    if let Some(redaction) = redact_authorization_header(token) {
+        state.secret = if redaction.needs_value {
+            SecretState::AwaitValue
+        } else {
+            SecretState::None
+        };
+        state.value_fillers = 0;
+        return Some(redaction.label);
+    }
+    if let Some(masked) = redact_file_url(token).or_else(|| redact_encoded_private_path(token)) {
+        return Some(masked);
+    }
+    redact_url_userinfo(token).or_else(|| redact_uri_secrets(token))
+}
+
+fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String>, usize)> {
+    // Non-explicit human-readable text may say `Secret value <value>` rather than
+    // using key/value punctuation. Explicit contexts are handled by one dedicated
+    // state machine before this fallback.
+    let label_length = (1..=MAX_SENSITIVE_LABEL_TOKENS.min(tokens.len().saturating_sub(index)))
+        .rev()
+        .find(|length| sensitive_label(&tokens[index..index + length]))?;
+    let mut candidate_index = index + label_length;
+    let mut fillers = 0;
+    while tokens
+        .get(candidate_index)
+        .is_some_and(|token| is_value_filler(token))
+        && fillers < usize::from(MAX_VALUE_FILLERS)
+        && tokens.get(candidate_index + 1).is_some()
+    {
+        candidate_index += 1;
+        fillers += 1;
+    }
+    if contextual_fillers_exceeded(tokens, candidate_index, fillers) {
+        return Some((
+            contextual_redacted_prefix(tokens, index, candidate_index),
+            tokens.len(),
+        ));
+    }
+    let candidate = tokens.get(candidate_index)?;
+    if label_length == 1
+        && fillers == 0
+        && !contextual_value_should_redact(tokens[index], candidate, &tokens[candidate_index + 1..])
+    {
+        return None;
+    }
+    let masked = redact_contextual_candidate(tokens, index, candidate_index);
+    Some((masked, candidate_index + 1))
+}
+
+fn contextual_value_should_redact(key: &str, candidate: &str, _following_tokens: &[&str]) -> bool {
+    let key = key
+        .to_ascii_lowercase()
+        .trim_matches(|character: char| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        })
+        .to_owned();
+    if matches!(
+        key.as_str(),
+        "token" | "blob" | "base64" | "encoded" | "bearer" | "basic"
+    ) {
+        !trimmed_token(candidate).is_empty()
+    } else {
+        looks_like_secret_candidate(candidate)
+    }
+}
+
+fn redact_expected_delimiter(
+    token: &str,
+    state: &mut RedactionState,
+    has_following_token: bool,
+) -> Option<String> {
+    if !matches!(
+        state.secret,
+        SecretState::AwaitDelimiter | SecretState::AwaitAssignmentDelimiter
+    ) {
+        return None;
+    }
+    let assignment = state.secret == SecretState::AwaitAssignmentDelimiter;
+    let separator_length = leading_separator_length(token);
+    if separator_length == 0 {
+        state.secret = SecretState::None;
+        return None;
+    }
+    state.secret = if assignment {
+        SecretState::AwaitAssignmentValue
+    } else {
+        SecretState::AwaitValue
+    };
+    if !assignment {
+        state.value_fillers = 0;
+    }
+    redact_expected_secret(token, state, has_following_token)
+}
+
+fn redact_expected_secret(
+    token: &str,
+    state: &mut RedactionState,
+    has_following_token: bool,
+) -> Option<String> {
+    if !matches!(
+        state.secret,
+        SecretState::AwaitValue | SecretState::AwaitAssignmentValue
+    ) {
+        return None;
+    }
+    let assignment = state.secret == SecretState::AwaitAssignmentValue;
+    let lower = token.to_ascii_lowercase();
+    if matches!(lower.as_str(), "=" | ":") {
+        return Some(token.to_owned());
+    }
+    if matches!(lower.as_str(), "bearer" | "basic" | "token") {
+        if assignment {
+            state.secret = SecretState::AwaitValue;
+            state.value_fillers = 0;
+        }
+        return Some(token.to_owned());
+    }
+    if !assignment && has_following_token && is_value_filler(token) {
+        if state.value_fillers < MAX_VALUE_FILLERS {
+            state.value_fillers += 1;
+            return Some(token.to_owned());
+        }
+        state.secret = SecretState::RedactLineTail;
+        state.value_fillers = 0;
+        return Some(REDACTED_PLACEHOLDER.to_owned());
+    }
+    if token.contains(REDACTED_PLACEHOLDER) {
+        state.secret = SecretState::None;
+        state.value_fillers = 0;
+        return Some(token.to_owned());
+    }
+    let separator_length = leading_separator_length(token);
+    if separator_length > 0 {
+        let separators = token.get(..separator_length).unwrap_or_default();
+        let remainder = token.get(separator_length..).unwrap_or_default();
+        let lower_remainder = remainder.to_ascii_lowercase();
+        if remainder.is_empty() || matches!(lower_remainder.as_str(), "bearer" | "basic" | "token")
+        {
+            return Some(token.to_owned());
+        }
+        state.secret = if assignment && !looks_like_secret_candidate(remainder) {
+            SecretState::RedactLineTail
+        } else {
+            SecretState::None
+        };
+        state.value_fillers = 0;
+        return Some(format!("{separators}{REDACTED_PLACEHOLDER}"));
+    }
+    state.secret = if assignment && !looks_like_secret_candidate(token) {
+        SecretState::RedactLineTail
+    } else {
+        SecretState::None
+    };
+    state.value_fillers = 0;
+    Some(REDACTED_PLACEHOLDER.to_owned())
+}
+
+/// Masks the value half of a `key=value` or `key: value` token when the key names a
+/// known secret, keeping the key so the sentence remains readable.
+fn redact_key_value(token: &str) -> Option<KeyValueRedaction> {
+    let assignment_prefix = token
+        .find(['=', ':'])
+        .and_then(|position| token.get(..position))
+        .unwrap_or_default();
+    if !is_sensitive_assignment_key(assignment_prefix) && looks_like_non_file_uri(token) {
+        return None;
+    }
+    for separator in ['=', ':'] {
+        if let Some(position) = token.find(separator) {
+            let key = token.get(..position)?;
+            let separator_length = leading_separator_length(token.get(position..)?);
+            let separators = token.get(position..position + separator_length)?;
+            let value = token.get(position + separator_length..)?;
+            if is_sensitive_assignment_key(key) {
+                return Some(if value.is_empty() {
+                    KeyValueRedaction::NeedsValue(token.to_owned())
+                } else if is_explicit_context_label(key)
+                    && matches!(
+                        security_token_core(value).to_ascii_lowercase().as_str(),
+                        "bearer" | "basic" | "token"
+                    )
+                {
+                    KeyValueRedaction::ExplicitScheme(token.to_owned())
+                } else {
+                    KeyValueRedaction::Inline {
+                        masked: format!("{key}{separators}{REDACTED_PLACEHOLDER}"),
+                        redact_line_tail: !is_explicit_context_label(key)
+                            && !value.contains(REDACTED_PLACEHOLDER)
+                            && !looks_like_secret_candidate(value),
+                    }
+                });
+            }
+        }
+    }
+    None
+}
+
+enum KeyValueRedaction {
+    Inline {
+        masked: String,
+        redact_line_tail: bool,
+    },
+    NeedsValue(String),
+    ExplicitScheme(String),
+}
+
+struct AuthorizationRedaction {
+    label: String,
+    needs_value: bool,
+}
+
+fn redact_authorization_header(token: &str) -> Option<AuthorizationRedaction> {
+    let lower = token.to_ascii_lowercase();
+    let (position, separator) = lower
+        .find(':')
+        .map(|position| (position, ':'))
+        .or_else(|| lower.find('=').map(|position| (position, '=')))?;
+    if lower.get(..position)? != "authorization" {
+        return None;
+    }
+
+    let remainder = token.get(position + separator.len_utf8()..)?;
+    if remainder.is_empty() {
+        return Some(AuthorizationRedaction {
+            label: token.to_owned(),
+            needs_value: true,
+        });
+    }
+    let lower_remainder = remainder.to_ascii_lowercase();
+    for scheme in ["bearer", "basic", "token"] {
+        if lower_remainder == scheme {
+            return Some(AuthorizationRedaction {
+                label: token.to_owned(),
+                needs_value: true,
+            });
+        }
+        if lower_remainder.starts_with(scheme)
+            && lower_remainder
+                .get(scheme.len()..)
+                .is_some_and(|value| !value.is_empty())
+        {
+            let prefix = token.get(..position + 1 + scheme.len())?;
+            return Some(AuthorizationRedaction {
+                label: format!("{prefix}{REDACTED_PLACEHOLDER}"),
+                needs_value: false,
+            });
+        }
+    }
+    Some(AuthorizationRedaction {
+        label: format!(
+            "{}{separator}{REDACTED_PLACEHOLDER}",
+            token.get(..position)?
+        ),
+        needs_value: false,
+    })
+}
+
+fn is_sensitive_key(value: &str) -> bool {
+    let normalized = security_classification_view(value)
+        .to_ascii_lowercase()
+        .trim_matches(|character: char| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        })
+        .to_owned();
+    SENSITIVE_KEYS.contains(&normalized.as_str())
+}
+
+fn is_sensitive_assignment_key(value: &str) -> bool {
+    value
+        .split(['.', '[', ']'])
+        .filter(|segment| !segment.is_empty())
+        .any(is_sensitive_key)
+}
+
+fn split_leading_separator(token: &str) -> Option<(char, &str)> {
+    let separator = token
+        .chars()
+        .next()
+        .filter(|value| matches!(value, ':' | '='))?;
+    Some((separator, token.get(separator.len_utf8()..)?))
+}
+
+fn leading_separator_length(token: &str) -> usize {
+    token
+        .bytes()
+        .take_while(|byte| matches!(byte, b':' | b'='))
+        .count()
+}
+
+fn redact_file_url(token: &str) -> Option<String> {
+    let lower = token.to_ascii_lowercase();
+    let file = lower.find("file:")?;
+    if file > 0
+        && !matches!(
+            token.as_bytes().get(file.wrapping_sub(1)),
+            Some(b'=' | b':' | b'"' | b'\'' | b'`' | b'(' | b'[' | b'{')
+        )
+    {
+        return None;
+    }
+    let path_start = file + 5;
+    let path = token.get(path_start..)?;
+    let Some(classified_path) = bounded_percent_decode(path) else {
+        return Some(format!(
+            "{}{PATH_PLACEHOLDER}",
+            token.get(..path_start).unwrap_or("file:")
+        ));
+    };
+    let classified_path = classified_path.to_ascii_lowercase();
+    let absolute = path.starts_with(['/', '\\'])
+        || classified_path.starts_with("%2f")
+        || classified_path.starts_with("%5c")
+        || classified_path.starts_with(['/', '\\'])
+        || (path.as_bytes().get(1) == Some(&b':')
+            && matches!(path.as_bytes().get(2), Some(b'\\' | b'/')));
+    absolute.then(|| {
+        format!(
+            "{}{PATH_PLACEHOLDER}",
+            token.get(..path_start).unwrap_or("file:")
+        )
+    })
+}
+
+fn redact_encoded_private_path(token: &str) -> Option<String> {
+    if !token.contains('%') || looks_like_non_file_uri(token) {
+        return None;
+    }
+    let Some(classified) = bounded_percent_decode(token) else {
+        return Some(PATH_PLACEHOLDER.to_owned());
+    };
+    (!looks_like_non_file_uri(&classified) && looks_like_private_path(&classified))
+        .then(|| PATH_PLACEHOLDER.to_owned())
+}
+
+fn redact_url_userinfo(token: &str) -> Option<String> {
+    let authority_start = uri_authority_start(token)?;
+    let remainder = token.get(authority_start..)?;
+    let authority_end = remainder
+        .find(['/', '?', '#'])
+        .map_or(token.len(), |offset| authority_start + offset);
+    let at = token.get(authority_start..authority_end)?.rfind('@')? + authority_start;
+    let userinfo = token.get(authority_start..at)?;
+    (at > authority_start && (userinfo.contains(':') || looks_like_credential_value(userinfo)))
+        .then(|| {
+            format!(
+                "{}{REDACTED_PLACEHOLDER}@{}",
+                token.get(..authority_start).unwrap_or_default(),
+                token.get(at + 1..).unwrap_or_default()
+            )
+        })
+}
+
+fn redact_uri_secrets(token: &str) -> Option<String> {
+    if !looks_like_non_file_uri(token) {
+        return None;
+    }
+    let Some(classified) = bounded_percent_decode(token) else {
+        return Some("[redacted URI]".to_owned());
+    };
+    if redact_url_userinfo(&classified).is_some() {
+        return Some("[redacted URI]".to_owned());
+    }
+    let sensitive_assignment =
+        classified.chars().any(char::is_control) || uri_has_sensitive_assignment(&classified);
+    let private_path = uri_has_private_path(&classified);
+    let credential_component = classified
+        .split(|character: char| {
+            matches!(
+                character,
+                '/' | '?' | '&' | '#' | ',' | ';' | '=' | ':' | '@'
+            )
+        })
+        .any(looks_like_credential_value);
+    (sensitive_assignment || credential_component || private_path)
+        .then(|| "[redacted URI]".to_owned())
+}
+
+fn uri_has_private_path(uri: &str) -> bool {
+    let query_or_fragment = uri
+        .find(['?', '#'])
+        .and_then(|position| uri.get(position + 1..));
+    let data_payload = uri
+        .to_ascii_lowercase()
+        .starts_with("data:")
+        .then(|| uri.split_once(',').map(|(_, payload)| payload))
+        .flatten();
+    [query_or_fragment, data_payload]
+        .into_iter()
+        .flatten()
+        .flat_map(|component| component.split(['&', ';', ',', '#']))
+        .any(looks_like_private_path)
+}
+
+fn uri_has_sensitive_assignment(uri: &str) -> bool {
+    uri.split(['?', '&', '#', ',', ';']).any(|component| {
+        let fields: Vec<&str> = component.split(['=', ':']).collect();
+        fields.iter().enumerate().any(|(index, field)| {
+            let Some(key) = sensitive_key_path_segment(field) else {
+                return false;
+            };
+            let value = fields[index + 1..]
+                .iter()
+                .copied()
+                .find(|value| !value.is_empty());
+            let Some(value) = value else {
+                return true;
+            };
+            key != "token"
+                || looks_like_credential_value(value)
+                || looks_like_token_value(value)
+                || looks_like_secret_candidate(value)
+        })
+    })
+}
+
+fn sensitive_key_path_segment(field: &str) -> Option<String> {
+    field
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .split(['[', ']', '.'])
+        .filter(|segment| !segment.is_empty())
+        .find(|segment| is_sensitive_key(segment) || segment.eq_ignore_ascii_case("authorization"))
+        .map(str::to_ascii_lowercase)
+}
+
+fn bounded_percent_decode(value: &str) -> Option<String> {
+    if value.len() > MAX_CLASSIFICATION_BYTES {
+        return None;
+    }
+    let mut current = value.as_bytes().to_vec();
+    for _ in 0..MAX_PERCENT_DECODE_ROUNDS {
+        let mut decoded = Vec::with_capacity(current.len());
+        let mut index = 0;
+        let mut changed = false;
+        while index < current.len() {
+            if current[index] == b'%' {
+                let (Some(high), Some(low)) = (
+                    current.get(index + 1).and_then(|byte| hex_value(*byte)),
+                    current.get(index + 2).and_then(|byte| hex_value(*byte)),
+                ) else {
+                    return None;
+                };
+                decoded.push((high << 4) | low);
+                index += 3;
+                changed = true;
+            } else {
+                decoded.push(current[index]);
+                index += 1;
+            }
+        }
+        current = decoded;
+        if !changed {
+            return String::from_utf8(current).ok();
+        }
+    }
+    let decoded = String::from_utf8(current).ok()?;
+    (!contains_percent_encoding(&decoded)).then_some(decoded)
+}
+
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn contains_percent_encoding(value: &str) -> bool {
+    value.as_bytes().windows(3).any(|window| {
+        window[0] == b'%' && hex_value(window[1]).is_some() && hex_value(window[2]).is_some()
+    })
+}
+
+fn uri_authority_start(token: &str) -> Option<usize> {
+    if let Some(scheme) = token.find("://") {
+        return Some(scheme + 3);
+    }
+    if let Some(relative) = token.find("//")
+        && (relative == 0
+            || matches!(
+                token.as_bytes().get(relative.wrapping_sub(1)),
+                Some(b'=' | b':' | b'"' | b'\'' | b'`' | b'(' | b'[' | b'{')
+            ))
+    {
+        return Some(relative + 2);
+    }
+    let colon = token.find(':')?;
+    let scheme_start = token
+        .get(..colon)?
+        .rfind(['=', '"', '\'', '`', '(', '[', '{'])
+        .map_or(0, |position| position + 1);
+    let scheme = token.get(scheme_start..colon)?;
+    (scheme.len() >= 2
+        && scheme.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphabetic()
+                || (index > 0 && matches!(byte, b'+' | b'-' | b'.' | b'0'..=b'9'))
+        }))
+    .then_some(colon + 1)
+}
+
+fn looks_like_non_file_uri(token: &str) -> bool {
+    let Some(authority_start) = uri_authority_start(token) else {
+        return false;
+    };
+    let prefix = token
+        .get(..authority_start)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !prefix.ends_with("file:")
+        && !prefix.ends_with("file://")
+        && token
+            .get(authority_start..)
+            .is_some_and(|value| !value.is_empty())
+}
+
+fn looks_like_credential_value(token: &str) -> bool {
+    let canonical = security_classification_view(token);
+    let token = security_token_core(&canonical);
+    looks_like_known_credential(token) || looks_like_high_entropy_blob(token)
+}
+
+fn looks_like_known_credential(token: &str) -> bool {
+    looks_like_provider_token(token)
+        || looks_like_aws_access_key(token)
+        || looks_like_google_api_key(token)
+        || looks_like_jwt(token)
+}
+
+fn looks_like_provider_token(token: &str) -> bool {
+    PROVIDER_TOKEN_PREFIXES.iter().any(|prefix| {
+        token.starts_with(prefix)
+            && token.len() >= prefix.len() + 8
+            && token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    })
+}
+
+fn looks_like_aws_access_key(token: &str) -> bool {
+    token.len() == 20
+        && (token.starts_with("AKIA") || token.starts_with("ASIA"))
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
+fn looks_like_google_api_key(token: &str) -> bool {
+    token.starts_with("AIza")
+        && token.len() >= 30
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn looks_like_secret_candidate(token: &str) -> bool {
+    if looks_like_credential_value(token) {
+        return true;
+    }
     let token = token.trim_matches(|character: char| {
         matches!(
             character,
             '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '"' | '\'' | '`'
         )
     });
-    token.starts_with("/Users/")
-        || token.starts_with("/home/")
-        || token.starts_with("/private/")
-        || token.starts_with("/tmp/")
-        || token.starts_with("/var/folders/")
-        || token.starts_with("~/")
-        || (token.as_bytes().get(1) == Some(&b':')
-            && matches!(token.as_bytes().get(2), Some(b'\\' | b'/')))
+    (token.len() >= 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        || (token.len() >= 6
+            && token.bytes().any(|byte| byte.is_ascii_digit())
+            && token.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'_' | b'-' | b'=')
+            }))
+}
+
+fn looks_like_token_value(token: &str) -> bool {
+    let token = trimmed_token(token);
+    if token.len() < 16
+        || !token.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'_' | b'-' | b'=')
+        })
+    {
+        return false;
+    }
+    true
+}
+
+fn trimmed_token(token: &str) -> &str {
+    security_token_core(token)
+}
+
+fn security_token_core(token: &str) -> &str {
+    token.trim_matches(|character: char| {
+        !(character.is_ascii_alphanumeric()
+            || matches!(
+                character,
+                '_' | '-' | '.' | '+' | '/' | '=' | '\\' | ':' | '~'
+            ))
+    })
+}
+
+fn looks_like_jwt(token: &str) -> bool {
+    let segments: Vec<&str> = token.split('.').collect();
+    segments.len() == 3
+        && segments.iter().all(|segment| {
+            segment.len() >= 8
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+}
+
+fn looks_like_high_entropy_blob(token: &str) -> bool {
+    if token.len() < 40 {
+        return false;
+    }
+    if token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        // Long hexadecimal strings are often checksums or commit IDs. They are
+        // redacted only when a preceding secret-key cue marks them as a value.
+        return false;
+    }
+    let mut lower = false;
+    let mut upper = false;
+    let mut digit = false;
+    let mut symbol = false;
+    for byte in token.bytes() {
+        match byte {
+            b'a'..=b'z' => lower = true,
+            b'A'..=b'Z' => upper = true,
+            b'0'..=b'9' => digit = true,
+            b'+' | b'/' | b'_' | b'-' | b'=' => symbol = true,
+            _ => return false,
+        }
+    }
+    [lower, upper, digit, symbol]
+        .into_iter()
+        .filter(|present| *present)
+        .count()
+        >= 3
+}
+
+fn looks_like_private_path(token: &str) -> bool {
+    let token = security_token_core(token);
+    token.starts_with("~/")
+        || contains_unc_path(token)
+        || token.as_bytes().iter().enumerate().any(|(index, byte)| {
+            *byte == b'/'
+                && (index == 0
+                    || matches!(
+                        token.as_bytes()[index - 1],
+                        b'=' | b':' | b'"' | b'\'' | b'`' | b'(' | b'[' | b'{'
+                    ))
+        })
+        || token
+            .as_bytes()
+            .windows(3)
+            .enumerate()
+            .any(|(index, window)| {
+                window[0].is_ascii_alphabetic()
+                    && window[1] == b':'
+                    && matches!(window[2], b'\\' | b'/')
+                    && (index == 0
+                        || matches!(
+                            token.as_bytes()[index - 1],
+                            b'=' | b'"' | b'\'' | b'`' | b'(' | b'[' | b'{'
+                        ))
+            })
+}
+
+fn contains_unc_path(token: &str) -> bool {
+    token.match_indices(r"\\").any(|(offset, _)| {
+        let Some(remainder) = token.get(offset + 2..) else {
+            return false;
+        };
+        if let Some(extended) = remainder.strip_prefix("?\\") {
+            return extended.as_bytes().get(1) == Some(&b':')
+                && matches!(extended.as_bytes().get(2), Some(b'\\' | b'/'));
+        }
+        let mut parts = remainder.split('\\');
+        let server = parts.next().unwrap_or_default();
+        let share = parts.next().unwrap_or_default();
+        !server.is_empty()
+            && !share.is_empty()
+            && server
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            && share
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    })
 }
 
 fn adapter_metadata(
@@ -483,15 +1794,137 @@ mod tests {
     }
 
     #[test]
-    fn excerpts_drop_secrets_paths_and_unusable_controls() {
-        for message in [
-            "Use password=hunter2",
-            "Read /Users/alice/private.txt",
-            "token: Bearer abc123",
-            "bad\0message",
-            "Read `/home/user/private.txt` next",
-            "Open `/Users/alice/private.txt` next",
-            "Inspect `/tmp/aizu-debug.log` next",
+    #[allow(clippy::too_many_lines)]
+    fn excerpts_redact_secrets_and_paths_but_keep_the_message() {
+        // Secrets and private paths are masked in place so the agent message still
+        // reaches the notification instead of vanishing entirely.
+        for (message, expected) in [
+            ("Use password=hunter2", "Use password=[redacted]"),
+            (
+                "password=\"correct horse battery staple\" after deploy",
+                "password=[redacted] after deploy",
+            ),
+            (
+                "password: 'correct horse battery staple'; deploy finished",
+                "password: [redacted]; deploy finished",
+            ),
+            (
+                "password=\"correct horse\nbattery staple\"\nfinished",
+                "password=[redacted]\nfinished",
+            ),
+            (
+                "password=\"correct horse\nbattery staple",
+                "password=[redacted]",
+            ),
+            (
+                "database.password=hunter2 after deploy",
+                "database.password=[redacted] after deploy",
+            ),
+            (
+                "credentials[password]=hunter2 after deploy",
+                "credentials[password]=[redacted] after deploy",
+            ),
+            (
+                "config={\"user\":{\"password\":\"hunter2\"}} after deploy",
+                "config={\"user\":{\"password\":[redacted]}} after deploy",
+            ),
+            (
+                "password=hunter2 deployment finished",
+                "password=[redacted] deployment finished",
+            ),
+            (
+                "The password is \"correct horse battery staple\"; deploy finished",
+                "The password is [redacted]; deploy finished",
+            ),
+            (
+                "Password value `correct horse battery staple`; deploy finished",
+                "Password value [redacted]; deploy finished",
+            ),
+            (
+                "password is letmein after deploy",
+                "password is [redacted] after deploy",
+            ),
+            (
+                "API key: abc123 after deploy",
+                "API key: [redacted] after deploy",
+            ),
+            (
+                "The password is (hunter2) after deploy",
+                "The password is [redacted] after deploy",
+            ),
+            (
+                "API key: [abc123] after deploy",
+                "API key: [redacted] after deploy",
+            ),
+            (
+                "password value is equals hunter2 after deploy",
+                "password value is [redacted]",
+            ),
+            (
+                "API key value is equals abc123 after deploy",
+                "API key value is [redacted]",
+            ),
+            (
+                "Secret key is hunter2 after deploy",
+                "Secret key is [redacted] after deploy",
+            ),
+            (
+                "pass\u{200B}word=hunter2 after deploy",
+                "password=[redacted] after deploy",
+            ),
+            ("password := hunter2", "password := [redacted]"),
+            ("password :: hunter2", "password :: [redacted]"),
+            ("password:: secret", "password:: [redacted]"),
+            ("Authorization := hunter2", "Authorization := [redacted]"),
+            ("Authorization == hunter2", "Authorization == [redacted]"),
+            (
+                "Authorization: Bea\u{200B}rer abc123 after deploy",
+                "Authorization: Bearer [redacted] after deploy",
+            ),
+            ("Read /Users/alice/private.txt", "Read [path]"),
+            (
+                "Open \"/Users/alice/Secret Project/.env\" after deploy",
+                "Open [path] after deploy",
+            ),
+            (
+                r#"Open "C:\Users\Alice\Secret Project\.env" after deploy"#,
+                "Open [path] after deploy",
+            ),
+            (
+                "Open \"/Users/alice/Secret\nProject/.env\" after deploy",
+                "Open [path] after deploy",
+            ),
+            (
+                r"Open /Users/alice/Secret\ Project/.env after deploy",
+                "Open [path] after deploy",
+            ),
+            (
+                "Open /Users/alice/Secret Project; after deploy",
+                "Open [path]; after deploy",
+            ),
+            (
+                "Open /Users/alice/Secret Project after deploy",
+                "Open [path]",
+            ),
+            (
+                "Open `/Users/alice/Secret Project` after deploy",
+                "Open [path] after deploy",
+            ),
+            (
+                "token: Bearer abc123 deployment finished",
+                "token: Bearer [redacted] deployment finished",
+            ),
+            ("Read `/home/user/private.txt` next", "Read [path] next"),
+            ("Open `/Users/alice/private.txt` next", "Open [path] next"),
+            ("Inspect `/tmp/aizu-debug.log` next", "Inspect [path] next"),
+            (
+                "Deploy uses ghp_exampletoken0000000000000000000000",
+                "Deploy uses [redacted]",
+            ),
+            (
+                "Deploy uses ghp_\u{200B}1234567890abcdefghijklmnopqrstuvwxyz after deploy",
+                "Deploy uses [redacted] after deploy",
+            ),
         ] {
             let payload = json!({
                 "hook_event_name": "Stop",
@@ -501,10 +1934,741 @@ mod tests {
                 .parse_hook("Stop", payload.to_string().as_bytes())
                 .expect("valid hook");
             assert_eq!(
-                request[0].body, None,
-                "message should be dropped: {message}"
+                request[0].body.as_deref(),
+                Some(expected),
+                "message should be redacted, not dropped: {message}"
             );
         }
+    }
+
+    #[test]
+    fn excerpts_reject_unusable_control_characters() {
+        // Binary/garbage that cannot be rendered safely is still rejected entirely.
+        let payload = json!({
+            "hook_event_name": "Stop",
+            "last_assistant_message": "bad\u{0000}message"
+        });
+        let request = CodexAdapter
+            .parse_hook("Stop", payload.to_string().as_bytes())
+            .expect("valid hook");
+        assert_eq!(request[0].body, None);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn excerpts_redact_adversarial_credential_formats_without_corrupting_prose() {
+        for (message, expected) in [
+            ("password: hunter2", "password: [redacted]"),
+            (
+                "Authorization:Bearer abc123",
+                "Authorization:Bearer [redacted]",
+            ),
+            (
+                "Authorization:\nBearer\nabc123",
+                "Authorization:\nBearer\n[redacted]",
+            ),
+            (
+                "Authorization : Bearer abc123",
+                "Authorization : Bearer [redacted]",
+            ),
+            (
+                "Authorization = Bearer abc123",
+                "Authorization = Bearer [redacted]",
+            ),
+            ("password\n:hunter2", "password\n:[redacted]"),
+            (
+                "Authorization\n:\nBearer\nhunter2",
+                "Authorization\n:\nBearer\n[redacted]",
+            ),
+            ("Bearer\nhunter2", "Bearer\n[redacted]"),
+            (
+                "Token\naB1cD2eF3gH4iJ5kL6mN7pQ8rS9tU0vW1xY2zA3b",
+                "Token\n[redacted]",
+            ),
+            ("password :hunter2", "password :[redacted]"),
+            ("Bearer hunter2", "Bearer [redacted]"),
+            (
+                "Bearer abcdefghijklmnopqrstuvwxyz123456",
+                "Bearer [redacted]",
+            ),
+            (
+                "Fetch https://alice:hunter2@example.com/resource",
+                "Fetch https://[redacted]@example.com/resource",
+            ),
+            (
+                "See https://example.com/@scope/docs",
+                "See https://example.com/@scope/docs",
+            ),
+            (
+                "Open https://user:pa@ss@host.example/path",
+                "Open https://[redacted]@host.example/path",
+            ),
+            (
+                "Open //user:pass@host.example/path",
+                "Open //[redacted]@host.example/path",
+            ),
+            (
+                "Open https:user:pass@host.example/path",
+                "Open https:[redacted]@host.example/path",
+            ),
+            (
+                "Open https://user%3Ahunter2@host.example/path",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open //user%3Ahunter2@host.example/path",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https:user%3Ahunter2@host.example/path",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://user%253Ahunter2@host.example/path",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open file:///Users/alice/.ssh/id_ed25519",
+                "Open file:[path]",
+            ),
+            (
+                "Open file:README.md for details",
+                "Open file:README.md for details",
+            ),
+            ("Open file:%2Froot%2F.ssh%2Fid_rsa", "Open file:[path]"),
+            (
+                "Open file:%252Froot%252F.ssh%252Fid_rsa",
+                "Open file:[path]",
+            ),
+            (
+                "Open file:%2525252Froot%2525252F.ssh%2525252Fid_rsa",
+                "Open file:[path]",
+            ),
+            (
+                "Open file:%25252525252Froot%25252525252F.ssh%25252525252Fid_rsa",
+                "Open file:[path]",
+            ),
+            ("Open file:%2Groot%2F.ssh%2Fid_rsa", "Open file:[path]"),
+            (r"Open \\server\share\Alice\secret.txt", "Open [path]"),
+            (r"Open \\?\C:\Users\Alice\secret.txt", "Open [path]"),
+            (r"path=\\server\share\Alice\secret.txt", "[path]"),
+            ("Open /root/.ssh/id_rsa", "Open [path]"),
+            ("Open /etc/aizu/private.conf", "Open [path]"),
+            ("Open **/Users/alice/.ssh/id_ed25519**", "Open [path]"),
+            ("Open “/Users/alice/.ssh/id_ed25519”", "Open [path]"),
+            ("path=/etc/aizu/private.conf", "[path]"),
+            (
+                "Open https://example.com/root/docs",
+                "Open https://example.com/root/docs",
+            ),
+            (
+                "Open https://example.com/home/start",
+                "Open https://example.com/home/start",
+            ),
+            (
+                "Open https://host.example/view?path=/Users/alice/.ssh/id_ed25519",
+                "Open [redacted URI]",
+            ),
+            ("Open %2FUsers%2Falice%2F.ssh%2Fid_ed25519", "Open [path]"),
+            (
+                concat!(
+                    "Open https://host.example/callback?token=ghp_",
+                    "1234567890abcdefghijklmnopqrstuvwxyz"
+                ),
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/login?password=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/path#xoxb-1234567890-abcdefgh",
+                "Open [redacted URI]",
+            ),
+            (
+                "url=https://host.example/callback?api_key=sk-1234567890abcdef",
+                "[redacted URI]",
+            ),
+            (
+                "Open data:text/plain,password=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/path?token%3Dghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/path?pass%77ord=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/path?token%253Dghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/path?token%252525253Dghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open data:text/plain,password%3Dhunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/docs?token=estimate",
+                "Open https://host.example/docs?token=estimate",
+            ),
+            (
+                "Open https://host.example/docs?mytoken=estimate",
+                "Open https://host.example/docs?mytoken=estimate",
+            ),
+            (
+                "Open https://host/path?token=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?token%3Dhunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?authorization=Bearer%20hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?foo=password=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?foo=password%3Dhunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?user[password]=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open data:text/plain,foo=password=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?foo=%0Apassword=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password[]=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password%5B%5D=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password[confirmation]=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?user.password=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?user%2Epassword=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password==hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password::hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password[]==hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?foo=password==hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password%3D%3Dhunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password%GGhunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                concat!(
+                    "Open https://host/path?token%ghp_",
+                    "1234567890abcdefghijklmnopqrstuvwxyz"
+                ),
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password%2=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Contact mailto:user@example.com",
+                "Contact mailto:user@example.com",
+            ),
+            (
+                "SSH target ssh:user@example.com",
+                "SSH target ssh:user@example.com",
+            ),
+            (r"Regex \\d+ matches digits", r"Regex \\d+ matches digits"),
+            (
+                r"Windows escape \\n is a newline",
+                r"Windows escape \\n is a newline",
+            ),
+            (
+                "AWS_SECRET_ACCESS_KEY = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                "AWS_SECRET_ACCESS_KEY = [redacted]",
+            ),
+            (
+                "AWS session uses ASIAIOSFODNN7EXAMPLE",
+                "AWS session uses [redacted]",
+            ),
+            (
+                concat!("GitHub OAuth gho_", "1234567890abcdefghijklmnopqrstuvwxyz"),
+                "GitHub OAuth [redacted]",
+            ),
+            (
+                concat!("Wrapped **ghp_", "1234567890abcdefghijklmnopqrstuvwxyz**"),
+                "Wrapped [redacted]",
+            ),
+            (
+                concat!("Wrapped ghp_", "1234567890abcdefghijklmnopqrstuvwxyz!"),
+                "Wrapped [redacted]",
+            ),
+            (
+                "Generated key AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCD",
+                "Generated key [redacted]",
+            ),
+            ("GitLab glpat-1234567890abcdefghijkl", "GitLab [redacted]"),
+            (
+                "Slack app token xapp-1-A1234567890-1234567890-abcdef",
+                "Slack app token [redacted]",
+            ),
+            (
+                concat!("OpenAI sk-", "1234567890abcdefghijklmnopqrstuvwxyz"),
+                "OpenAI [redacted]",
+            ),
+            (
+                "Token aB1cD2eF3gH4iJ5kL6mN7pQ8rS9tU0vW1xY2zA3b",
+                "Token [redacted]",
+            ),
+            (
+                "Secret value 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "Secret value [redacted]",
+            ),
+            (
+                "JWT eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+                "JWT [redacted]",
+            ),
+            (
+                "Blob QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OUFCQ0RFRg==",
+                "Blob [redacted]",
+            ),
+            (
+                "Blob YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==",
+                "Blob [redacted]",
+            ),
+            (
+                "Blob QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==",
+                "Blob [redacted]",
+            ),
+            (
+                "Blob QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+                "Blob [redacted]",
+            ),
+            (
+                "Blob AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCD",
+                "Blob [redacted]",
+            ),
+            (
+                "Base64 QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+                "Base64 [redacted]",
+            ),
+            (
+                "Encoded AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCD",
+                "Encoded [redacted]",
+            ),
+            (
+                "Authorization is required before deployment",
+                "Authorization is required before deployment",
+            ),
+            (
+                "Bearer plants grow well here",
+                "Bearer [redacted] grow well here",
+            ),
+            (
+                "Deploy to Asia after the checks",
+                "Deploy to Asia after the checks",
+            ),
+            ("Use a risk-based rollout", "Use a risk-based rollout"),
+            ("Run task-specific checks", "Run task-specific checks"),
+            ("Use disk-backed storage", "Use disk-backed storage"),
+            ("Ask Aizawa for review", "Ask Aizawa for review"),
+            (
+                "Artifact BuildIDAbC1234567890DefGhIjKlMnOpQrStUvWxYz completed",
+                "Artifact [redacted] completed",
+            ),
+            (
+                "Artifact Build_ID_AbCdEfGhIjKlMnOpQrStUvWxYz123456789 completed",
+                "Artifact [redacted] completed",
+            ),
+            (
+                "Token version2026 identifies the format",
+                "Token [redacted] identifies the format",
+            ),
+            (
+                "Bearer version2026 compatibility is documented",
+                "Bearer [redacted] compatibility is documented",
+            ),
+            (
+                "Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "Bearer [redacted]",
+            ),
+            ("Token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "Token [redacted]"),
+            ("Bearer abcdef", "Bearer [redacted]"),
+            ("Token secret", "Token [redacted]"),
+            ("Base64 QUFB", "Base64 [redacted]"),
+            (
+                "Bearer: secret surrounding message",
+                "Bearer: [redacted] surrounding message",
+            ),
+            (
+                "Basic: secret surrounding message",
+                "Basic: [redacted] surrounding message",
+            ),
+            (
+                "**Bearer** hunter2 surrounding message",
+                "**Bearer** [redacted] surrounding message",
+            ),
+            (
+                "(Bearer) hunter2 surrounding message",
+                "(Bearer) [redacted] surrounding message",
+            ),
+            (
+                "Bearer : , hunter2 surrounding message",
+                "Bearer : , [redacted] surrounding message",
+            ),
+            (
+                "Blob: secret surrounding message",
+                "Blob: [redacted] surrounding message",
+            ),
+            (
+                "Encoded: payload surrounding message",
+                "Encoded: [redacted] surrounding message",
+            ),
+            (
+                "Bearer = secret surrounding message",
+                "Bearer = [redacted] surrounding message",
+            ),
+            (
+                "Bearer\n= secret surrounding message",
+                "Bearer\n= [redacted] surrounding message",
+            ),
+            (
+                "Base64 = QUFB surrounding message",
+                "Base64 = [redacted] surrounding message",
+            ),
+            (
+                "Blob value surrounding message",
+                "Blob value [redacted] message",
+            ),
+            ("Blob value", "Blob [redacted]"),
+            ("Token value", "Token [redacted]"),
+            ("Encoded value", "Encoded [redacted]"),
+            (
+                "Bearer Bearer secret after",
+                "Bearer [redacted] secret after",
+            ),
+            (
+                "Bearer Basic secret after",
+                "Bearer [redacted] secret after",
+            ),
+            ("Bearer := secret after", "Bearer := [redacted] after"),
+            ("Bearer == secret after", "Bearer == [redacted] after"),
+            ("Bearer\n:=\nsecret after", "Bearer\n:=\n[redacted] after"),
+            ("Bearer::secret tail", "Bearer::[redacted] tail"),
+            ("Token:=secret tail", "Token:=[redacted] tail"),
+            ("Base64:::===QUFB tail", "Base64:::===[redacted] tail"),
+            (
+                "Bearer abcdefghijklmnopqrstuvwxyzabcdef",
+                "Bearer [redacted]",
+            ),
+            ("Token abcdefghijklmnopqrstuvwxyzabcdef", "Token [redacted]"),
+            ("Blob abcdefghijklmnopqrstuvwxyzabcdef", "Blob [redacted]"),
+            (
+                "Base64 ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMN",
+                "Base64 [redacted]",
+            ),
+            (
+                "Encoded abcdefghijklmnopqrstuvwxyzabcdef",
+                "Encoded [redacted]",
+            ),
+            (
+                "Bearer internationalization remains supported",
+                "Bearer [redacted] remains supported",
+            ),
+            (
+                "Token version2026identifier remains documented",
+                "Token [redacted] remains documented",
+            ),
+            (
+                "Blob storageidentifier2026 remains documented",
+                "Blob [redacted] remains documented",
+            ),
+            (
+                "Token releasecandidate2026identifier remains documented",
+                "Token [redacted] remains documented",
+            ),
+            (
+                "Bearer releaseabcdefghijklmnopqrstuvwxyz",
+                "Bearer [redacted]",
+            ),
+            ("Token buildabcdefghijklmnopqrstuvwxyz", "Token [redacted]"),
+            (
+                "Base64 versionABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                "Base64 [redacted]",
+            ),
+            (
+                "Encoded abcdefghijklmnop123identifier",
+                "Encoded [redacted]",
+            ),
+            (
+                "Token antidisestablishmentarianism remains a word",
+                "Token [redacted] remains a word",
+            ),
+            (
+                "Blob customerreferenceidentifier remains documented",
+                "Blob [redacted] remains documented",
+            ),
+            (
+                "Bearer correcthorsebatterystaple expires tomorrow",
+                "Bearer [redacted] expires tomorrow",
+            ),
+            (
+                "Token mountainriverfalconsecret is active",
+                "Token [redacted] is active",
+            ),
+            (
+                "Blob summerwinterautumnspring decoded successfully",
+                "Blob [redacted] decoded successfully",
+            ),
+            (
+                "Token releasefoobarbazquxquux2026 is active",
+                "Token [redacted] is active",
+            ),
+            (
+                "Encoded secretabc123identifier was received",
+                "Encoded [redacted] was received",
+            ),
+            (
+                "Bearer correcthorsebatterystaple, expires tomorrow",
+                "Bearer [redacted] expires tomorrow",
+            ),
+            (
+                "Bearer\ncorrecthorsebatterystaple expires tomorrow",
+                "Bearer\n[redacted] expires tomorrow",
+            ),
+            (
+                "Bearer abcdefghijklmnopqrstuvwxyzabcdef expires tomorrow",
+                "Bearer [redacted] expires tomorrow",
+            ),
+            (
+                "Token abcdefghijklmnopqrstuvwxyzabcdef is active",
+                "Token [redacted] is active",
+            ),
+            (
+                "Blob ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMN decoded successfully",
+                "Blob [redacted] decoded successfully",
+            ),
+            (
+                "Base64 ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMN decodes correctly",
+                "Base64 [redacted] decodes correctly",
+            ),
+            (
+                "Encoded abcdefghijklmnopqrstuvwxyzabcdef was received",
+                "Encoded [redacted] was received",
+            ),
+            (
+                "Bearer abcdefghijklmnopqrstuvwxyzabcdef, expires tomorrow",
+                "Bearer [redacted] expires tomorrow",
+            ),
+            (
+                "Bearer\nabcdefghijklmnopqrstuvwxyzabcdef expires tomorrow",
+                "Bearer\n[redacted] expires tomorrow",
+            ),
+            (
+                "Token value abcdefghijklmnopqrstuvwxyzabcdef is active",
+                "Token value [redacted] is active",
+            ),
+            (
+                "Token is abcdefghijklmnopqrstuvwxyzabcdef",
+                "Token is [redacted]",
+            ),
+            (
+                "Token value is abcdefghijklmnopqrstuvwxyzabcdef",
+                "Token value is [redacted]",
+            ),
+            (
+                "Token value equals abcdefghijklmnopqrstuvwxyzabcdef",
+                "Token value equals [redacted]",
+            ),
+            (
+                "Token value is equals abcdefghijklmnopqrstuvwxyzabcdef after deploy",
+                "Token value is [redacted]",
+            ),
+            (
+                "Authorization: Bearer value abcdefghijklmnopqrstuvwxyzabcdef",
+                "Authorization: Bearer value [redacted]",
+            ),
+        ] {
+            assert_eq!(
+                safe_agent_excerpt(message).as_deref(),
+                Some(expected),
+                "unexpected redaction for: {message}"
+            );
+        }
+
+        let oversized_uri = format!(
+            "https://host.example/path?token%3Dghp_1234567890abcdefghijklmnopqrstuvwxyz{}",
+            "x".repeat(MAX_CLASSIFICATION_BYTES)
+        );
+        assert_eq!(
+            safe_agent_excerpt(&oversized_uri).as_deref(),
+            Some("[redacted URI]")
+        );
+
+        let oversized_path = format!(
+            "%2FUsers%2Falice%2FSecret{}",
+            "x".repeat(MAX_CLASSIFICATION_BYTES)
+        );
+        assert_eq!(
+            safe_agent_excerpt(&oversized_path).as_deref(),
+            Some(PATH_PLACEHOLDER)
+        );
+    }
+
+    #[test]
+    fn excerpts_redact_complete_multiline_private_keys() {
+        let message = concat!(
+            "Use this key:\n",
+            "-----BEGIN PRIVATE",
+            " KEY-----\n",
+            "QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OUFCQ0RFRg==\n",
+            "another-key-body-line\n",
+            "-----END PRIVATE KEY-----\n",
+            "for deployment"
+        );
+        let excerpt = safe_agent_excerpt(message).expect("redacted message remains visible");
+        assert!(excerpt.contains("[redacted private key]"));
+        assert!(excerpt.contains("Use this key:"));
+        assert!(excerpt.contains("for deployment"));
+        assert!(!excerpt.contains("QWxhZGR"));
+        assert!(!excerpt.contains("another-key-body-line"));
+        assert!(!excerpt.contains("BEGIN PRIVATE KEY"));
+        assert!(!excerpt.contains("END PRIVATE KEY"));
+
+        let split_marker = concat!(
+            "-----BEGIN PRIVATE\n",
+            "KEY-----\n",
+            "shortSecretBody\n",
+            "-----END PRIVATE KEY-----\n",
+            "safe ending"
+        );
+        let excerpt = safe_agent_excerpt(split_marker).expect("malformed key block is redacted");
+        assert_eq!(excerpt, "[redacted private key]");
+
+        let misleading_end = concat!(
+            "-----BEGIN PRIVATE",
+            " KEY-----\n",
+            "firstSecret\n",
+            "-----END CERTIFICATE-----\n",
+            "secondSecret\n",
+            "-----END PRIVATE KEY-----\n",
+            "safe ending"
+        );
+        let excerpt = safe_agent_excerpt(misleading_end).expect("key block stays fail closed");
+        assert!(excerpt.contains("[redacted private key]"));
+        assert!(excerpt.contains("safe ending"));
+        assert!(!excerpt.contains("firstSecret"));
+        assert!(!excerpt.contains("secondSecret"));
+        assert!(!excerpt.contains("END PRIVATE KEY"));
+
+        for obfuscated in [
+            "-----BEGIN\nPRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+            "-----BE\nGIN PRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+            "-----BEGIN EC\nPRIVATE KEY-----\nsecretBody\n-----END EC PRIVATE KEY-----",
+            "-----BEGIN DSA\nPRIVATE KEY-----\nsecretBody\n-----END DSA PRIVATE KEY-----",
+            "-----BEGIN PGP\nPRIVATE KEY BLOCK-----\nsecretBody\n-----END PGP PRIVATE KEY BLOCK-----",
+            "-----BEGIN PRI\u{200B}VATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+            "-----BEGIN PRI\u{FEFF}VATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+        ] {
+            assert_eq!(
+                safe_agent_excerpt(obfuscated).as_deref(),
+                Some("[redacted private key]")
+            );
+        }
+    }
+
+    #[test]
+    fn excerpts_preserve_non_secret_begin_end_blocks() {
+        for message in [
+            "-----BEGIN REPORT-----\nAll checks passed\n-----END REPORT-----\nDone",
+            "-----BEGIN REPORT----- private results follow\nnormal report body\n-----END REPORT-----",
+            "-----BEGIN CERTIFICATE-----\nYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==\n-----END CERTIFICATE-----",
+        ] {
+            assert_eq!(
+                safe_agent_excerpt(message).as_deref(),
+                Some(message),
+                "non-secret block should remain visible"
+            );
+        }
+
+        assert_eq!(
+            safe_agent_excerpt(
+                "-----BEGIN CERTIFICATE-----\npassword=hunter2\n-----END CERTIFICATE-----"
+            )
+            .as_deref(),
+            Some("-----BEGIN CERTIFICATE-----\npassword=[redacted]\n-----END CERTIFICATE-----")
+        );
+        assert_eq!(
+            safe_agent_excerpt(
+                "-----BEGIN CERTIFICATE----- password=hunter2 -----END CERTIFICATE-----"
+            )
+            .as_deref(),
+            Some("-----BEGIN CERTIFICATE----- password=[redacted] -----END CERTIFICATE-----")
+        );
+        assert_eq!(
+            safe_agent_excerpt(
+                "-----BEGIN CERTIFICATE-----\nAKIAIOSFODNN7EXAMPLE\n-----END CERTIFICATE-----"
+            )
+            .as_deref(),
+            Some("-----BEGIN CERTIFICATE-----\n[redacted]\n-----END CERTIFICATE-----")
+        );
+        let mixed = concat!(
+            "-----BEGIN CERTIFICATE----- -----BEGIN PRIVATE",
+            " KEY-----\nsecretBody\n-----END PRIVATE KEY-----"
+        );
+        let excerpt = safe_agent_excerpt(mixed).expect("private marker wins");
+        assert!(excerpt.contains("[redacted private key]"));
+        assert!(!excerpt.contains("secretBody"));
+
+        let nested = concat!(
+            "-----BEGIN CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE",
+            " KEY-----\n",
+            "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB\n",
+            "-----END PRIVATE KEY-----\n",
+            "-----END CERTIFICATE-----"
+        );
+        let excerpt = safe_agent_excerpt(nested).expect("nested private marker wins");
+        assert!(excerpt.contains("[redacted private key]"));
+        assert!(!excerpt.contains("QUFBQUFB"));
     }
 
     #[test]

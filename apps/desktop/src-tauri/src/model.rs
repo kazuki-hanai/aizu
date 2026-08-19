@@ -212,7 +212,7 @@ pub struct Preferences {
     pub text_size: TextSize,
     pub completion_enabled: bool,
     pub question_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub agent_details_enabled: bool,
     pub sound_enabled: bool,
     #[serde(default)]
@@ -224,6 +224,12 @@ pub struct Preferences {
     pub quiet_hours: QuietHours,
 }
 
+/// Serde default for boolean fields that should be on unless explicitly disabled,
+/// so settings persisted before the field existed still enable it.
+const fn default_true() -> bool {
+    true
+}
+
 impl Default for Preferences {
     fn default() -> Self {
         Self {
@@ -231,7 +237,7 @@ impl Default for Preferences {
             text_size: TextSize::default(),
             completion_enabled: true,
             question_enabled: true,
-            agent_details_enabled: false,
+            agent_details_enabled: true,
             sound_enabled: true,
             notification_delivery: NotificationDelivery::default(),
             notification_sound: NotificationSound::default(),
