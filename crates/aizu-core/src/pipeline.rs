@@ -682,6 +682,36 @@ mod tests {
                 "abcdefghijklmnopqrstuvwxyz",
             ),
             (
+                "Bearer correcthorsebatterystaple expires tomorrow",
+                "Bearer [redacted] expires tomorrow",
+                "correcthorsebatterystaple",
+            ),
+            (
+                "Token mountainriverfalconsecret is active",
+                "Token [redacted] is active",
+                "mountainriverfalconsecret",
+            ),
+            (
+                "Blob summerwinterautumnspring decoded successfully",
+                "Blob [redacted] decoded successfully",
+                "summerwinterautumnspring",
+            ),
+            (
+                "Token releasefoobarbazquxquux2026 is active",
+                "Token [redacted] is active",
+                "releasefoobarbazquxquux2026",
+            ),
+            (
+                "Encoded secretabc123identifier was received",
+                "Encoded [redacted] was received",
+                "secretabc123identifier",
+            ),
+            (
+                "Bearer\ncorrecthorsebatterystaple expires tomorrow",
+                "Bearer\n[redacted] expires tomorrow",
+                "correcthorsebatterystaple",
+            ),
+            (
                 "-----BEGIN PRIVATE\nKEY-----\nshortSecretBody\n-----END PRIVATE KEY-----\nsafe ending",
                 "[redacted private key]",
                 "shortSecretBody",
@@ -907,6 +937,31 @@ mod tests {
             ),
             (
                 "Open https://host/path?foo=%0Apassword=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?password[]=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?password%5B%5D=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?password[confirmation]=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?user.password=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?user%2Epassword=hunter2",
                 "Open [redacted URI]",
                 "hunter2",
             ),

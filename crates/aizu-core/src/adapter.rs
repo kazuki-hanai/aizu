@@ -461,7 +461,7 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         let token = tokens[index];
         let lower = token.to_ascii_lowercase();
 
-        if let Some(masked) = redact_direct_token(token, state, index + 1 < tokens.len()) {
+        if let Some(masked) = redact_direct_token(token, state, &tokens[index + 1..]) {
             out.push(masked);
             index += 1;
             continue;
@@ -549,9 +549,9 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
 fn redact_direct_token(
     token: &str,
     state: &mut RedactionState,
-    has_following_token: bool,
+    following_tokens: &[&str],
 ) -> Option<String> {
-    if let Some(masked) = redact_expected_context(token, state, has_following_token)
+    if let Some(masked) = redact_expected_context(token, state, following_tokens)
         .or_else(|| redact_expected_delimiter(token, state))
         .or_else(|| redact_expected_secret(token, state))
         .or_else(|| redact_file_url(token))
@@ -581,12 +581,12 @@ fn redact_direct_token(
 fn redact_expected_context(
     token: &str,
     state: &mut RedactionState,
-    has_following_token: bool,
+    following_tokens: &[&str],
 ) -> Option<String> {
     match state.secret {
         SecretState::AwaitBearerValue => {
             state.secret = SecretState::None;
-            contextual_value_should_redact("bearer", token, has_following_token)
+            contextual_value_should_redact("bearer", token, following_tokens)
                 .then(|| REDACTED_PLACEHOLDER.to_owned())
         }
         SecretState::AwaitTokenOrDelimiter => {
@@ -595,7 +595,7 @@ fn redact_expected_context(
                 state.secret = SecretState::AwaitValue;
                 return redact_expected_secret(token, state);
             }
-            contextual_value_should_redact("token", token, has_following_token)
+            contextual_value_should_redact("token", token, following_tokens)
                 .then(|| REDACTED_PLACEHOLDER.to_owned())
         }
         _ => None,
@@ -610,7 +610,7 @@ fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String
     // "Bearer plants grow well here".
     if matches!(lower.as_str(), "bearer" | "basic")
         && tokens.get(index + 1).is_some_and(|value| {
-            contextual_value_should_redact(lower.as_str(), value, index + 2 < tokens.len())
+            contextual_value_should_redact(lower.as_str(), value, &tokens[index + 2..])
         })
     {
         return Some((
@@ -629,7 +629,7 @@ fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String
         .is_some_and(|next| matches!(next.to_ascii_lowercase().as_str(), "value" | "is"));
     let candidate_index = index + usize::from(filler) + 1;
     let candidate = tokens.get(candidate_index)?;
-    if !contextual_value_should_redact(token, candidate, candidate_index + 1 < tokens.len()) {
+    if !contextual_value_should_redact(token, candidate, &tokens[candidate_index + 1..]) {
         return None;
     }
     let mut masked = vec![token.to_owned()];
@@ -840,41 +840,30 @@ fn redact_uri_secrets(token: &str) -> Option<String> {
 }
 
 fn uri_has_sensitive_assignment(uri: &str) -> bool {
-    let lower = uri.to_ascii_lowercase();
-    SENSITIVE_KEYS.iter().any(|key| {
-        lower.match_indices(key).any(|(offset, _)| {
-            let before = lower.as_bytes().get(offset.wrapping_sub(1)).copied();
-            if offset > 0
-                && !matches!(
-                    before,
-                    Some(b'?' | b'&' | b'#' | b',' | b';' | b'=' | b':' | b'/' | b'[')
-                )
-            {
+    uri.split(['?', '&', '#', ',', ';']).any(|component| {
+        let fields: Vec<&str> = component.split(['=', ':']).collect();
+        fields.windows(2).any(|pair| {
+            let Some(key) = sensitive_key_path_segment(pair[0]) else {
                 return false;
-            }
-            let mut value_start = offset + key.len();
-            if lower.as_bytes().get(value_start) == Some(&b']') {
-                value_start += 1;
-            }
-            if !matches!(lower.as_bytes().get(value_start), Some(b'=' | b':')) {
-                return false;
-            }
-            value_start += 1;
-            let value_end = lower
-                .get(value_start..)
-                .and_then(|value| {
-                    value.find(|character: char| {
-                        matches!(character, '&' | '#' | ',' | ';') || character.is_whitespace()
-                    })
-                })
-                .map_or(lower.len(), |length| value_start + length);
-            let value = uri.get(value_start..value_end).unwrap_or_default();
-            if value.is_empty() {
-                return false;
-            }
-            *key != "token" || looks_like_credential_value(value) || looks_like_token_value(value)
+            };
+            let value = pair[1];
+            !value.is_empty()
+                && (key != "token"
+                    || looks_like_credential_value(value)
+                    || looks_like_token_value(value))
         })
     })
+}
+
+fn sensitive_key_path_segment(field: &str) -> Option<String> {
+    field
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .split(['[', ']', '.'])
+        .filter(|segment| !segment.is_empty())
+        .find(|segment| is_sensitive_key(segment))
+        .map(str::to_ascii_lowercase)
 }
 
 fn bounded_percent_decode(value: &str) -> Option<String> {
@@ -1043,7 +1032,7 @@ fn looks_like_bearer_value(token: &str) -> bool {
         || looks_like_token_value(token)
 }
 
-fn contextual_value_should_redact(key: &str, candidate: &str, has_following_token: bool) -> bool {
+fn contextual_value_should_redact(key: &str, candidate: &str, following_tokens: &[&str]) -> bool {
     if looks_like_credential_value(candidate) {
         return true;
     }
@@ -1062,53 +1051,37 @@ fn contextual_value_should_redact(key: &str, candidate: &str, has_following_toke
         } else {
             looks_like_token_value(candidate)
         };
-        shaped && !(has_following_token && looks_like_ordinary_context_candidate(candidate))
+        shaped && !looks_like_safe_contextual_prose(following_tokens)
     } else {
         looks_like_secret_candidate(candidate)
     }
 }
 
-fn looks_like_ordinary_context_candidate(token: &str) -> bool {
-    let token = trimmed_token(token);
-    let lower = token.to_ascii_lowercase();
-    if token.bytes().all(|byte| byte.is_ascii_lowercase()) {
-        let vowels = token
-            .bytes()
-            .filter(|byte| matches!(byte, b'a' | b'e' | b'i' | b'o' | b'u' | b'y'))
-            .count();
-        return vowels * 5 >= token.len()
-            && vowels * 2 <= token.len()
-            && !has_long_alphabet_sequence(token);
-    }
-    token
-        .bytes()
-        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        && lower.contains(|character: char| character.is_ascii_digit())
-        && (["version", "release", "build", "storage", "deployment"]
-            .iter()
-            .any(|prefix| lower.starts_with(prefix))
-            || lower.ends_with("identifier"))
-}
-
-fn has_long_alphabet_sequence(token: &str) -> bool {
-    let bytes = token.as_bytes();
-    let mut run = 1;
-    for pair in bytes.windows(2) {
-        if pair[1] == pair[0].saturating_add(1) {
-            run += 1;
-            if run >= 8 {
-                return true;
-            }
-        } else {
-            run = 1;
-        }
-    }
-    false
+fn looks_like_safe_contextual_prose(following_tokens: &[&str]) -> bool {
+    let Some(first) = following_tokens.first() else {
+        return false;
+    };
+    let first = first
+        .trim_matches(|character: char| character.is_ascii_punctuation())
+        .to_ascii_lowercase();
+    let grammatical_start = first == "remains"
+        || (first == "identifies"
+            && following_tokens
+                .get(1)
+                .is_some_and(|token| token.eq_ignore_ascii_case("the")));
+    grammatical_start
+        && following_tokens.len() <= 5
+        && following_tokens.iter().all(|token| {
+            token
+                .trim_matches(|character: char| character.is_ascii_punctuation())
+                .chars()
+                .all(char::is_alphabetic)
+        })
 }
 
 fn looks_like_token_value(token: &str) -> bool {
     let token = trimmed_token(token);
-    if token.len() < 24
+    if token.len() < 16
         || !token.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'_' | b'-' | b'=')
         })
@@ -1643,6 +1616,26 @@ mod tests {
                 "Open [redacted URI]",
             ),
             (
+                "Open https://host/path?password[]=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password%5B%5D=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password[confirmation]=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?user.password=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?user%2Epassword=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
                 "Open https://host/path?password%GGhunter2",
                 "Open [redacted URI]",
             ),
@@ -1815,6 +1808,34 @@ mod tests {
             (
                 "Blob customerreferenceidentifier remains documented",
                 "Blob customerreferenceidentifier remains documented",
+            ),
+            (
+                "Bearer correcthorsebatterystaple expires tomorrow",
+                "Bearer [redacted] expires tomorrow",
+            ),
+            (
+                "Token mountainriverfalconsecret is active",
+                "Token [redacted] is active",
+            ),
+            (
+                "Blob summerwinterautumnspring decoded successfully",
+                "Blob [redacted] decoded successfully",
+            ),
+            (
+                "Token releasefoobarbazquxquux2026 is active",
+                "Token [redacted] is active",
+            ),
+            (
+                "Encoded secretabc123identifier was received",
+                "Encoded [redacted] was received",
+            ),
+            (
+                "Bearer correcthorsebatterystaple, expires tomorrow",
+                "Bearer [redacted] expires tomorrow",
+            ),
+            (
+                "Bearer\ncorrecthorsebatterystaple expires tomorrow",
+                "Bearer\n[redacted] expires tomorrow",
             ),
             (
                 "Bearer abcdefghijklmnopqrstuvwxyzabcdef expires tomorrow",
