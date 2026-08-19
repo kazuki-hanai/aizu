@@ -637,6 +637,13 @@ mod tests {
                 "Bearer\n:=\n[redacted] after",
                 "secret",
             ),
+            ("Bearer::secret tail", "Bearer::[redacted] tail", "secret"),
+            ("Token:=secret tail", "Token:=[redacted] tail", "secret"),
+            (
+                "Base64:::===QUFB tail",
+                "Base64:::===[redacted] tail",
+                "QUFB",
+            ),
             (
                 "Secret value 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "Secret value [redacted]",

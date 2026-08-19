@@ -558,12 +558,17 @@ fn redact_explicit_context(token: &str) -> Option<ExplicitContextAction> {
         if !is_explicit_context_label(label) {
             return None;
         }
-        let separator = token.get(position..position + 1)?;
-        let value = token.get(position + 1..)?;
+        let separator_length = token
+            .get(position..)?
+            .bytes()
+            .take_while(|byte| matches!(byte, b':' | b'='))
+            .count();
+        let separators = token.get(position..position + separator_length)?;
+        let value = token.get(position + separator_length..)?;
         return Some(if value.is_empty() {
             ExplicitContextAction::AwaitValue(token.to_owned())
         } else {
-            ExplicitContextAction::Inline(format!("{label}{separator}{REDACTED_PLACEHOLDER}"))
+            ExplicitContextAction::Inline(format!("{label}{separators}{REDACTED_PLACEHOLDER}"))
         });
     }
     is_explicit_context_label(token).then(|| ExplicitContextAction::AwaitValue(token.to_owned()))
@@ -1782,6 +1787,9 @@ mod tests {
             ("Bearer := secret after", "Bearer := [redacted] after"),
             ("Bearer == secret after", "Bearer == [redacted] after"),
             ("Bearer\n:=\nsecret after", "Bearer\n:=\n[redacted] after"),
+            ("Bearer::secret tail", "Bearer::[redacted] tail"),
+            ("Token:=secret tail", "Token:=[redacted] tail"),
+            ("Base64:::===QUFB tail", "Base64:::===[redacted] tail"),
             (
                 "Bearer abcdefghijklmnopqrstuvwxyzabcdef",
                 "Bearer [redacted]",
