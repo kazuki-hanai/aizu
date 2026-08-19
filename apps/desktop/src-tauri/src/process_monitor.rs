@@ -392,6 +392,24 @@ mod tests {
             configuration_status(AgentKind::Codex, &actual, &expected, path),
             HookStatus::Missing
         );
+
+        let custom_only = serde_json::json!({
+            "hooks": {
+                "Stop": [{
+                    "matcher": "custom-session",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "'/Users/example/.local/bin/aizu' hook --agent codex --event Stop",
+                        "timeout": 5
+                    }]
+                }],
+                "PermissionRequest": expected["hooks"]["PermissionRequest"].clone()
+            }
+        });
+        assert_eq!(
+            configuration_status(AgentKind::Codex, &custom_only, &expected, path),
+            HookStatus::Missing
+        );
     }
 
     #[cfg(unix)]

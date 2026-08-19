@@ -56,14 +56,7 @@ pub fn merge_hook_configuration(
             .ok_or(IntegrationError::HookEventMustBeArray)?;
         remove_generated_aizu_handlers(actual_groups, agent, event);
         for expected_group in expected_groups {
-            let expected_handlers: Vec<_> = hook_handlers(expected_group).collect();
-            let already_configured = expected_handlers.iter().all(|expected| {
-                actual_groups
-                    .iter()
-                    .flat_map(hook_handlers)
-                    .any(|actual| actual == *expected)
-            });
-            if !already_configured {
+            if !actual_groups.iter().any(|actual| actual == expected_group) {
                 actual_groups.push(expected_group.clone());
             }
         }
@@ -95,31 +88,6 @@ fn is_generated_aizu_handler(handler: &Value, agent: AgentKind, event: &str) -> 
         return false;
     }
 
-    let has_known_fields = match handler.get("args") {
-        Some(_) => {
-            (handler.len() == 4
-                || (handler.len() == 5
-                    && handler.get("async").and_then(Value::as_bool) == Some(true)))
-                && handler.keys().all(|key| {
-                    matches!(
-                        key.as_str(),
-                        "type" | "command" | "args" | "timeout" | "async"
-                    )
-                })
-        }
-        None => {
-            (handler.len() == 3
-                || (handler.len() == 4
-                    && handler.get("async").and_then(Value::as_bool) == Some(true)))
-                && handler
-                    .keys()
-                    .all(|key| matches!(key.as_str(), "type" | "command" | "timeout" | "async"))
-        }
-    };
-    if !has_known_fields {
-        return false;
-    }
-
     let agent_name = match agent {
         AgentKind::Codex => "codex",
         AgentKind::ClaudeCode => "claude-code",
@@ -131,11 +99,23 @@ fn is_generated_aizu_handler(handler: &Value, agent: AgentKind, event: &str) -> 
         command.strip_suffix(&format!(" hook --agent {agent_name} --event {event}"))
         && canonical_quoted_aizu_executable(executable)
     {
-        return true;
+        return has_known_handler_fields(handler, false);
     }
 
     is_aizu_executable_path(command)
         && handler.get("args") == Some(&json!(["hook", "--agent", agent_name, "--event", event]))
+        && has_known_handler_fields(handler, true)
+}
+
+fn has_known_handler_fields(handler: &Map<String, Value>, has_args: bool) -> bool {
+    let allowed_len = if has_args { 4 } else { 3 };
+    (handler.len() == allowed_len
+        || (handler.len() == allowed_len + 1
+            && handler.get("async").and_then(Value::as_bool) == Some(true)))
+        && handler.keys().all(|key| {
+            matches!(key.as_str(), "type" | "command" | "timeout" | "async")
+                || (has_args && key == "args")
+        })
 }
 
 fn canonical_quoted_aizu_executable(value: &str) -> bool {
@@ -158,6 +138,7 @@ fn is_aizu_executable_path(value: &str) -> bool {
             .is_some_and(|name| name == "aizu" || name.eq_ignore_ascii_case("aizu.exe"))
 }
 
+#[cfg(test)]
 fn hook_handlers(group: &Value) -> impl Iterator<Item = &Value> {
     group
         .get("hooks")
@@ -454,7 +435,7 @@ mod tests {
                     }]},
                     {"matcher": "custom-session", "hooks": [{
                         "type": "command",
-                        "command": "'/Users/me/custom/bin/aizu' hook --agent codex --event Stop",
+                        "command": "'/Users/me/.local/bin/aizu' hook --agent codex --event Stop",
                         "timeout": 5
                     }]},
                     {"hooks": [{
@@ -462,6 +443,18 @@ mod tests {
                         "command": "'/Users/me/custom/bin/aizu' hook --agent codex --event Stop",
                         "timeout": 5,
                         "if": "custom-condition"
+                    }]},
+                    {"hooks": [{
+                        "type": "command",
+                        "command": "'/Users/me/custom/bin/aizu' hook --agent codex --event Stop",
+                        "args": ["user-custom"],
+                        "timeout": 5
+                    }]},
+                    {"hooks": [{
+                        "type": "command",
+                        "command": "'/Users/me/custom/bin/aizu' hook --agent codex --event Stop",
+                        "args": null,
+                        "timeout": 5
                     }]}
                 ]
             }
@@ -476,7 +469,7 @@ mod tests {
             .flat_map(hook_handlers)
             .collect();
 
-        assert_eq!(handlers.len(), 5);
+        assert_eq!(handlers.len(), 7);
         assert!(handlers.iter().any(|handler| {
             handler["command"] == "'/Users/me/.local/bin/aizu' hook --agent codex --event Stop"
         }));
@@ -492,6 +485,14 @@ mod tests {
             handler["command"] == "'/Users/me/custom/bin/aizu' hook --agent codex --event Stop"
                 && handler.get("if").and_then(Value::as_str) == Some("custom-condition")
         }));
+        assert!(handlers.iter().any(|handler| {
+            handler["command"] == "'/Users/me/custom/bin/aizu' hook --agent codex --event Stop"
+                && handler.get("args") == Some(&json!(["user-custom"]))
+        }));
+        assert!(handlers.iter().any(|handler| {
+            handler["command"] == "'/Users/me/custom/bin/aizu' hook --agent codex --event Stop"
+                && handler.get("args") == Some(&Value::Null)
+        }));
         assert!(
             merged["hooks"]["Stop"]
                 .as_array()
@@ -500,6 +501,39 @@ mod tests {
                 .any(|group| {
                     group.get("matcher").and_then(Value::as_str) == Some("custom-session")
                 })
+        );
+    }
+
+    #[test]
+    fn merge_preserves_custom_groups_and_adds_the_unconditional_handler() {
+        let path = Path::new("/Users/me/.local/bin/aizu");
+        let command = "'/Users/me/.local/bin/aizu' hook --agent codex --event Stop";
+        let custom_matcher = json!({
+            "matcher": "custom-session",
+            "hooks": [{"type": "command", "command": command, "timeout": 5}]
+        });
+        let mixed_group = json!({
+            "hooks": [
+                {"type": "command", "command": command, "timeout": 5},
+                {"type": "command", "command": "other-tool"}
+            ]
+        });
+        let existing = json!({
+            "hooks": {"Stop": [custom_matcher.clone(), mixed_group.clone()]}
+        });
+
+        let merged = merge_hook_configuration(AgentKind::Codex, &existing, path)
+            .expect("preserve custom groups");
+        let groups = merged["hooks"]["Stop"].as_array().expect("Stop groups");
+
+        assert!(groups.contains(&custom_matcher));
+        assert!(groups.contains(&mixed_group));
+        assert!(groups.contains(&json!({
+            "hooks": [{"type": "command", "command": command, "timeout": 5}]
+        })));
+        assert_eq!(
+            merge_hook_configuration(AgentKind::Codex, &merged, path).expect("repeat custom merge"),
+            merged
         );
     }
 
