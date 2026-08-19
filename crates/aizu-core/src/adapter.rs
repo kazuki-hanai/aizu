@@ -15,7 +15,25 @@ pub trait AgentAdapter {
 pub struct ClaudeCodeAdapter;
 
 const NOTIFICATION_EXCERPT_MAX_CHARS: usize = 240;
-const SENSITIVE_MARKERS: &[&str] = &[
+/// Placeholder substituted for a redacted credential-like token.
+const REDACTED_PLACEHOLDER: &str = "[redacted]";
+/// Placeholder substituted for a redacted private filesystem path.
+const PATH_PLACEHOLDER: &str = "[path]";
+/// Substrings that mark a token as an actual credential value. Any token that
+/// contains one of these is masked in full.
+const CREDENTIAL_VALUE_MARKERS: &[&str] = &[
+    "ghp_",
+    "github_pat_",
+    "sk-ant-",
+    "sk-proj-",
+    "xoxb-",
+    "xoxp-",
+    "akia",
+    "-----begin",
+];
+/// Keys whose `key=value` / `key: value` pair carries a secret value. The value
+/// is masked while the key is preserved so the sentence stays readable.
+const SENSITIVE_KEYS: &[&str] = &[
     "password",
     "passwd",
     "secret",
@@ -26,17 +44,7 @@ const SENSITIVE_MARKERS: &[&str] = &[
     "access-token",
     "refresh_token",
     "refresh-token",
-    "authorization:",
-    "bearer ",
-    "private key",
-    "-----begin ",
-    "ghp_",
-    "github_pat_",
-    "sk-ant-",
-    "sk-proj-",
-    "xoxb-",
-    "xoxp-",
-    "akia",
+    "token",
 ];
 
 impl AgentAdapter for ClaudeCodeAdapter {
@@ -211,11 +219,15 @@ fn permission_description(
     Ok(tool_name.map(|name| format!("Allow this {name} request?")))
 }
 
-/// Produces the bounded excerpt allowed in agent notifications and activity.
+/// Produces the bounded excerpt shown in agent notifications and activity.
 ///
-/// Values containing credential markers, private absolute paths, or unusable control
-/// characters are rejected rather than partially redacted. Horizontal whitespace is
-/// normalized while line and paragraph breaks are retained for the Aizu banner.
+/// The agent message is preserved so it appears in every notification. Credential
+/// values and private absolute paths are masked in place (`[redacted]` / `[path]`)
+/// rather than causing the whole message to be dropped, so a single sensitive token
+/// no longer silently hides the entire message. Values with unusable, non-whitespace
+/// control characters are rejected because they cannot be rendered safely. Horizontal
+/// whitespace is normalized while line and paragraph breaks are retained for the Aizu
+/// banner.
 #[must_use]
 pub fn safe_agent_excerpt(value: &str) -> Option<String> {
     if value
@@ -225,14 +237,15 @@ pub fn safe_agent_excerpt(value: &str) -> Option<String> {
         return None;
     }
 
-    let normalized = normalize_excerpt(value);
-    if normalized.is_empty() || looks_sensitive(&normalized) {
+    let normalized = redact_sensitive(&normalize_excerpt(value));
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
         return None;
     }
 
     let length = normalized.chars().count();
     if length <= NOTIFICATION_EXCERPT_MAX_CHARS {
-        return Some(normalized);
+        return Some(normalized.to_owned());
     }
 
     let prefix: String = normalized
@@ -257,16 +270,101 @@ fn normalize_excerpt(value: &str) -> String {
     normalized
 }
 
-fn looks_sensitive(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    if SENSITIVE_MARKERS
-        .iter()
-        .any(|marker| lower.contains(marker))
-    {
-        return true;
-    }
+/// Masks credential values and private paths token by token while keeping the rest
+/// of the message intact. Line breaks are preserved so multi-line agent messages
+/// still render in the banner.
+fn redact_sensitive(value: &str) -> String {
+    value
+        .split('\n')
+        .map(redact_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
-    value.split_whitespace().any(looks_like_private_path)
+fn redact_line(line: &str) -> String {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
+        let lower = token.to_ascii_lowercase();
+
+        if looks_like_private_path(token) {
+            out.push(PATH_PLACEHOLDER.to_owned());
+            index += 1;
+            continue;
+        }
+        if CREDENTIAL_VALUE_MARKERS
+            .iter()
+            .any(|marker| lower.contains(marker))
+        {
+            out.push(REDACTED_PLACEHOLDER.to_owned());
+            index += 1;
+            continue;
+        }
+        if let Some(masked) = redact_key_value(token) {
+            out.push(masked);
+            index += 1;
+            continue;
+        }
+
+        // Authorization headers: keep the label (and any auth scheme word) but mask
+        // the credential value that follows.
+        if lower.trim_end_matches([':', '=']) == "authorization" {
+            out.push(token.to_owned());
+            let mut next = index + 1;
+            if let Some(scheme) = tokens.get(next)
+                && matches!(
+                    scheme.to_ascii_lowercase().as_str(),
+                    "bearer" | "basic" | "token"
+                )
+            {
+                out.push((*scheme).to_owned());
+                next += 1;
+            }
+            if next < tokens.len() {
+                out.push(REDACTED_PLACEHOLDER.to_owned());
+                next += 1;
+            }
+            index = next;
+            continue;
+        }
+        // Bare `Bearer <token>` scheme without an Authorization label.
+        if lower == "bearer" && index + 1 < tokens.len() {
+            out.push(token.to_owned());
+            out.push(REDACTED_PLACEHOLDER.to_owned());
+            index += 2;
+            continue;
+        }
+
+        out.push(token.to_owned());
+        index += 1;
+    }
+    out.join(" ")
+}
+
+/// Masks the value half of a `key=value` or `key: value` token when the key names a
+/// known secret, keeping the key so the sentence remains readable.
+fn redact_key_value(token: &str) -> Option<String> {
+    for separator in ['=', ':'] {
+        if let Some(position) = token.find(separator) {
+            let (key, remainder) = token.split_at(position);
+            let value = &remainder[separator.len_utf8()..];
+            if value.is_empty() {
+                continue;
+            }
+            let normalized_key = key
+                .to_ascii_lowercase()
+                .trim_matches(|character: char| {
+                    !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+                })
+                .to_owned();
+            if SENSITIVE_KEYS.contains(&normalized_key.as_str()) {
+                return Some(format!("{key}{separator}{REDACTED_PLACEHOLDER}"));
+            }
+        }
+    }
+    None
 }
 
 fn looks_like_private_path(token: &str) -> bool {
@@ -483,15 +581,20 @@ mod tests {
     }
 
     #[test]
-    fn excerpts_drop_secrets_paths_and_unusable_controls() {
-        for message in [
-            "Use password=hunter2",
-            "Read /Users/alice/private.txt",
-            "token: Bearer abc123",
-            "bad\0message",
-            "Read `/home/user/private.txt` next",
-            "Open `/Users/alice/private.txt` next",
-            "Inspect `/tmp/aizu-debug.log` next",
+    fn excerpts_redact_secrets_and_paths_but_keep_the_message() {
+        // Secrets and private paths are masked in place so the agent message still
+        // reaches the notification instead of vanishing entirely.
+        for (message, expected) in [
+            ("Use password=hunter2", "Use password=[redacted]"),
+            ("Read /Users/alice/private.txt", "Read [path]"),
+            ("token: Bearer abc123", "token: Bearer [redacted]"),
+            ("Read `/home/user/private.txt` next", "Read [path] next"),
+            ("Open `/Users/alice/private.txt` next", "Open [path] next"),
+            ("Inspect `/tmp/aizu-debug.log` next", "Inspect [path] next"),
+            (
+                "Deploy uses ghp_exampletoken0000000000000000000000",
+                "Deploy uses [redacted]",
+            ),
         ] {
             let payload = json!({
                 "hook_event_name": "Stop",
@@ -501,10 +604,24 @@ mod tests {
                 .parse_hook("Stop", payload.to_string().as_bytes())
                 .expect("valid hook");
             assert_eq!(
-                request[0].body, None,
-                "message should be dropped: {message}"
+                request[0].body.as_deref(),
+                Some(expected),
+                "message should be redacted, not dropped: {message}"
             );
         }
+    }
+
+    #[test]
+    fn excerpts_reject_unusable_control_characters() {
+        // Binary/garbage that cannot be rendered safely is still rejected entirely.
+        let payload = json!({
+            "hook_event_name": "Stop",
+            "last_assistant_message": "bad\u{0000}message"
+        });
+        let request = CodexAdapter
+            .parse_hook("Stop", payload.to_string().as_bytes())
+            .expect("valid hook");
+        assert_eq!(request[0].body, None);
     }
 
     #[test]

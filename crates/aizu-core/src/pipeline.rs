@@ -513,7 +513,10 @@ mod tests {
         dispatch_outbox(
             &desktop,
             &hidden_notifier,
-            &NotificationPolicy::default(),
+            &NotificationPolicy {
+                agent_details_enabled: false,
+                ..NotificationPolicy::default()
+            },
             timestamp(),
             None,
         )

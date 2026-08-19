@@ -301,12 +301,18 @@ notification に表示する source label は pinned `source_id` に紐づく de
 
 ### 8.3 Privacy defaults
 
-通知本文はロック画面などに表示される可能性があるため、初期値は保守的にする。
+通知本文はロック画面などに表示される可能性があるため保守的に扱うが、agent の
+メッセージが「出ないケース」をなくすことを優先し、first-party adapter のメッセージは
+既定で通知に表示する。
 
 - `task.completed`: outcome に応じて “Task finished/failed/cancelled on &lt;source&gt;”。`unknown` は “Task finished”。
 - `agent.question`: “Agent is waiting for input on &lt;source&gt;”
 - プロンプト全文や生成物を本文へ自動挿入しない。
-- adapter が要約を付けられる場合も、設定で opt-in とする。
+- first-party adapter のメッセージ excerpt は既定 (`agent_details_enabled = true`) で
+  通知に表示する。設定で off にすると安全な generic テンプレートへ戻る。
+- excerpt 内の credential らしい token と private path は、その部分だけを
+  `[redacted]` / `[path]` に置換する。従来のように 1 個の sensitive token で
+  メッセージ全体を破棄しないため、agent メッセージが必ず表示される。
 - path は原則 basename のみ。絶対パスは保存しない。
 - 通常ログへ title/body を出さない。
 
@@ -550,9 +556,11 @@ Requirements:
   `PermissionRequest` の人間向け `tool_input.description` /
   `questions[0].question` から、最大 240 Unicode scalar values の excerpt だけを
   durable event に保存できる。行内空白を正規化しつつ改行と段落区切りは保持する。
-  desktop は notification details が明示的に有効な場合だけ
-  その excerpt を通知と activity に表示する。command、tool input 全体、transcript、絶対
-  path、credential marker を含む値は設定にかかわらず excerpt に採用しない。
+  desktop は notification details が有効 (既定) な場合にその excerpt を通知と
+  activity に表示する。credential value と private path は token 単位で
+  `[redacted]` / `[path]` にマスクし、残りのメッセージは保持する。表示可能でない
+  non-whitespace control character を含む値だけは excerpt 全体を破棄する。
+  command や tool input 全体、transcript は excerpt の入力に採用しない。
 
 正式 MVP では、Codex と Claude Code の両方について `task.completed` と `agent.question` を fixture 付きで実装する。Codex/Claude Code の `Stop` は正常終了を保証する field を持たないため `outcome: unknown` とし、Claude Code の `StopFailure` だけを `outcome: failed` とする。
 

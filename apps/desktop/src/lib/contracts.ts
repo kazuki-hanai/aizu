@@ -85,7 +85,7 @@ export const preferencesSchema = z.object({
   textSize: z.enum(["small", "standard", "large"]).default("standard"),
   completionEnabled: z.boolean(),
   questionEnabled: z.boolean(),
-  agentDetailsEnabled: z.boolean().default(false),
+  agentDetailsEnabled: z.boolean().default(true),
   soundEnabled: z.boolean(),
   notificationDelivery: z.enum(["aizuBanner", "system"]).default("aizuBanner"),
   notificationSound: z.enum(["default", "chime", "pulse", "bloom"]),

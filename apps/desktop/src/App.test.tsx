@@ -442,7 +442,7 @@ describe("Aizu desktop shell", () => {
       await expect(backend.getView()).resolves.toMatchObject({
         preferences: {
           completionEnabled: false,
-          agentDetailsEnabled: true,
+          agentDetailsEnabled: false,
           notificationDelivery: "system",
           notificationSound: "pulse",
           textSize: "large",
