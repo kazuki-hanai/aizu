@@ -20,7 +20,7 @@ cargo audit --version 2>/dev/null | grep -F '0.22.2' \
   || cargo install cargo-audit --version 0.22.2 --locked --force
 cargo deny --version 2>/dev/null | grep -F '0.20.2' \
   || cargo install cargo-deny --version 0.20.2 --locked --force
-cargo audit
+cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
 cargo deny check advisories bans licenses sources
 corepack enable
 pnpm audit --prod --audit-level high

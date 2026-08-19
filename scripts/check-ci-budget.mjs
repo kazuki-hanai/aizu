@@ -9,8 +9,24 @@ import { changedPaths, classifyChanges } from "./ci/classify-changes.mjs";
 const root = resolve(import.meta.dirname, "..");
 const ci = readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8");
 const weekly = readFileSync(resolve(root, ".github/workflows/nightly.yml"), "utf8");
+const weeklyLinux = readFileSync(resolve(root, "scripts/ci/weekly-linux.sh"), "utf8");
 const release = readFileSync(resolve(root, ".github/workflows/release.yml"), "utf8");
+const deny = readFileSync(resolve(root, "deny.toml"), "utf8");
 const errors = [];
+
+const targetOnlyAuditAdvisories = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"];
+const targetOnlyAuditCommand = `cargo audit ${targetOnlyAuditAdvisories
+  .map((advisory) => `--ignore ${advisory}`)
+  .join(" ")}`;
+const denyAdvisoryIgnoreList =
+  deny.match(/\[advisories\][\s\S]*?ignore\s*=\s*\[([\s\S]*?)^\]/mu)?.[1] ?? "";
+
+function auditCommands(source) {
+  return source
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("cargo audit") && !line.startsWith("cargo audit --version"));
+}
 
 function topLevelJobNames(workflow) {
   const jobs = workflow.split(/^jobs:\s*$/mu)[1] ?? "";
@@ -24,6 +40,20 @@ if (pullRequestJobs.join(",") !== "quality,macos") {
 if (!/^\s{2}pull_request:\s*$/mu.test(ci)) errors.push("PR workflow must run for pull_request events");
 if (/^\s{2}push:\s*$/mu.test(ci)) errors.push("PR workflow must not rerun the same commit after merge");
 if (!ci.includes("cancel-in-progress: true")) errors.push("PR workflow must cancel superseded runs");
+for (const [name, source] of [
+  ["PR workflow", ci],
+  ["weekly Linux checks", weeklyLinux],
+]) {
+  const commands = auditCommands(source);
+  if (commands.length !== 1 || commands[0] !== targetOnlyAuditCommand) {
+    errors.push(`${name} must use the exact target-only cargo-audit exceptions`);
+  }
+}
+for (const advisory of targetOnlyAuditAdvisories) {
+  if (!denyAdvisoryIgnoreList.includes(`"${advisory}"`)) {
+    errors.push(`deny.toml must document the cargo-audit exception for ${advisory}`);
+  }
+}
 if (!ci.includes("steps.changes.outputs.macos_required == 'true'")) {
   errors.push("macOS runner must be skipped for documentation-only changes");
 }
