@@ -627,6 +627,26 @@ mod tests {
                 "abcdefghijklmnopqrstuvwxyz",
             ),
             (
+                "Bearer releaseabcdefghijklmnopqrstuvwxyz",
+                "Bearer [redacted]",
+                "releaseabcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "Token buildabcdefghijklmnopqrstuvwxyz",
+                "Token [redacted]",
+                "buildabcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "Base64 versionABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                "Base64 [redacted]",
+                "versionABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            ),
+            (
+                "Encoded abcdefghijklmnop123identifier",
+                "Encoded [redacted]",
+                "abcdefghijklmnop123identifier",
+            ),
+            (
                 "-----BEGIN PRIVATE\nKEY-----\nshortSecretBody\n-----END PRIVATE KEY-----\nsafe ending",
                 "[redacted private key]",
                 "shortSecretBody",
@@ -726,6 +746,11 @@ mod tests {
                 "%25252525252Froot",
             ),
             (
+                "Open file:%2Groot%2F.ssh%2Fid_rsa",
+                "Open file:[path]",
+                "%2Groot",
+            ),
+            (
                 "Open https://user:pa@ss@host.example/path",
                 "Open https://[redacted]@host.example/path",
                 "pa@ss",
@@ -739,6 +764,26 @@ mod tests {
                 "Open https:user:pass@host.example/path",
                 "Open https:[redacted]@host.example/path",
                 "user:pass",
+            ),
+            (
+                "Open https://user%3Ahunter2@host.example/path",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open //user%3Ahunter2@host.example/path",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https:user%3Ahunter2@host.example/path",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://user%253Ahunter2@host.example/path",
+                "Open [redacted URI]",
+                "hunter2",
             ),
             (
                 "Open https://host.example/callback?token=ghp_1234567890abcdefghijklmnopqrstuvwxyz",
@@ -787,6 +832,21 @@ mod tests {
             ),
             (
                 "Open data:text/plain,password%3Dhunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?password%GGhunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?token%ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+                "ghp_",
+            ),
+            (
+                "Open https://host/path?password%2=hunter2",
                 "Open [redacted URI]",
                 "hunter2",
             ),

@@ -461,7 +461,7 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         let token = tokens[index];
         let lower = token.to_ascii_lowercase();
 
-        if let Some(masked) = redact_direct_token(token, state) {
+        if let Some(masked) = redact_direct_token(token, state, index + 1 < tokens.len()) {
             out.push(masked);
             index += 1;
             continue;
@@ -546,8 +546,12 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
     out.join(" ")
 }
 
-fn redact_direct_token(token: &str, state: &mut RedactionState) -> Option<String> {
-    if let Some(masked) = redact_expected_context(token, state)
+fn redact_direct_token(
+    token: &str,
+    state: &mut RedactionState,
+    has_following_token: bool,
+) -> Option<String> {
+    if let Some(masked) = redact_expected_context(token, state, has_following_token)
         .or_else(|| redact_expected_delimiter(token, state))
         .or_else(|| redact_expected_secret(token, state))
         .or_else(|| redact_file_url(token))
@@ -574,11 +578,16 @@ fn redact_direct_token(token: &str, state: &mut RedactionState) -> Option<String
     Some(redaction.label)
 }
 
-fn redact_expected_context(token: &str, state: &mut RedactionState) -> Option<String> {
+fn redact_expected_context(
+    token: &str,
+    state: &mut RedactionState,
+    has_following_token: bool,
+) -> Option<String> {
     match state.secret {
         SecretState::AwaitBearerValue => {
             state.secret = SecretState::None;
-            looks_like_bearer_value(token).then(|| REDACTED_PLACEHOLDER.to_owned())
+            contextual_value_should_redact("bearer", token, has_following_token)
+                .then(|| REDACTED_PLACEHOLDER.to_owned())
         }
         SecretState::AwaitTokenOrDelimiter => {
             state.secret = SecretState::None;
@@ -586,7 +595,8 @@ fn redact_expected_context(token: &str, state: &mut RedactionState) -> Option<St
                 state.secret = SecretState::AwaitValue;
                 return redact_expected_secret(token, state);
             }
-            contextual_secret_candidate("token", token).then(|| REDACTED_PLACEHOLDER.to_owned())
+            contextual_value_should_redact("token", token, has_following_token)
+                .then(|| REDACTED_PLACEHOLDER.to_owned())
         }
         _ => None,
     }
@@ -599,9 +609,9 @@ fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String
     // credential-shaped. This avoids corrupting ordinary prose such as
     // "Bearer plants grow well here".
     if matches!(lower.as_str(), "bearer" | "basic")
-        && tokens
-            .get(index + 1)
-            .is_some_and(|value| looks_like_bearer_value(value))
+        && tokens.get(index + 1).is_some_and(|value| {
+            contextual_value_should_redact(lower.as_str(), value, index + 2 < tokens.len())
+        })
     {
         return Some((
             vec![token.to_owned(), REDACTED_PLACEHOLDER.to_owned()],
@@ -619,7 +629,7 @@ fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String
         .is_some_and(|next| matches!(next.to_ascii_lowercase().as_str(), "value" | "is"));
     let candidate_index = index + usize::from(filler) + 1;
     let candidate = tokens.get(candidate_index)?;
-    if !contextual_secret_candidate(token, candidate) {
+    if !contextual_value_should_redact(token, candidate, candidate_index + 1 < tokens.len()) {
         return None;
     }
     let mut masked = vec![token.to_owned()];
@@ -813,6 +823,9 @@ fn redact_uri_secrets(token: &str) -> Option<String> {
     let Some(classified) = bounded_percent_decode(token) else {
         return Some("[redacted URI]".to_owned());
     };
+    if redact_url_userinfo(&classified).is_some() {
+        return Some("[redacted URI]".to_owned());
+    }
     let sensitive_assignment = classified
         .split(['?', '&', '#', ',', ';'])
         .any(uri_segment_has_sensitive_value);
@@ -849,12 +862,13 @@ fn bounded_percent_decode(value: &str) -> Option<String> {
         let mut index = 0;
         let mut changed = false;
         while index < current.len() {
-            if current[index] == b'%'
-                && let (Some(high), Some(low)) = (
+            if current[index] == b'%' {
+                let (Some(high), Some(low)) = (
                     current.get(index + 1).and_then(|byte| hex_value(*byte)),
                     current.get(index + 2).and_then(|byte| hex_value(*byte)),
-                )
-            {
+                ) else {
+                    return None;
+                };
                 decoded.push((high << 4) | low);
                 index += 3;
                 changed = true;
@@ -1004,15 +1018,26 @@ fn looks_like_bearer_value(token: &str) -> bool {
         || looks_like_token_value(token)
 }
 
-fn contextual_secret_candidate(key: &str, candidate: &str) -> bool {
+fn contextual_value_should_redact(key: &str, candidate: &str, has_following_token: bool) -> bool {
+    if looks_like_credential_value(candidate) {
+        return true;
+    }
     let key = key
         .to_ascii_lowercase()
         .trim_matches(|character: char| {
             !character.is_ascii_alphanumeric() && character != '_' && character != '-'
         })
         .to_owned();
-    if matches!(key.as_str(), "token" | "blob" | "base64" | "encoded") {
-        looks_like_credential_value(candidate) || looks_like_token_value(candidate)
+    if matches!(
+        key.as_str(),
+        "token" | "blob" | "base64" | "encoded" | "bearer" | "basic"
+    ) {
+        let shaped = if matches!(key.as_str(), "bearer" | "basic") {
+            looks_like_bearer_value(candidate)
+        } else {
+            looks_like_token_value(candidate)
+        };
+        shaped && !has_following_token
     } else {
         looks_like_secret_candidate(candidate)
     }
@@ -1027,24 +1052,7 @@ fn looks_like_token_value(token: &str) -> bool {
     {
         return false;
     }
-    !looks_like_ordinary_context_identifier(token)
-}
-
-fn looks_like_ordinary_context_identifier(token: &str) -> bool {
-    let lower = token.to_ascii_lowercase();
-    [
-        "version",
-        "release",
-        "build",
-        "storage",
-        "international",
-        "deployment",
-        "documentation",
-    ]
-    .iter()
-    .any(|prefix| lower.starts_with(prefix))
-        || (lower.contains(|character: char| character.is_ascii_digit())
-            && lower.ends_with("identifier"))
+    true
 }
 
 fn looks_like_long_random_candidate(token: &str) -> bool {
@@ -1452,6 +1460,22 @@ mod tests {
                 "Open https:[redacted]@host.example/path",
             ),
             (
+                "Open https://user%3Ahunter2@host.example/path",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open //user%3Ahunter2@host.example/path",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https:user%3Ahunter2@host.example/path",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://user%253Ahunter2@host.example/path",
+                "Open [redacted URI]",
+            ),
+            (
                 "Open file:///Users/alice/.ssh/id_ed25519",
                 "Open file:[path]",
             ),
@@ -1472,6 +1496,7 @@ mod tests {
                 "Open file:%25252525252Froot%25252525252F.ssh%25252525252Fid_rsa",
                 "Open file:[path]",
             ),
+            ("Open file:%2Groot%2F.ssh%2Fid_rsa", "Open file:[path]"),
             (r"Open \\server\share\Alice\secret.txt", "Open [path]"),
             (r"Open \\?\C:\Users\Alice\secret.txt", "Open [path]"),
             (r"path=\\server\share\Alice\secret.txt", "[path]"),
@@ -1533,6 +1558,18 @@ mod tests {
             (
                 "Open https://host.example/docs?mytoken=estimate",
                 "Open https://host.example/docs?mytoken=estimate",
+            ),
+            (
+                "Open https://host/path?password%GGhunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?token%ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password%2=hunter2",
+                "Open [redacted URI]",
             ),
             (
                 "Contact mailto:user@example.com",
@@ -1674,6 +1711,27 @@ mod tests {
             (
                 "Token releasecandidate2026identifier remains documented",
                 "Token releasecandidate2026identifier remains documented",
+            ),
+            (
+                "Bearer releaseabcdefghijklmnopqrstuvwxyz",
+                "Bearer [redacted]",
+            ),
+            ("Token buildabcdefghijklmnopqrstuvwxyz", "Token [redacted]"),
+            (
+                "Base64 versionABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                "Base64 [redacted]",
+            ),
+            (
+                "Encoded abcdefghijklmnop123identifier",
+                "Encoded [redacted]",
+            ),
+            (
+                "Token antidisestablishmentarianism remains a word",
+                "Token antidisestablishmentarianism remains a word",
+            ),
+            (
+                "Blob customerreferenceidentifier remains documented",
+                "Blob customerreferenceidentifier remains documented",
             ),
         ] {
             assert_eq!(
