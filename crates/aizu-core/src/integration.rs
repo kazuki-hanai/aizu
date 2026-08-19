@@ -29,7 +29,7 @@ pub fn merge_hook_configuration(
     existing: &Value,
     aizu_path: &Path,
 ) -> Result<Value, IntegrationError> {
-    let executable = validate_executable_path(aizu_path)?;
+    validate_executable_path(aizu_path)?;
     let mut merged = existing
         .as_object()
         .cloned()
@@ -54,7 +54,7 @@ pub fn merge_hook_configuration(
             .or_insert_with(|| Value::Array(Vec::new()))
             .as_array_mut()
             .ok_or(IntegrationError::HookEventMustBeArray)?;
-        remove_generated_aizu_handlers(actual_groups, agent, event, &executable);
+        remove_generated_aizu_handlers(actual_groups, agent, event);
         for expected_group in expected_groups {
             let expected_handlers: Vec<_> = hook_handlers(expected_group).collect();
             let already_configured = expected_handlers.iter().all(|expected| {
@@ -71,27 +71,16 @@ pub fn merge_hook_configuration(
     Ok(Value::Object(merged))
 }
 
-fn remove_generated_aizu_handlers(
-    groups: &mut Vec<Value>,
-    agent: AgentKind,
-    event: &str,
-    executable: &str,
-) {
+fn remove_generated_aizu_handlers(groups: &mut Vec<Value>, agent: AgentKind, event: &str) {
     for group in groups.iter_mut() {
         if let Some(handlers) = group.get_mut("hooks").and_then(Value::as_array_mut) {
-            handlers
-                .retain(|handler| !is_generated_aizu_handler(handler, agent, event, executable));
+            handlers.retain(|handler| !is_generated_aizu_handler(handler, agent, event));
         }
     }
     groups.retain(|group| hook_handlers(group).next().is_some());
 }
 
-fn is_generated_aizu_handler(
-    handler: &Value,
-    agent: AgentKind,
-    event: &str,
-    executable: &str,
-) -> bool {
+fn is_generated_aizu_handler(handler: &Value, agent: AgentKind, event: &str) -> bool {
     let Some(handler) = handler.as_object() else {
         return false;
     };
@@ -105,16 +94,38 @@ fn is_generated_aizu_handler(
         AgentKind::Codex => "codex",
         AgentKind::ClaudeCode => "claude-code",
     };
-    let shell_command = format!(
-        "{} hook --agent {agent_name} --event {event}",
-        shell_quote(executable)
-    );
-    if handler.get("command").and_then(Value::as_str) == Some(shell_command.as_str()) {
+    let Some(command) = handler.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    if let Some(executable) =
+        command.strip_suffix(&format!(" hook --agent {agent_name} --event {event}"))
+        && canonical_quoted_aizu_executable(executable)
+    {
         return true;
     }
 
-    handler.get("command").and_then(Value::as_str) == Some(executable)
+    is_aizu_executable_path(command)
         && handler.get("args") == Some(&json!(["hook", "--agent", agent_name, "--event", event]))
+}
+
+fn canonical_quoted_aizu_executable(value: &str) -> bool {
+    let Some(inner) = value
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+    else {
+        return false;
+    };
+    let executable = inner.replace("'\"'\"'", "'");
+    shell_quote(&executable) == value && is_aizu_executable_path(&executable)
+}
+
+fn is_aizu_executable_path(value: &str) -> bool {
+    !value.chars().any(char::is_control)
+        && Path::new(value).is_absolute()
+        && Path::new(value)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "aizu" || name.eq_ignore_ascii_case("aizu.exe"))
 }
 
 fn hook_handlers(group: &Value) -> impl Iterator<Item = &Value> {
@@ -378,6 +389,64 @@ mod tests {
             merge_hook_configuration(AgentKind::Codex, &codex, path).expect("repeat migration"),
             codex
         );
+    }
+
+    #[test]
+    fn merge_replaces_generated_handlers_from_other_aizu_install_paths() {
+        let managed_path = Path::new("/Users/me/.local/bin/aizu");
+        let existing = json!({
+            "hooks": {
+                "Stop": [
+                    {"hooks": [{
+                        "type": "command",
+                        "command": "'/Users/me/project/target/debug/aizu' hook --agent codex --event Stop",
+                        "timeout": 5
+                    }]},
+                    {"hooks": [{
+                        "type": "command",
+                        "command": "'/Applications/Aizu.app/Contents/Resources/bin/aizu' hook --agent codex --event Stop",
+                        "timeout": 5
+                    }]},
+                    {"hooks": [{
+                        "type": "command",
+                        "command": "'/Users/me/.local/bin/aizu' hook --agent codex --event Stop",
+                        "timeout": 5
+                    }]},
+                    {"hooks": [{
+                        "type": "command",
+                        "command": "other-tool",
+                        "timeout": 5
+                    }]},
+                    {"hooks": [{
+                        "type": "command",
+                        "command": "'/Users/me/.local/bin/not-aizu' hook --agent codex --event Stop",
+                        "timeout": 5
+                    }]}
+                ]
+            }
+        });
+
+        let merged = merge_hook_configuration(AgentKind::Codex, &existing, managed_path)
+            .expect("normalize Aizu handlers");
+        let handlers: Vec<_> = merged["hooks"]["Stop"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(hook_handlers)
+            .collect();
+
+        assert_eq!(handlers.len(), 3);
+        assert!(handlers.iter().any(|handler| {
+            handler["command"] == "'/Users/me/.local/bin/aizu' hook --agent codex --event Stop"
+        }));
+        assert!(
+            handlers
+                .iter()
+                .any(|handler| handler["command"] == "other-tool")
+        );
+        assert!(handlers.iter().any(|handler| {
+            handler["command"] == "'/Users/me/.local/bin/not-aizu' hook --agent codex --event Stop"
+        }));
     }
 
     #[test]

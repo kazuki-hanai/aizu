@@ -12,7 +12,8 @@ use std::{
 use aizu_core::{
     AgentKind, HookInstallError, HookStatus, MAX_AGENT_CONFIG_BYTES, MAX_PROCESS_SNAPSHOT_ENTRIES,
     ObservedAgentProcess, ProcessLifecycleState, ProcessSnapshot, ProcessSnapshotError,
-    hook_configuration, install_agent_hooks, resolve_agent_configuration_path,
+    hook_configuration, install_agent_hooks, merge_hook_configuration,
+    resolve_agent_configuration_path,
 };
 use chrono::Utc;
 use sysinfo::{Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -225,13 +226,14 @@ fn inspect_agent_hooks(agent: AgentKind) -> HookStatus {
     let Ok(expected) = hook_configuration(agent, &executable) else {
         return HookStatus::Missing;
     };
-    configuration_status(agent, &actual, &expected)
+    configuration_status(agent, &actual, &expected, &executable)
 }
 
 fn configuration_status(
     agent: AgentKind,
     actual: &serde_json::Value,
     expected: &serde_json::Value,
+    executable: &Path,
 ) -> HookStatus {
     if agent == AgentKind::ClaudeCode
         && actual
@@ -239,6 +241,12 @@ fn configuration_status(
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
     {
+        return HookStatus::Missing;
+    }
+    if !matches!(
+        merge_hook_configuration(agent, actual, executable),
+        Ok(merged) if merged == *actual
+    ) {
         return HookStatus::Missing;
     }
     let Some(expected_hooks) = expected.get("hooks").and_then(serde_json::Value::as_object) else {
@@ -352,14 +360,36 @@ mod tests {
         let path = Path::new("/Users/example/.local/bin/aizu");
         let codex = hook_configuration(AgentKind::Codex, path).expect("codex hooks");
         assert_eq!(
-            configuration_status(AgentKind::Codex, &codex, &codex),
+            configuration_status(AgentKind::Codex, &codex, &codex, path),
             HookStatus::ApprovalRequired
         );
 
         let mut claude = hook_configuration(AgentKind::ClaudeCode, path).expect("claude hooks");
         claude["disableAllHooks"] = serde_json::Value::Bool(true);
         assert_eq!(
-            configuration_status(AgentKind::ClaudeCode, &claude, &claude),
+            configuration_status(AgentKind::ClaudeCode, &claude, &claude, path),
+            HookStatus::Missing
+        );
+    }
+
+    #[test]
+    fn duplicate_generated_aizu_handlers_require_reconfiguration() {
+        let path = Path::new("/Users/example/.local/bin/aizu");
+        let expected = hook_configuration(AgentKind::Codex, path).expect("codex hooks");
+        let mut actual = expected.clone();
+        actual["hooks"]["Stop"]
+            .as_array_mut()
+            .expect("stop groups")
+            .push(serde_json::json!({
+                "hooks": [{
+                    "type": "command",
+                    "command": "'/Applications/Aizu.app/Contents/Resources/bin/aizu' hook --agent codex --event Stop",
+                    "timeout": 5
+                }]
+            }));
+
+        assert_eq!(
+            configuration_status(AgentKind::Codex, &actual, &expected, path),
             HookStatus::Missing
         );
     }
