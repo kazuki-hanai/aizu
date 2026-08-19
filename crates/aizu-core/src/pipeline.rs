@@ -320,8 +320,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AgentAdapter, ClaudeCodeAdapter, CodexAdapter, EmitRequest, EventKind, Outcome, QuietHours,
-        StatePaths,
+        AgentAdapter, ClaudeCodeAdapter, CodexAdapter, EmitRequest, EventKind, HistoryItem,
+        Outcome, QuietHours, StatePaths,
     };
 
     struct FakeNotifier {
@@ -445,6 +445,72 @@ mod tests {
             notifications[0].body,
             "Implemented reconnect handling and all checks pass.\naizu on Remote host"
         );
+    }
+
+    #[test]
+    fn trusted_agent_secrets_are_redacted_before_spool_history_and_notification() {
+        let (_directory, spool, desktop) = fixture();
+        let request = CodexAdapter
+            .parse_hook(
+                "Stop",
+                br#"{"session_id":"thread-1","cwd":"/home/dev/aizu","hook_event_name":"Stop","last_assistant_message":"Deployment finished.\nAuthorization: Bearer ghp_exampletoken000000000000000000\n-----BEGIN PRIVATE KEY-----\nQWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OUFCQ0RFRg==\n-----END PRIVATE KEY-----\nSee /Users/alice/private.log"}"#,
+            )
+            .expect("valid Codex hook")
+            .pop()
+            .expect("one event");
+        let body = request.body.clone().expect("redacted agent message");
+        assert!(body.contains("Deployment finished."));
+        assert!(body.contains("Authorization: Bearer [redacted]"));
+        assert!(body.contains("[redacted private key]"));
+        assert!(body.contains("See [path]"));
+        for leaked in ["ghp_", "QWxhZGR", "PRIVATE KEY-----", "/Users/alice"] {
+            assert!(!body.contains(leaked), "adapter leaked {leaked}");
+        }
+
+        spool.emit(request, None).expect("emit redacted event");
+        let stored = spool.events_after(0, Some(10)).expect("read source spool");
+        let stored_body = stored[0]
+            .event
+            .body
+            .as_deref()
+            .expect("stored redacted message");
+        assert_eq!(stored_body, body);
+
+        ingest_spool(
+            &spool,
+            &desktop,
+            "ssh:remote-host",
+            "Remote host",
+            timestamp(),
+        )
+        .expect("ingest");
+        let history = desktop.recent_history(Some(10)).expect("history");
+        let HistoryItem::Event(history_event) = &history[0] else {
+            panic!("expected event history");
+        };
+        assert_eq!(history_event.event.body.as_deref(), Some(body.as_str()));
+
+        let notifier = FakeNotifier::successful();
+        dispatch_outbox(
+            &desktop,
+            &notifier,
+            &NotificationPolicy::default(),
+            timestamp(),
+            None,
+        )
+        .expect("dispatch");
+        let notifications = notifier.notifications.borrow();
+        assert_eq!(notifications.len(), 1);
+        assert!(notifications[0].body.contains("Deployment finished."));
+        assert!(notifications[0].body.contains("[redacted]"));
+        assert!(notifications[0].body.contains("[redacted private key]"));
+        assert!(notifications[0].body.contains("[path]"));
+        for leaked in ["ghp_", "QWxhZGR", "PRIVATE KEY-----", "/Users/alice"] {
+            assert!(
+                !notifications[0].body.contains(leaked),
+                "notification leaked {leaked}"
+            );
+        }
     }
 
     #[test]

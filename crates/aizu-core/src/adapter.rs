@@ -23,13 +23,29 @@ const PATH_PLACEHOLDER: &str = "[path]";
 /// contains one of these is masked in full.
 const CREDENTIAL_VALUE_MARKERS: &[&str] = &[
     "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
     "github_pat_",
+    "glpat-",
+    "gldt-",
+    "sk-",
     "sk-ant-",
     "sk-proj-",
+    "sk_live_",
+    "rk_live_",
+    "sk_test_",
     "xoxb-",
     "xoxp-",
+    "xoxa-",
+    "xoxr-",
     "akia",
+    "asia",
+    "aiza",
+    "ya29.",
     "-----begin",
+    "-----end",
 ];
 /// Keys whose `key=value` / `key: value` pair carries a secret value. The value
 /// is masked while the key is preserved so the sentence stays readable.
@@ -45,6 +61,18 @@ const SENSITIVE_KEYS: &[&str] = &[
     "refresh_token",
     "refresh-token",
     "token",
+    "client_secret",
+    "client-secret",
+    "consumer_secret",
+    "consumer-secret",
+    "private_key",
+    "private-key",
+    "secret_access_key",
+    "secret-access-key",
+    "aws_secret_access_key",
+    "aws-secret-access-key",
+    "aws_session_token",
+    "aws-session-token",
 ];
 
 impl AgentAdapter for ClaudeCodeAdapter {
@@ -274,14 +302,43 @@ fn normalize_excerpt(value: &str) -> String {
 /// of the message intact. Line breaks are preserved so multi-line agent messages
 /// still render in the banner.
 fn redact_sensitive(value: &str) -> String {
-    value
-        .split('\n')
-        .map(redact_line)
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut state = RedactionState::default();
+    let mut redacted = Vec::new();
+    for line in value.split('\n') {
+        let uppercase = line.to_ascii_uppercase();
+        if state.in_private_key {
+            if uppercase.contains("-----END") && uppercase.contains("PRIVATE KEY-----") {
+                state.in_private_key = false;
+            }
+            // Keep the original line count without exposing any bytes from the key body.
+            redacted.push(String::new());
+            continue;
+        }
+        if let Some(begin) = uppercase.find("-----BEGIN")
+            && uppercase[begin..].contains("PRIVATE KEY-----")
+        {
+            let prefix = line.get(..begin).unwrap_or_default();
+            let prefix = redact_line(prefix, &mut state);
+            redacted.push(if prefix.is_empty() {
+                "[redacted private key]".to_owned()
+            } else {
+                format!("{prefix} [redacted private key]")
+            });
+            state.in_private_key = !uppercase[begin..].contains("-----END");
+            continue;
+        }
+        redacted.push(redact_line(line, &mut state));
+    }
+    redacted.join("\n")
 }
 
-fn redact_line(line: &str) -> String {
+#[derive(Default)]
+struct RedactionState {
+    in_private_key: bool,
+    expect_secret_value: bool,
+}
+
+fn redact_line(line: &str, state: &mut RedactionState) -> String {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut index = 0;
@@ -289,51 +346,75 @@ fn redact_line(line: &str) -> String {
         let token = tokens[index];
         let lower = token.to_ascii_lowercase();
 
+        if state.expect_secret_value {
+            if matches!(lower.as_str(), "=" | ":" | "bearer" | "basic" | "token") {
+                out.push(token.to_owned());
+            } else {
+                out.push(REDACTED_PLACEHOLDER.to_owned());
+                state.expect_secret_value = false;
+            }
+            index += 1;
+            continue;
+        }
         if looks_like_private_path(token) {
             out.push(PATH_PLACEHOLDER.to_owned());
             index += 1;
             continue;
         }
-        if CREDENTIAL_VALUE_MARKERS
-            .iter()
-            .any(|marker| lower.contains(marker))
-        {
-            out.push(REDACTED_PLACEHOLDER.to_owned());
-            index += 1;
-            continue;
-        }
-        if let Some(masked) = redact_key_value(token) {
+        if let Some(masked) = redact_url_userinfo(token) {
             out.push(masked);
             index += 1;
             continue;
         }
-
-        // Authorization headers: keep the label (and any auth scheme word) but mask
-        // the credential value that follows.
-        if lower.trim_end_matches([':', '=']) == "authorization" {
-            out.push(token.to_owned());
-            let mut next = index + 1;
-            if let Some(scheme) = tokens.get(next)
-                && matches!(
-                    scheme.to_ascii_lowercase().as_str(),
-                    "bearer" | "basic" | "token"
-                )
-            {
-                out.push((*scheme).to_owned());
-                next += 1;
-            }
-            if next < tokens.len() {
-                out.push(REDACTED_PLACEHOLDER.to_owned());
-                next += 1;
-            }
-            index = next;
+        if looks_like_credential_value(token) {
+            out.push(REDACTED_PLACEHOLDER.to_owned());
+            index += 1;
             continue;
         }
-        // Bare `Bearer <token>` scheme without an Authorization label.
-        if lower == "bearer" && index + 1 < tokens.len() {
+        if let Some(redaction) = redact_key_value(token) {
+            match redaction {
+                KeyValueRedaction::Inline(masked) => out.push(masked),
+                KeyValueRedaction::NeedsValue(label) => {
+                    out.push(label);
+                    state.expect_secret_value = true;
+                }
+            }
+            index += 1;
+            continue;
+        }
+
+        if let Some(redaction) = redact_authorization_header(token) {
+            out.push(redaction.label);
+            state.expect_secret_value = redaction.needs_value;
+            index += 1;
+            continue;
+        }
+
+        // A bare auth scheme is only treated as a credential when the next token is
+        // credential-shaped. This avoids corrupting ordinary prose such as
+        // "Bearer plants grow well here".
+        if matches!(lower.as_str(), "bearer" | "basic")
+            && tokens
+                .get(index + 1)
+                .is_some_and(|value| looks_like_credential_value(value))
+        {
             out.push(token.to_owned());
             out.push(REDACTED_PLACEHOLDER.to_owned());
             index += 2;
+            continue;
+        }
+
+        // Handle whitespace-separated assignments such as
+        // `AWS_SECRET_ACCESS_KEY = value` without treating normal prose that happens
+        // to contain the word "password" as an assignment.
+        if is_sensitive_key(token)
+            && tokens
+                .get(index + 1)
+                .is_some_and(|separator| matches!(*separator, "=" | ":"))
+        {
+            out.push(token.to_owned());
+            state.expect_secret_value = true;
+            index += 1;
             continue;
         }
 
@@ -345,26 +426,149 @@ fn redact_line(line: &str) -> String {
 
 /// Masks the value half of a `key=value` or `key: value` token when the key names a
 /// known secret, keeping the key so the sentence remains readable.
-fn redact_key_value(token: &str) -> Option<String> {
+fn redact_key_value(token: &str) -> Option<KeyValueRedaction> {
     for separator in ['=', ':'] {
         if let Some(position) = token.find(separator) {
             let (key, remainder) = token.split_at(position);
             let value = &remainder[separator.len_utf8()..];
-            if value.is_empty() {
-                continue;
-            }
-            let normalized_key = key
-                .to_ascii_lowercase()
-                .trim_matches(|character: char| {
-                    !character.is_ascii_alphanumeric() && character != '_' && character != '-'
-                })
-                .to_owned();
-            if SENSITIVE_KEYS.contains(&normalized_key.as_str()) {
-                return Some(format!("{key}{separator}{REDACTED_PLACEHOLDER}"));
+            if is_sensitive_key(key) {
+                return Some(if value.is_empty() {
+                    KeyValueRedaction::NeedsValue(token.to_owned())
+                } else {
+                    KeyValueRedaction::Inline(format!("{key}{separator}{REDACTED_PLACEHOLDER}"))
+                });
             }
         }
     }
     None
+}
+
+enum KeyValueRedaction {
+    Inline(String),
+    NeedsValue(String),
+}
+
+struct AuthorizationRedaction {
+    label: String,
+    needs_value: bool,
+}
+
+fn redact_authorization_header(token: &str) -> Option<AuthorizationRedaction> {
+    let lower = token.to_ascii_lowercase();
+    let (position, separator) = lower
+        .find(':')
+        .map(|position| (position, ':'))
+        .or_else(|| lower.find('=').map(|position| (position, '=')))?;
+    if lower.get(..position)? != "authorization" {
+        return None;
+    }
+
+    let remainder = token.get(position + separator.len_utf8()..)?;
+    if remainder.is_empty() {
+        return Some(AuthorizationRedaction {
+            label: token.to_owned(),
+            needs_value: true,
+        });
+    }
+    let lower_remainder = remainder.to_ascii_lowercase();
+    for scheme in ["bearer", "basic", "token"] {
+        if lower_remainder == scheme {
+            return Some(AuthorizationRedaction {
+                label: token.to_owned(),
+                needs_value: true,
+            });
+        }
+        if lower_remainder.starts_with(scheme)
+            && lower_remainder
+                .get(scheme.len()..)
+                .is_some_and(|value| !value.is_empty())
+        {
+            let prefix = token.get(..position + 1 + scheme.len())?;
+            return Some(AuthorizationRedaction {
+                label: format!("{prefix}{REDACTED_PLACEHOLDER}"),
+                needs_value: false,
+            });
+        }
+    }
+    Some(AuthorizationRedaction {
+        label: format!(
+            "{}{separator}{REDACTED_PLACEHOLDER}",
+            token.get(..position)?
+        ),
+        needs_value: false,
+    })
+}
+
+fn is_sensitive_key(value: &str) -> bool {
+    let normalized = value
+        .to_ascii_lowercase()
+        .trim_matches(|character: char| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        })
+        .to_owned();
+    SENSITIVE_KEYS.contains(&normalized.as_str())
+}
+
+fn redact_url_userinfo(token: &str) -> Option<String> {
+    let scheme_end = token.find("://")? + 3;
+    let at = token.get(scheme_end..)?.find('@')? + scheme_end;
+    (at > scheme_end).then(|| {
+        format!(
+            "{}{REDACTED_PLACEHOLDER}@{}",
+            token.get(..scheme_end).unwrap_or_default(),
+            token.get(at + 1..).unwrap_or_default()
+        )
+    })
+}
+
+fn looks_like_credential_value(token: &str) -> bool {
+    let token = token.trim_matches(|character: char| {
+        matches!(
+            character,
+            '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '"' | '\'' | '`'
+        )
+    });
+    let lower = token.to_ascii_lowercase();
+    CREDENTIAL_VALUE_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+        || looks_like_jwt(token)
+        || looks_like_high_entropy_blob(token)
+}
+
+fn looks_like_jwt(token: &str) -> bool {
+    let segments: Vec<&str> = token.split('.').collect();
+    segments.len() == 3
+        && segments.iter().all(|segment| {
+            segment.len() >= 8
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+}
+
+fn looks_like_high_entropy_blob(token: &str) -> bool {
+    if token.len() < 40
+        || token
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+    {
+        return false;
+    }
+    let mut lower = false;
+    let mut upper = false;
+    let mut digit = false;
+    let mut base64_symbol = false;
+    for byte in token.bytes() {
+        match byte {
+            b'a'..=b'z' => lower = true,
+            b'A'..=b'Z' => upper = true,
+            b'0'..=b'9' => digit = true,
+            b'+' | b'/' | b'_' | b'-' | b'=' => base64_symbol = true,
+            _ => return false,
+        }
+    }
+    lower && upper && digit && (base64_symbol || token.len() >= 48)
 }
 
 fn looks_like_private_path(token: &str) -> bool {
@@ -622,6 +826,84 @@ mod tests {
             .parse_hook("Stop", payload.to_string().as_bytes())
             .expect("valid hook");
         assert_eq!(request[0].body, None);
+    }
+
+    #[test]
+    fn excerpts_redact_adversarial_credential_formats_without_corrupting_prose() {
+        for (message, expected) in [
+            ("password: hunter2", "password: [redacted]"),
+            (
+                "Authorization:Bearer abc123",
+                "Authorization:Bearer [redacted]",
+            ),
+            (
+                "Authorization:\nBearer\nabc123",
+                "Authorization:\nBearer\n[redacted]",
+            ),
+            (
+                "Fetch https://alice:hunter2@example.com/resource",
+                "Fetch https://[redacted]@example.com/resource",
+            ),
+            (
+                "AWS_SECRET_ACCESS_KEY = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                "AWS_SECRET_ACCESS_KEY = [redacted]",
+            ),
+            (
+                "AWS session uses ASIAIOSFODNN7EXAMPLE",
+                "AWS session uses [redacted]",
+            ),
+            (
+                "GitHub OAuth gho_1234567890abcdefghijklmnopqrstuvwxyz",
+                "GitHub OAuth [redacted]",
+            ),
+            ("GitLab glpat-1234567890abcdefghijkl", "GitLab [redacted]"),
+            (
+                "OpenAI sk-1234567890abcdefghijklmnopqrstuvwxyz",
+                "OpenAI [redacted]",
+            ),
+            (
+                "JWT eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+                "JWT [redacted]",
+            ),
+            (
+                "Blob QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OUFCQ0RFRg==",
+                "Blob [redacted]",
+            ),
+            (
+                "Authorization is required before deployment",
+                "Authorization is required before deployment",
+            ),
+            (
+                "Bearer plants grow well here",
+                "Bearer plants grow well here",
+            ),
+        ] {
+            assert_eq!(
+                safe_agent_excerpt(message).as_deref(),
+                Some(expected),
+                "unexpected redaction for: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn excerpts_redact_complete_multiline_private_keys() {
+        let message = concat!(
+            "Use this key:\n",
+            "-----BEGIN PRIVATE KEY-----\n",
+            "QWxhZGRpbjpvcGVuIHNlc2FtZTEyMzQ1Njc4OUFCQ0RFRg==\n",
+            "another-key-body-line\n",
+            "-----END PRIVATE KEY-----\n",
+            "for deployment"
+        );
+        let excerpt = safe_agent_excerpt(message).expect("redacted message remains visible");
+        assert!(excerpt.contains("[redacted private key]"));
+        assert!(excerpt.contains("Use this key:"));
+        assert!(excerpt.contains("for deployment"));
+        assert!(!excerpt.contains("QWxhZGR"));
+        assert!(!excerpt.contains("another-key-body-line"));
+        assert!(!excerpt.contains("BEGIN PRIVATE KEY"));
+        assert!(!excerpt.contains("END PRIVATE KEY"));
     }
 
     #[test]

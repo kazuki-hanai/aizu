@@ -16,10 +16,11 @@ architectural invariant #12（prompt/response/絶対 path/secret を既定で通
 
 ## Decision
 
-1. `agent_details_enabled` の既定を `true` にする（core policy / desktop `Preferences` / frontend contract / persisted settings の serde default）。first-party adapter（`codex-v1` / `claude-code-v1`）のメッセージは既定で通知と activity に表示する。
+1. `agent_details_enabled` の既定を `true` にする（core policy / desktop `Preferences` / frontend contract / persisted settings の serde default）。first-party adapter（`codex-v1` / `claude-code-v1`）のメッセージは既定で通知と activity に表示する。pre-versioned settings に旧既定 `false` が保存済みの場合は、settings schema version 1 への一回限りの migration で `true` にする。version 1 以後に user が明示した `false` は保持する。
 2. `safe_agent_excerpt` を「破棄」から「in-place redaction」に変更する。
    - private path token → `[path]`
-   - credential value token（例: `ghp_...`, `sk-ant-...`, `AKIA...`, `-----BEGIN ...`）と `key=value` / `Authorization: Bearer <token>` の value 部分 → `[redacted]`
+   - credential value token（known provider token、JWT/high-entropy token）、secret `key=value`、Authorization header、credential-bearing URL → `[redacted]`
+   - multiline private key block 全体 → `[redacted private key]`
    - 残りのメッセージは保持し、必ず表示する。
    - 表示不能な non-whitespace control character を含む値のみ、従来通り excerpt 全体を破棄する。
 3. 非 first-party / remote spoof 対策として、trusted adapter 以外の `body` は引き続き通知へ出さない（generic テンプレートのまま）。
@@ -29,7 +30,7 @@ architectural invariant #12（prompt/response/絶対 path/secret を既定で通
 - すべての first-party 通知に agent メッセージが表示され、報告された「出ないケース」が解消する。
 - 実際の secret / 絶対 path はマスクされ、Notification Center やロック画面へ生の credential が残らない。
 - invariant #12 は「既定で secret を載せない」を維持する（redaction を強制）が、「adapter 要約は opt-in」という以前の既定は本 ADR で上書きされる。
-- 影響テスト: `aizu-core` の `adapter` / `notification` / `pipeline`、desktop `model`、frontend `App.test.tsx` を新挙動へ更新した。
+- 影響テスト: `aizu-core` の `adapter` / `notification` / `pipeline`（adapter → source spool → desktop history → notification の adversarial corpus を含む）、desktop `model` / `store` migration、frontend `App.test.tsx` を新挙動へ更新した。
 
 ## Alternatives considered
 
