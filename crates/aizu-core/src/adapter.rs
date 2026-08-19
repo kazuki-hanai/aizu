@@ -826,9 +826,8 @@ fn redact_uri_secrets(token: &str) -> Option<String> {
     if redact_url_userinfo(&classified).is_some() {
         return Some("[redacted URI]".to_owned());
     }
-    let sensitive_assignment = classified
-        .split(['?', '&', '#', ',', ';'])
-        .any(uri_segment_has_sensitive_value);
+    let sensitive_assignment =
+        classified.chars().any(char::is_control) || uri_has_sensitive_assignment(&classified);
     let credential_component = classified
         .split(|character: char| {
             matches!(
@@ -840,16 +839,42 @@ fn redact_uri_secrets(token: &str) -> Option<String> {
     (sensitive_assignment || credential_component).then(|| "[redacted URI]".to_owned())
 }
 
-fn uri_segment_has_sensitive_value(segment: &str) -> bool {
-    let Some((key, value)) = segment.split_once('=').or_else(|| segment.split_once(':')) else {
-        return false;
-    };
-    let key = key.rsplit('/').next().unwrap_or_default();
-    if !is_sensitive_key(key) || value.is_empty() {
-        return false;
-    }
-    let normalized_key = key.to_ascii_lowercase();
-    normalized_key != "token" || looks_like_credential_value(value) || looks_like_token_value(value)
+fn uri_has_sensitive_assignment(uri: &str) -> bool {
+    let lower = uri.to_ascii_lowercase();
+    SENSITIVE_KEYS.iter().any(|key| {
+        lower.match_indices(key).any(|(offset, _)| {
+            let before = lower.as_bytes().get(offset.wrapping_sub(1)).copied();
+            if offset > 0
+                && !matches!(
+                    before,
+                    Some(b'?' | b'&' | b'#' | b',' | b';' | b'=' | b':' | b'/' | b'[')
+                )
+            {
+                return false;
+            }
+            let mut value_start = offset + key.len();
+            if lower.as_bytes().get(value_start) == Some(&b']') {
+                value_start += 1;
+            }
+            if !matches!(lower.as_bytes().get(value_start), Some(b'=' | b':')) {
+                return false;
+            }
+            value_start += 1;
+            let value_end = lower
+                .get(value_start..)
+                .and_then(|value| {
+                    value.find(|character: char| {
+                        matches!(character, '&' | '#' | ',' | ';') || character.is_whitespace()
+                    })
+                })
+                .map_or(lower.len(), |length| value_start + length);
+            let value = uri.get(value_start..value_end).unwrap_or_default();
+            if value.is_empty() {
+                return false;
+            }
+            *key != "token" || looks_like_credential_value(value) || looks_like_token_value(value)
+        })
+    })
 }
 
 fn bounded_percent_decode(value: &str) -> Option<String> {
@@ -1037,10 +1062,48 @@ fn contextual_value_should_redact(key: &str, candidate: &str, has_following_toke
         } else {
             looks_like_token_value(candidate)
         };
-        shaped && !has_following_token
+        shaped && !(has_following_token && looks_like_ordinary_context_candidate(candidate))
     } else {
         looks_like_secret_candidate(candidate)
     }
+}
+
+fn looks_like_ordinary_context_candidate(token: &str) -> bool {
+    let token = trimmed_token(token);
+    let lower = token.to_ascii_lowercase();
+    if token.bytes().all(|byte| byte.is_ascii_lowercase()) {
+        let vowels = token
+            .bytes()
+            .filter(|byte| matches!(byte, b'a' | b'e' | b'i' | b'o' | b'u' | b'y'))
+            .count();
+        return vowels * 5 >= token.len()
+            && vowels * 2 <= token.len()
+            && !has_long_alphabet_sequence(token);
+    }
+    token
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && lower.contains(|character: char| character.is_ascii_digit())
+        && (["version", "release", "build", "storage", "deployment"]
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+            || lower.ends_with("identifier"))
+}
+
+fn has_long_alphabet_sequence(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    let mut run = 1;
+    for pair in bytes.windows(2) {
+        if pair[1] == pair[0].saturating_add(1) {
+            run += 1;
+            if run >= 8 {
+                return true;
+            }
+        } else {
+            run = 1;
+        }
+    }
+    false
 }
 
 fn looks_like_token_value(token: &str) -> bool {
@@ -1560,6 +1623,26 @@ mod tests {
                 "Open https://host.example/docs?mytoken=estimate",
             ),
             (
+                "Open https://host/path?foo=password=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?foo=password%3Dhunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?user[password]=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open data:text/plain,foo=password=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?foo=%0Apassword=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
                 "Open https://host/path?password%GGhunter2",
                 "Open [redacted URI]",
             ),
@@ -1732,6 +1815,38 @@ mod tests {
             (
                 "Blob customerreferenceidentifier remains documented",
                 "Blob customerreferenceidentifier remains documented",
+            ),
+            (
+                "Bearer abcdefghijklmnopqrstuvwxyzabcdef expires tomorrow",
+                "Bearer [redacted] expires tomorrow",
+            ),
+            (
+                "Token abcdefghijklmnopqrstuvwxyzabcdef is active",
+                "Token [redacted] is active",
+            ),
+            (
+                "Blob ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMN decoded successfully",
+                "Blob [redacted] decoded successfully",
+            ),
+            (
+                "Base64 ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMN decodes correctly",
+                "Base64 [redacted] decodes correctly",
+            ),
+            (
+                "Encoded abcdefghijklmnopqrstuvwxyzabcdef was received",
+                "Encoded [redacted] was received",
+            ),
+            (
+                "Bearer abcdefghijklmnopqrstuvwxyzabcdef, expires tomorrow",
+                "Bearer [redacted] expires tomorrow",
+            ),
+            (
+                "Bearer\nabcdefghijklmnopqrstuvwxyzabcdef expires tomorrow",
+                "Bearer\n[redacted] expires tomorrow",
+            ),
+            (
+                "Token value abcdefghijklmnopqrstuvwxyzabcdef is active",
+                "Token value [redacted] is active",
             ),
         ] {
             assert_eq!(

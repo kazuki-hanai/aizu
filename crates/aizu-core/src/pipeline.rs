@@ -647,6 +647,41 @@ mod tests {
                 "abcdefghijklmnop123identifier",
             ),
             (
+                "Bearer abcdefghijklmnopqrstuvwxyzabcdef expires tomorrow",
+                "Bearer [redacted] expires tomorrow",
+                "abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "Token abcdefghijklmnopqrstuvwxyzabcdef is active",
+                "Token [redacted] is active",
+                "abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "Blob ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMN decoded successfully",
+                "Blob [redacted] decoded successfully",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            ),
+            (
+                "Base64 ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMN decodes correctly",
+                "Base64 [redacted] decodes correctly",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            ),
+            (
+                "Encoded abcdefghijklmnopqrstuvwxyzabcdef was received",
+                "Encoded [redacted] was received",
+                "abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "Bearer\nabcdefghijklmnopqrstuvwxyzabcdef expires tomorrow",
+                "Bearer\n[redacted] expires tomorrow",
+                "abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "Token value abcdefghijklmnopqrstuvwxyzabcdef is active",
+                "Token value [redacted] is active",
+                "abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
                 "-----BEGIN PRIVATE\nKEY-----\nshortSecretBody\n-----END PRIVATE KEY-----\nsafe ending",
                 "[redacted private key]",
                 "shortSecretBody",
@@ -847,6 +882,31 @@ mod tests {
             ),
             (
                 "Open https://host/path?password%2=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?foo=password=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?foo=password%3Dhunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?user[password]=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open data:text/plain,foo=password=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?foo=%0Apassword=hunter2",
                 "Open [redacted URI]",
                 "hunter2",
             ),
