@@ -700,17 +700,21 @@ trait Notifier {
 - macOS Notifications へ即時切替できる。権限要求は初回起動直後ではなく、テスト通知などの明示操作で行う。
 - macOS Notifications が拒否された場合は System Settings への案内を表示する。
 - テストでは `FakeNotifier` を利用する。
-- macOS Notification Center は表示専用とし、response waiter や terminal activation descriptor
-  を保持しない。クリックで Aizu main window や推測した terminal を開かない。terminal 復帰
-  が必要な場合は Aizu Banner を使う。
+- macOS Notification Center は app-lifetime の単一 response delegate と最大64件の
+  notification ID → terminal activation 対応表を使う。通知ごとの task/future/waiter は
+  作らない。local first-party 通知の通常クリックは対応表から target を一度だけ取り出して
+  Aizu Banner と同じ固定 adapter を background 実行し、dismiss/その他actionはtargetを
+  破棄する。上限超過時は古いtargetからaction対象外にするが通知表示は維持する。クリックで
+  Aizu main window は開かない。
 - question は音あり、completed は既定で音なしを推奨する。
 
 terminal 復帰は `TerminalActivation` の固定 adapter 境界に置く。iTerm2 は bounded
 session ID の reveal URL、WezTerm は numeric pane ID の固定 CLI、tmux は current user
 の socket label と `%N` pane ID を固定 argv で選択する。Apple Terminal、Ghostty、
-Warp、Kitty、VS Code は固定 bundle ID の application focus へ fallback する。shell
-command string、AppleScript、remote payload が指定した executable/bundle ID は実行
-しない。adapter process は timeout 付きで、Aizu が起動した child だけを終了する。
+Warp、Kitty、VS Code は固定 bundle ID の application focus へ fallback する。iTerm2 と
+WezTerm は exact identifier がない場合はaction自体を作らず、bundle focusへfallback
+しない。shell command string、AppleScript、remote payload が指定した executable/bundle
+ID は実行しない。adapter process は timeout 付きで、Aizu が起動した child だけを終了する。
 
 この action は `source_key == "local"` かつ trusted Codex/Claude Code adapter の event
 だけに付与する。SSH source の hook environment は接続先 host の terminal を表し、
@@ -1026,6 +1030,8 @@ Frontend:
    確認する。
 8. desktop E2E は actionable Aizu Banner の click が test-only fixed adapter に1回だけ
    到達して queue から消え、hidden main window を開かないことを実 WebKit で確認する。
+9. macOS Notification Center の response registry は最大64件で、replacement、schedule
+   failure、default click、dismissを処理しても古いtargetが復活しないことをunit testする。
 
 #### Bridge pipeline
 

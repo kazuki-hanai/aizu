@@ -32,28 +32,34 @@ non-interactive SSH child. Opening a fresh SSH connection would not return to th
    - iTerm2 reveal URL for an exact session;
    - WezTerm `cli activate-pane --pane-id` for a numeric pane;
    - tmux `-L <label> select-window/select-pane -t %N` with fixed argv;
-   - fixed bundle-ID application focus for Apple Terminal, iTerm2, WezTerm, Ghostty, Warp, Kitty,
-     and VS Code when exact selection is unavailable.
+   - fixed bundle-ID application focus for Apple Terminal, Ghostty, Warp, Kitty, and VS Code.
+   iTerm2 and WezTerm require an exact session/pane identifier and never downgrade to bundle focus.
 5. Adapter children have a bounded timeout and Aizu terminates only children it started. No shell
    command string or AppleScript is used.
-6. Only Aizu Banner uses the hidden backend descriptor. The frontend receives only
+6. Aizu Banner uses the hidden backend descriptor. The frontend receives only
    `canActivateTerminal` and sends the notification ID back. A normal click or keyboard activation
    returns to the terminal; text selection, vertical movement, and swipe do not. Successful
-   activation dismisses an Aizu Banner. Failure leaves it queued. macOS Notification Center
-   alerts are display-only because the available safe notification wrapper does not provide a
-   cancellable, bounded response registration lifecycle.
-7. Notification activation never opens the Aizu main window. Explicit tray Open and launching a
+   activation dismisses an Aizu Banner. Failure leaves it queued.
+7. macOS Notification Center installs one app-lifetime response delegate and keeps at most 64
+   notification-ID-to-target entries. It does not create a task, future, or waiter per
+   notification. A default click atomically consumes one entry and runs the same fixed adapter on
+   a background task; dismiss and other actions only remove the entry. New entries evict the
+   oldest target when the bound is reached, without affecting notification display.
+8. Notification activation never opens the Aizu main window. Explicit tray Open and launching a
    second app instance remain the supported ways to show the main window.
 
 ## Consequences
 
 - Local iTerm2, WezTerm, and tmux users can return to an exact live target when its identifier is
   still valid. Other supported terminals receive a predictable application-focus fallback.
+- iTerm2's reveal URL acknowledges the LaunchServices handoff, not proof that a stale session was
+  selected. Aizu never converts that handoff into a less precise iTerm2 bundle-focus action.
 - Remote SSH notifications intentionally have no return-to-shell action. This avoids targeting the
   wrong local session and preserves the existing SSH trust model.
 - Stale sessions or missing applications can fail without executing attacker-controlled input.
-- Aizu Banner actions are persisted in the in-memory bounded banner queue only. System
-  notifications do not retain response observers or activation descriptors.
+- Aizu Banner actions are persisted in its bounded in-memory queue. Notification Center actions
+  use a separate bounded in-memory registry; both registries are lost safely on app exit and no
+  activation descriptor crosses the SSH bridge or reaches durable remote storage.
 
 ## Alternatives considered
 

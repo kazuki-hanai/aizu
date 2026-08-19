@@ -115,7 +115,7 @@ pub fn run() {
             let notification_recorder =
                 notifier::FakeNotifier::with_permission(model::PermissionStatus::NotDetermined);
             #[cfg(not(feature = "desktop-e2e"))]
-            let notifier = Arc::new(notifier::SystemNotifier::new(app.handle().clone()));
+            let notifier = Arc::new(notifier::SystemNotifier::new(app.handle().clone())?);
             #[cfg(feature = "desktop-e2e")]
             let service_notifier: Arc<dyn notifier::Notifier> =
                 notifier::E2eNotifier::new(app.handle().clone(), notification_recorder.clone());

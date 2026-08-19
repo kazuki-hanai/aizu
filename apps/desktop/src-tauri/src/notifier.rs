@@ -1,7 +1,7 @@
-#[cfg(any(test, feature = "desktop-e2e"))]
-use std::sync::Arc;
-#[cfg(any(test, feature = "desktop-e2e"))]
-use std::sync::Mutex;
+#[cfg(target_os = "macos")]
+use std::collections::{BTreeMap, VecDeque};
+#[cfg(any(test, feature = "desktop-e2e", target_os = "macos"))]
+use std::sync::{Arc, Mutex};
 
 #[cfg(not(target_os = "macos"))]
 use tauri::plugin::PermissionState as TauriPermissionState;
@@ -11,6 +11,11 @@ use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
 
 use crate::model::{Notification, NotificationDelivery, PermissionStatus};
+#[cfg(target_os = "macos")]
+use user_notify_reborn::{NotifyManager, NotifyManagerExt, NotifyResponseAction};
+
+#[cfg(target_os = "macos")]
+const MAX_SYSTEM_ACTIVATIONS: usize = 64;
 
 #[derive(Debug, Error)]
 pub enum NotifyError {
@@ -18,6 +23,8 @@ pub enum NotifyError {
     Permission(String),
     #[error("native notification scheduling failed: {0}")]
     Scheduling(String),
+    #[error("native notification response handler setup failed: {0}")]
+    ResponseHandler(String),
 }
 
 pub trait Notifier: Send + Sync {
@@ -28,12 +35,133 @@ pub trait Notifier: Send + Sync {
 
 pub struct SystemNotifier {
     app: AppHandle<Wry>,
+    #[cfg(target_os = "macos")]
+    responses: Arc<Mutex<SystemActivationRegistry>>,
+    #[cfg(target_os = "macos")]
+    _response_manager: NotifyManager,
 }
 
 impl SystemNotifier {
-    pub fn new(app: AppHandle<Wry>) -> Self {
-        Self { app }
+    pub fn new(app: AppHandle<Wry>) -> Result<Self, NotifyError> {
+        #[cfg(target_os = "macos")]
+        {
+            // Initialize mac-usernotifications first because its worker installs a delegate once.
+            // The app-owned delegate registered below must remain the final center delegate.
+            system_permission_status(&app)?;
+
+            let responses = Arc::new(Mutex::new(SystemActivationRegistry::default()));
+            let response_manager = NotifyManager::try_new("dev.aizu.desktop", None)
+                .map_err(|error| NotifyError::ResponseHandler(error.to_string()))?;
+            let callback_responses = Arc::clone(&responses);
+            response_manager
+                .register(
+                    Box::new(move |response| {
+                        if let Some(activation) = take_system_response(
+                            &callback_responses,
+                            &response.notification_id,
+                            &response.action,
+                        ) {
+                            drop(tauri::async_runtime::spawn_blocking(move || {
+                                let _ = crate::terminal_activation::activate(&activation);
+                            }));
+                        }
+                    }),
+                    Vec::new(),
+                )
+                .map_err(|error| NotifyError::ResponseHandler(error.to_string()))?;
+
+            Ok(Self {
+                app,
+                responses,
+                _response_manager: response_manager,
+            })
+        }
+        #[cfg(not(target_os = "macos"))]
+        Ok(Self { app })
     }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct SystemActivationEntry {
+    token: u64,
+    activation: aizu_core::TerminalActivation,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct SystemActivationRegistry {
+    entries: BTreeMap<String, SystemActivationEntry>,
+    order: VecDeque<(String, u64)>,
+    next_token: u64,
+}
+
+#[cfg(target_os = "macos")]
+impl SystemActivationRegistry {
+    fn replace(
+        &mut self,
+        identifier: &str,
+        activation: Option<aizu_core::TerminalActivation>,
+    ) -> Option<u64> {
+        self.entries.remove(identifier);
+        self.order.retain(|(stored, _)| stored != identifier);
+        let activation = activation?;
+
+        while self.entries.len() >= MAX_SYSTEM_ACTIVATIONS {
+            let Some((oldest, token)) = self.order.pop_front() else {
+                break;
+            };
+            if self
+                .entries
+                .get(&oldest)
+                .is_some_and(|entry| entry.token == token)
+            {
+                self.entries.remove(&oldest);
+            }
+        }
+
+        self.next_token = self.next_token.wrapping_add(1).max(1);
+        let token = self.next_token;
+        self.entries.insert(
+            identifier.to_owned(),
+            SystemActivationEntry { token, activation },
+        );
+        self.order.push_back((identifier.to_owned(), token));
+        Some(token)
+    }
+
+    fn remove_if(&mut self, identifier: &str, token: u64) {
+        if self
+            .entries
+            .get(identifier)
+            .is_some_and(|entry| entry.token == token)
+        {
+            self.entries.remove(identifier);
+            self.order
+                .retain(|(stored, stored_token)| stored != identifier || *stored_token != token);
+        }
+    }
+
+    fn take(&mut self, identifier: &str) -> Option<aizu_core::TerminalActivation> {
+        let entry = self.entries.remove(identifier)?;
+        self.order.retain(|(stored, _)| stored != identifier);
+        Some(entry.activation)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn take_system_response(
+    responses: &Mutex<SystemActivationRegistry>,
+    identifier: &str,
+    action: &NotifyResponseAction,
+) -> Option<aizu_core::TerminalActivation> {
+    let activation = responses
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take(identifier);
+    matches!(action, NotifyResponseAction::Default)
+        .then_some(activation)
+        .flatten()
 }
 
 impl Notifier for SystemNotifier {
@@ -50,7 +178,7 @@ impl Notifier for SystemNotifier {
             return crate::banner::show(&self.app, notification);
         }
         #[cfg(target_os = "macos")]
-        return show_system_notification(&self.app, notification);
+        return show_system_notification(&self.responses, notification);
         #[cfg(not(target_os = "macos"))]
         show_system_notification(&self.app, notification)
     }
@@ -119,11 +247,23 @@ fn request_system_permission(app: &AppHandle<Wry>) -> Result<PermissionStatus, N
 
 #[cfg(target_os = "macos")]
 fn show_system_notification(
-    _app: &AppHandle<Wry>,
+    responses: &Mutex<SystemActivationRegistry>,
     notification: &Notification,
 ) -> Result<(), NotifyError> {
-    build_macos_notification(notification)
-        .send_blocking()
+    let identifier = macos_notification_id(notification.id);
+    let token = responses
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace(&identifier, notification.activation.clone());
+    let scheduled = mac_usernotifications::blocking::send(build_macos_notification(notification));
+    if let (Err(error), Some(token)) = (&scheduled, token) {
+        responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove_if(&identifier, token);
+        return Err(NotifyError::Scheduling(error.to_string()));
+    }
+    scheduled
         .map(drop)
         .map_err(|error| NotifyError::Scheduling(error.to_string()))
 }
@@ -280,9 +420,19 @@ mod tests {
     };
 
     use super::{
-        PermissionStatus, build_macos_notification, macos_notification_id, map_macos_permission,
-        map_macos_settings, native_sound_name,
+        MAX_SYSTEM_ACTIVATIONS, PermissionStatus, SystemActivationRegistry,
+        build_macos_notification, macos_notification_id, map_macos_permission, map_macos_settings,
+        native_sound_name, take_system_response,
     };
+    use user_notify_reborn::NotifyResponseAction;
+
+    fn iterm_target(session: &str) -> aizu_core::TerminalActivation {
+        aizu_core::TerminalActivation {
+            application: aizu_core::TerminalApplication::Iterm2,
+            application_session: Some(session.to_owned()),
+            tmux: None,
+        }
+    }
 
     #[test]
     fn macos_permission_statuses_preserve_denial_and_prompt_state() {
@@ -333,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_notifications_are_scheduled_without_an_action_waiter() {
+    fn macos_notifications_use_stable_ids_without_per_notification_waiters() {
         let notification = crate::model::Notification {
             id: 42,
             title: "Ready".to_owned(),
@@ -349,5 +499,80 @@ mod tests {
         let _native = build_macos_notification(&notification);
 
         assert_eq!(macos_notification_id(notification.id), "aizu-0000002a");
+    }
+
+    #[test]
+    fn system_activation_registry_is_globally_bounded_and_keeps_newest_targets() {
+        let mut registry = SystemActivationRegistry::default();
+        for index in 0..=MAX_SYSTEM_ACTIVATIONS {
+            let identifier = format!("aizu-{index:08x}");
+            registry.replace(&identifier, Some(iterm_target(&format!("session-{index}"))));
+        }
+
+        assert_eq!(registry.entries.len(), MAX_SYSTEM_ACTIVATIONS);
+        assert!(registry.take("aizu-00000000").is_none());
+        assert_eq!(
+            registry
+                .take(&format!("aizu-{MAX_SYSTEM_ACTIVATIONS:08x}"))
+                .and_then(|target| target.application_session),
+            Some(format!("session-{MAX_SYSTEM_ACTIVATIONS}"))
+        );
+    }
+
+    #[test]
+    fn failed_old_schedule_cannot_remove_a_newer_replacement() {
+        let mut registry = SystemActivationRegistry::default();
+        let old = registry
+            .replace("aizu-0000002a", Some(iterm_target("old")))
+            .expect("old token");
+        registry
+            .replace("aizu-0000002a", Some(iterm_target("new")))
+            .expect("new token");
+
+        registry.remove_if("aizu-0000002a", old);
+
+        assert_eq!(
+            registry
+                .take("aizu-0000002a")
+                .and_then(|target| target.application_session),
+            Some("new".to_owned())
+        );
+    }
+
+    #[test]
+    fn non_actionable_replacement_clears_a_stale_target() {
+        let mut registry = SystemActivationRegistry::default();
+        registry.replace("aizu-0000002a", Some(iterm_target("old")));
+
+        assert!(registry.replace("aizu-0000002a", None).is_none());
+        assert!(registry.take("aizu-0000002a").is_none());
+    }
+
+    #[test]
+    fn only_default_response_consumes_and_returns_an_activation() {
+        let registry = std::sync::Mutex::new(SystemActivationRegistry::default());
+        registry
+            .lock()
+            .expect("registry")
+            .replace("aizu-0000002a", Some(iterm_target("dismissed")));
+
+        assert!(
+            take_system_response(&registry, "aizu-0000002a", &NotifyResponseAction::Dismiss,)
+                .is_none()
+        );
+        assert!(
+            take_system_response(&registry, "aizu-0000002a", &NotifyResponseAction::Default,)
+                .is_none()
+        );
+
+        registry
+            .lock()
+            .expect("registry")
+            .replace("aizu-0000002a", Some(iterm_target("clicked")));
+        assert_eq!(
+            take_system_response(&registry, "aizu-0000002a", &NotifyResponseAction::Default,)
+                .and_then(|target| target.application_session),
+            Some("clicked".to_owned())
+        );
     }
 }

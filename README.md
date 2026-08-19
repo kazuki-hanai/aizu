@@ -145,9 +145,9 @@ events remain in the source SQLite spool while the Mac is disconnected.
   selecting or dragging it does not activate the terminal.
 - **macOS Notifications** uses Notification Center. Select it under
   **Settings > Notification style**, then use the test action to request system
-  permission. Notification Center alerts are display-only: clicking them does
-  not open Aizu or guess which terminal to activate. Use Aizu Banner when you
-  want click-to-terminal behavior.
+  permission. Clicking an actionable local Codex or Claude Code alert uses the
+  same fixed terminal adapter as Aizu Banner and does not open Aizu. Remote,
+  generic, and test alerts remain non-actionable.
 - **Aizu Pop** is the default sound. Change it or turn sound off under
   **Settings > Notification sound**.
 - **Show agent details** is on by default and adds a short filtered completion

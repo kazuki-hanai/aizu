@@ -962,9 +962,7 @@ impl aizu_core::Notifier for PipelineNotifier<'_> {
                 Err(_) => return Err(aizu_core::NotifyError::Retryable),
             },
         }
-        let activation = (self.delivery == NotificationDelivery::AizuBanner)
-            .then(|| notification.activation.clone())
-            .flatten();
+        let activation = notification.activation.clone();
         self.notifier
             .notify(&Notification {
                 id: stable_notification_id(&notification.identifier),
@@ -1513,7 +1511,7 @@ mod tests {
     }
 
     #[test]
-    fn system_notifications_are_stable_and_do_not_retain_terminal_actions() {
+    fn system_notifications_are_stable_and_retain_trusted_terminal_actions() {
         let notifier = FakeNotifier::with_permission(PermissionStatus::Granted);
         let adapter = PipelineNotifier {
             notifier: notifier.as_ref(),
@@ -1549,8 +1547,8 @@ mod tests {
             Some(crate::model::NotificationSound::Pulse)
         );
         assert_eq!(notifications[0].text_size, crate::model::TextSize::Large);
-        assert!(!notifications[0].can_activate_terminal);
-        assert!(notifications[0].activation.is_none());
+        assert!(notifications[0].can_activate_terminal);
+        assert!(notifications[0].activation.is_some());
 
         let banner_notifier = FakeNotifier::with_permission(PermissionStatus::NotDetermined);
         let banner_adapter = PipelineNotifier {

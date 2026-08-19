@@ -101,28 +101,30 @@ fn activation_plan(
                 .ok_or(TerminalActivationError::ApplicationUnavailable)?,
         );
     } else {
-        commands.push(application_fallback(target.application));
+        commands.push(
+            application_fallback(target.application)
+                .ok_or(TerminalActivationError::ApplicationUnavailable)?,
+        );
     }
     Ok(commands)
 }
 
-fn application_fallback(application: TerminalApplication) -> CommandSpec {
+fn application_fallback(application: TerminalApplication) -> Option<CommandSpec> {
     let bundle_identifier = match application {
-        TerminalApplication::Iterm2 => "com.googlecode.iterm2",
         TerminalApplication::AppleTerminal => "com.apple.Terminal",
-        TerminalApplication::WezTerm => "com.github.wez.wezterm",
         TerminalApplication::Ghostty => "com.mitchellh.ghostty",
         TerminalApplication::Warp => "dev.warp.Warp-Stable",
         TerminalApplication::Kitty => "net.kovidgoyal.kitty",
         TerminalApplication::VisualStudioCode => "com.microsoft.VSCode",
+        TerminalApplication::Iterm2 | TerminalApplication::WezTerm => return None,
     };
-    CommandSpec {
+    Some(CommandSpec {
         executable: OPEN.into(),
         arguments: ["-b", bundle_identifier]
             .into_iter()
             .map(OsString::from)
             .collect(),
-    }
+    })
 }
 
 fn tmux_command(target: &TmuxActivation) -> Option<CommandSpec> {
@@ -257,7 +259,8 @@ mod tests {
 
     #[test]
     fn fallback_bundle_identifiers_are_not_event_controlled() {
-        let terminal = application_fallback(TerminalApplication::AppleTerminal);
+        let terminal = application_fallback(TerminalApplication::AppleTerminal)
+            .expect("Apple Terminal fallback");
         assert_eq!(terminal.executable, Path::new("/usr/bin/open"));
         assert_eq!(
             terminal.arguments,
@@ -287,5 +290,11 @@ mod tests {
                 .iter()
                 .any(|argument| argument == "-b")
         );
+    }
+
+    #[test]
+    fn exact_session_terminals_have_no_bundle_focus_fallback() {
+        assert!(application_fallback(TerminalApplication::Iterm2).is_none());
+        assert!(application_fallback(TerminalApplication::WezTerm).is_none());
     }
 }

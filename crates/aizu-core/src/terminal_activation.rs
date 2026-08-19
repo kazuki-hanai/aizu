@@ -77,9 +77,7 @@ impl TerminalActivation {
                 | TerminalApplication::Ghostty
                 | TerminalApplication::Warp
                 | TerminalApplication::Kitty
-                | TerminalApplication::VisualStudioCode
-                | TerminalApplication::Iterm2
-                | TerminalApplication::WezTerm,
+                | TerminalApplication::VisualStudioCode,
                 None,
             ) => true,
             _ => false,
@@ -111,8 +109,6 @@ fn capture_application(
     let term_program = get("TERM_PROGRAM").unwrap_or_default();
     let application = match term_program.as_str() {
         "Apple_Terminal" => TerminalApplication::AppleTerminal,
-        "iTerm.app" => TerminalApplication::Iterm2,
-        "WezTerm" => TerminalApplication::WezTerm,
         "ghostty" | "Ghostty" => TerminalApplication::Ghostty,
         "WarpTerminal" | "Warp" => TerminalApplication::Warp,
         "kitty" => TerminalApplication::Kitty,
@@ -232,6 +228,28 @@ mod tests {
     }
 
     #[test]
+    fn exact_session_terminals_are_not_captured_without_their_session_id() {
+        assert!(capture(&[("TERM_PROGRAM", "iTerm.app")]).is_none());
+        assert!(capture(&[("TERM_PROGRAM", "WezTerm")]).is_none());
+        assert!(
+            !TerminalActivation {
+                application: TerminalApplication::Iterm2,
+                application_session: None,
+                tmux: None,
+            }
+            .is_valid()
+        );
+        assert!(
+            !TerminalActivation {
+                application: TerminalApplication::WezTerm,
+                application_session: None,
+                tmux: None,
+            }
+            .is_valid()
+        );
+    }
+
+    #[test]
     fn rejects_paths_commands_and_unknown_metadata_fields() {
         assert!(capture(&[("ITERM_SESSION_ID", "../../Applications/Bad.app")]).is_none());
         assert!(capture(&[("WEZTERM_PANE", "1;open -a Calculator")]).is_none());
@@ -241,8 +259,6 @@ mod tests {
                 ("TMUX_PANE", "%1"),
                 ("TMUX", "/private/tmp/tmux-501/..,1,0"),
             ])
-            .expect("iTerm fallback remains")
-            .tmux
             .is_none()
         );
         assert!(
@@ -251,8 +267,6 @@ mod tests {
                 ("TMUX_PANE", "%1"),
                 ("TMUX", "/Users/alice/custom.sock,1,0"),
             ])
-            .expect("iTerm fallback remains")
-            .tmux
             .is_none()
         );
         assert!(
