@@ -15,7 +15,7 @@ pub trait AgentAdapter {
 pub struct ClaudeCodeAdapter;
 
 const NOTIFICATION_EXCERPT_MAX_CHARS: usize = 240;
-const MAX_PERCENT_DECODE_ROUNDS: usize = 4;
+const MAX_PERCENT_DECODE_ROUNDS: usize = 8;
 const MAX_CLASSIFICATION_BYTES: usize = 4_096;
 /// Placeholder substituted for a redacted credential-like token.
 const REDACTED_PLACEHOLDER: &str = "[redacted]";
@@ -767,7 +767,13 @@ fn redact_file_url(token: &str) -> Option<String> {
     }
     let path_start = file + 5;
     let path = token.get(path_start..)?;
-    let classified_path = bounded_percent_decode(path).to_ascii_lowercase();
+    let Some(classified_path) = bounded_percent_decode(path) else {
+        return Some(format!(
+            "{}{PATH_PLACEHOLDER}",
+            token.get(..path_start).unwrap_or("file:")
+        ));
+    };
+    let classified_path = classified_path.to_ascii_lowercase();
     let absolute = path.starts_with(['/', '\\'])
         || classified_path.starts_with("%2f")
         || classified_path.starts_with("%5c")
@@ -804,7 +810,9 @@ fn redact_uri_secrets(token: &str) -> Option<String> {
     if !looks_like_non_file_uri(token) {
         return None;
     }
-    let classified = bounded_percent_decode(token);
+    let Some(classified) = bounded_percent_decode(token) else {
+        return Some("[redacted URI]".to_owned());
+    };
     let sensitive_assignment = classified
         .split(['?', '&', '#', ',', ';'])
         .any(uri_segment_has_sensitive_value);
@@ -831,9 +839,9 @@ fn uri_segment_has_sensitive_value(segment: &str) -> bool {
     normalized_key != "token" || looks_like_credential_value(value) || looks_like_token_value(value)
 }
 
-fn bounded_percent_decode(value: &str) -> String {
+fn bounded_percent_decode(value: &str) -> Option<String> {
     if value.len() > MAX_CLASSIFICATION_BYTES {
-        return value.chars().take(MAX_CLASSIFICATION_BYTES).collect();
+        return None;
     }
     let mut current = value.as_bytes().to_vec();
     for _ in 0..MAX_PERCENT_DECODE_ROUNDS {
@@ -857,10 +865,11 @@ fn bounded_percent_decode(value: &str) -> String {
         }
         current = decoded;
         if !changed {
-            break;
+            return String::from_utf8(current).ok();
         }
     }
-    String::from_utf8_lossy(&current).into_owned()
+    let decoded = String::from_utf8(current).ok()?;
+    (!contains_percent_encoding(&decoded)).then_some(decoded)
 }
 
 const fn hex_value(byte: u8) -> Option<u8> {
@@ -870,6 +879,12 @@ const fn hex_value(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
+}
+
+fn contains_percent_encoding(value: &str) -> bool {
+    value.as_bytes().windows(3).any(|window| {
+        window[0] == b'%' && hex_value(window[1]).is_some() && hex_value(window[2]).is_some()
+    })
 }
 
 fn uri_authority_start(token: &str) -> Option<usize> {
@@ -1012,22 +1027,24 @@ fn looks_like_token_value(token: &str) -> bool {
     {
         return false;
     }
-    let has_digit = token.bytes().any(|byte| byte.is_ascii_digit());
-    let has_encoding_symbol = token
-        .bytes()
-        .any(|byte| matches!(byte, b'+' | b'/' | b'_' | b'-' | b'='));
-    let mut distinct = [false; 62];
-    for byte in token.bytes().filter(u8::is_ascii_alphanumeric) {
-        let index = match byte {
-            b'0'..=b'9' => usize::from(byte - b'0'),
-            b'A'..=b'Z' => 10 + usize::from(byte - b'A'),
-            b'a'..=b'z' => 36 + usize::from(byte - b'a'),
-            _ => continue,
-        };
-        distinct[index] = true;
-    }
-    let low_diversity = distinct.into_iter().filter(|present| *present).count() <= 4;
-    has_digit || has_encoding_symbol || low_diversity
+    !looks_like_ordinary_context_identifier(token)
+}
+
+fn looks_like_ordinary_context_identifier(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    [
+        "version",
+        "release",
+        "build",
+        "storage",
+        "international",
+        "deployment",
+        "documentation",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+        || (lower.contains(|character: char| character.is_ascii_digit())
+            && lower.ends_with("identifier"))
 }
 
 fn looks_like_long_random_candidate(token: &str) -> bool {
@@ -1451,6 +1468,10 @@ mod tests {
                 "Open file:%2525252Froot%2525252F.ssh%2525252Fid_rsa",
                 "Open file:[path]",
             ),
+            (
+                "Open file:%25252525252Froot%25252525252F.ssh%25252525252Fid_rsa",
+                "Open file:[path]",
+            ),
             (r"Open \\server\share\Alice\secret.txt", "Open [path]"),
             (r"Open \\?\C:\Users\Alice\secret.txt", "Open [path]"),
             (r"path=\\server\share\Alice\secret.txt", "[path]"),
@@ -1495,6 +1516,10 @@ mod tests {
             ),
             (
                 "Open https://host.example/path?token%253Dghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/path?token%252525253Dghp_1234567890abcdefghijklmnopqrstuvwxyz",
                 "Open [redacted URI]",
             ),
             (
@@ -1621,6 +1646,20 @@ mod tests {
             ),
             ("Token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "Token [redacted]"),
             (
+                "Bearer abcdefghijklmnopqrstuvwxyzabcdef",
+                "Bearer [redacted]",
+            ),
+            ("Token abcdefghijklmnopqrstuvwxyzabcdef", "Token [redacted]"),
+            ("Blob abcdefghijklmnopqrstuvwxyzabcdef", "Blob [redacted]"),
+            (
+                "Base64 ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMN",
+                "Base64 [redacted]",
+            ),
+            (
+                "Encoded abcdefghijklmnopqrstuvwxyzabcdef",
+                "Encoded [redacted]",
+            ),
+            (
                 "Bearer internationalization remains supported",
                 "Bearer internationalization remains supported",
             ),
@@ -1631,6 +1670,10 @@ mod tests {
             (
                 "Blob storageidentifier2026 remains documented",
                 "Blob storageidentifier2026 remains documented",
+            ),
+            (
+                "Token releasecandidate2026identifier remains documented",
+                "Token releasecandidate2026identifier remains documented",
             ),
         ] {
             assert_eq!(
@@ -1639,6 +1682,15 @@ mod tests {
                 "unexpected redaction for: {message}"
             );
         }
+
+        let oversized_uri = format!(
+            "https://host.example/path?token%3Dghp_1234567890abcdefghijklmnopqrstuvwxyz{}",
+            "x".repeat(MAX_CLASSIFICATION_BYTES)
+        );
+        assert_eq!(
+            safe_agent_excerpt(&oversized_uri).as_deref(),
+            Some("[redacted URI]")
+        );
     }
 
     #[test]

@@ -602,6 +602,31 @@ mod tests {
                 "AbCdEfGh",
             ),
             (
+                "Bearer abcdefghijklmnopqrstuvwxyzabcdef",
+                "Bearer [redacted]",
+                "abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "Token abcdefghijklmnopqrstuvwxyzabcdef",
+                "Token [redacted]",
+                "abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "Blob abcdefghijklmnopqrstuvwxyzabcdef",
+                "Blob [redacted]",
+                "abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
+                "Base64 ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMN",
+                "Base64 [redacted]",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            ),
+            (
+                "Encoded abcdefghijklmnopqrstuvwxyzabcdef",
+                "Encoded [redacted]",
+                "abcdefghijklmnopqrstuvwxyz",
+            ),
+            (
                 "-----BEGIN PRIVATE\nKEY-----\nshortSecretBody\n-----END PRIVATE KEY-----\nsafe ending",
                 "[redacted private key]",
                 "shortSecretBody",
@@ -696,6 +721,11 @@ mod tests {
                 "%2525252Froot",
             ),
             (
+                "Open file:%25252525252Froot%25252525252F.ssh%25252525252Fid_rsa",
+                "Open file:[path]",
+                "%25252525252Froot",
+            ),
+            (
                 "Open https://user:pa@ss@host.example/path",
                 "Open https://[redacted]@host.example/path",
                 "pa@ss",
@@ -751,6 +781,11 @@ mod tests {
                 "ghp_",
             ),
             (
+                "Open https://host.example/path?token%252525253Dghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+                "ghp_",
+            ),
+            (
                 "Open data:text/plain,password%3Dhunter2",
                 "Open [redacted URI]",
                 "hunter2",
@@ -758,6 +793,15 @@ mod tests {
         ] {
             assert_pipeline_redacts(message, expected, leaked);
         }
+    }
+
+    #[test]
+    fn oversized_encoded_uri_fails_closed_before_persistence() {
+        let message = format!(
+            "https://host.example/path?token%3Dghp_1234567890abcdefghijklmnopqrstuvwxyz{}",
+            "x".repeat(crate::MAX_EVENT_BYTES)
+        );
+        assert_pipeline_redacts(&message, "[redacted URI]", "ghp_");
     }
 
     fn assert_pipeline_redacts(message: &str, expected: &str, leaked: &str) {
