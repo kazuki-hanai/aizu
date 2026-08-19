@@ -526,6 +526,12 @@ mod tests {
                 "Authorization = Bearer [redacted]",
                 "abc123",
             ),
+            ("password\n:hunter2", "password\n:[redacted]", "hunter2"),
+            (
+                "Authorization\n:\nBearer\nhunter2",
+                "Authorization\n:\nBearer\n[redacted]",
+                "hunter2",
+            ),
             ("password :hunter2", "password :[redacted]", "hunter2"),
             ("Bearer hunter2", "Bearer [redacted]", "hunter2"),
             (
@@ -544,14 +550,40 @@ mod tests {
                 "0123456789abcdef",
             ),
             (
+                "Blob YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==",
+                "Blob [redacted]",
+                "YWFhYWFh",
+            ),
+            (
                 "-----BEGIN PRIVATE\nKEY-----\nshortSecretBody\n-----END PRIVATE KEY-----\nsafe ending",
                 "[redacted private key]",
                 "shortSecretBody",
             ),
             (
+                "-----BEGIN PRIVATE KEY-----\nfirstSecret\n-----END CERTIFICATE-----\nsecondSecret\n-----END PRIVATE KEY-----\nsafe ending",
+                "[redacted private key]",
+                "secondSecret",
+            ),
+            (
                 "Open file:///Users/alice/.ssh/id_ed25519",
                 "Open file:[path]",
                 "/Users/alice",
+            ),
+            (
+                r"Open \\server\share\Alice\secret.txt",
+                "Open [path]",
+                "Alice",
+            ),
+            (
+                r"Open \\?\C:\Users\Alice\secret.txt",
+                "Open [path]",
+                "Alice",
+            ),
+            ("Open /root/.ssh/id_rsa", "Open [path]", "/root/"),
+            (
+                "Open https://user:pa@ss@host.example/path",
+                "Open https://[redacted]@host.example/path",
+                "pa@ss",
             ),
         ] {
             assert_pipeline_redacts(message, expected, leaked);
