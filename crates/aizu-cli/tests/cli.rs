@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -14,6 +15,8 @@ use chrono::Utc;
 use predicates::prelude::*;
 use serde_json::Value;
 use tempfile::TempDir;
+
+static PROCESS_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
 fn aizu() -> AssertCommand {
     AssertCommand::new(assert_cmd::cargo::cargo_bin!("aizu"))
@@ -131,6 +134,9 @@ impl Notifier for RecordingNotifier {
 
 #[test]
 fn process_emit_to_desktop_outbox_to_notifier_is_end_to_end() {
+    let _process_load = PROCESS_LOAD_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let directory = TempDir::new().unwrap();
     let source_root = directory.path().join("source");
     let started = std::time::Instant::now();
@@ -981,6 +987,9 @@ fn bridge_reports_gap_when_every_event_was_pruned() {
 
 #[test]
 fn concurrent_process_emit_allocates_every_sequence_once() {
+    let _process_load = PROCESS_LOAD_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let directory = TempDir::new().unwrap();
     let binary = assert_cmd::cargo::cargo_bin!("aizu");
     let mut children = Vec::new();

@@ -353,6 +353,7 @@ impl Spool {
         ensure_safe_sqlite_version(&connection)?;
         reject_newer_database(&connection)?;
         configure_connection(&connection)?;
+        configure_database(&connection)?;
 
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Exclusive)?;
         transaction.execute_batch(
@@ -387,6 +388,7 @@ impl Spool {
         ensure_safe_sqlite_version(&connection)?;
         reject_newer_database(&connection)?;
         configure_connection(&connection)?;
+        verify_wal(&connection)?;
         Ok(connection)
     }
 
@@ -573,11 +575,28 @@ fn open_connection_with_timeout(
 fn configure_connection(connection: &Connection) -> Result<(), SpoolError> {
     connection.execute_batch(
         "PRAGMA foreign_keys = ON;
-         PRAGMA synchronous = FULL;
-         PRAGMA auto_vacuum = INCREMENTAL;",
+         PRAGMA synchronous = FULL;",
     )?;
+    Ok(())
+}
+
+fn configure_database(connection: &Connection) -> Result<(), SpoolError> {
+    connection.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
+    let current_mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    if current_mode.eq_ignore_ascii_case("wal") {
+        return Ok(());
+    }
     let journal_mode: String =
         connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
+    ensure_wal(journal_mode)
+}
+
+fn verify_wal(connection: &Connection) -> Result<(), SpoolError> {
+    let journal_mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    ensure_wal(journal_mode)
+}
+
+fn ensure_wal(journal_mode: String) -> Result<(), SpoolError> {
     if !journal_mode.eq_ignore_ascii_case("wal") {
         return Err(SpoolError::WalUnavailable(journal_mode));
     }
@@ -1145,6 +1164,22 @@ mod tests {
             .collect();
         sequences.sort_unstable();
         assert_eq!(sequences, (1..=20).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn established_spool_connections_verify_wal_without_reconfiguring_it() {
+        let (_directory, spool) = spool();
+        let connection = Connection::open(spool.paths().spool_db()).unwrap();
+        let journal_mode: String = connection
+            .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "delete");
+        drop(connection);
+
+        assert!(matches!(
+            spool.snapshot(),
+            Err(SpoolError::WalUnavailable(mode)) if mode == "delete"
+        ));
     }
 
     #[test]
