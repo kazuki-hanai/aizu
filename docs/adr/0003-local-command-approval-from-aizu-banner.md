@@ -32,7 +32,9 @@ event stream would violate the existing privacy boundary.
    invalid/oversized input, another pending request, banner dismissal, timeout, or app shutdown
    returns no decision so the agent's normal approval UI remains authoritative.
 5. Aizu Banner shows the complete command in a selectable, scrollable code region with `Deny` and
-   `Allow once`. A decision is atomically consumed once. A close or swipe means fallback, not deny.
+   `Allow once`. A request becomes actionable only after the native banner window reports a
+   successful show and the banner WebView acknowledges that the exact command and controls were
+   rendered. A decision is atomically consumed once. A close or swipe means fallback, not deny.
 6. The CLI prints only the agent's structured `allow` or `deny` hook response. Aizu never executes
    the command and does not support “always allow”, permission mutation, or free-form answers.
 7. The feature is enabled by default and can be disabled immediately in Settings. Approval requests
@@ -41,6 +43,10 @@ event stream would violate the existing privacy boundary.
 8. This ADR covers local hooks only. Remote approval requires a separately versioned, bidirectional
    SSH bridge extension. Until then, remote requests continue to use the source terminal's normal
    approval UI.
+9. Banner data and actions are restricted to the banner WebView by caller-label checks. The main
+   and banner WebViews may listen for backend events, but frontend capability grants do not include
+   event emit or emit-to permissions, preventing a second WebView from forging the command shown
+   for a real approval ID.
 
 ## Consequences
 

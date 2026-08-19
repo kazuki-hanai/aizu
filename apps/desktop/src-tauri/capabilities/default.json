@@ -1,7 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "main-window",
-  "description": "Minimum capabilities for the Aizu presentation window",
+  "identifier": "presentation-windows",
+  "description": "Presentation windows can receive backend state events but cannot forge them",
   "windows": ["main", "banner"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
 }

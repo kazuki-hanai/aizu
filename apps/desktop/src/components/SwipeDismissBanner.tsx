@@ -30,11 +30,13 @@ const EXIT_DURATION = 160;
 
 export function SwipeDismissBanner({
   banner,
+  onAcknowledgeApproval,
   onActivate,
   onDecideApproval,
   onDismiss,
 }: {
   banner: BannerNotification;
+  onAcknowledgeApproval: (id: number) => Promise<boolean>;
   onActivate: (id: number) => Promise<boolean>;
   onDecideApproval: (id: number, decision: "allowOnce" | "deny") => Promise<boolean>;
   onDismiss: (id: number) => Promise<boolean>;
@@ -52,6 +54,20 @@ export function SwipeDismissBanner({
   const [dragging, setDragging] = useState(false);
   const [exitDirection, setExitDirection] = useState<-1 | 1 | null>(null);
   const [approvalPending, setApprovalPending] = useState(false);
+  const requiresApproval = banner.approval !== null;
+  const [acknowledgedApprovalId, setAcknowledgedApprovalId] = useState<number | null>(null);
+  const approvalReady = !requiresApproval || acknowledgedApprovalId === banner.id;
+
+  useEffect(() => {
+    if (!requiresApproval) return;
+    let active = true;
+    void onAcknowledgeApproval(banner.id).then((acknowledged) => {
+      if (active && acknowledged) setAcknowledgedApprovalId(banner.id);
+    });
+    return () => {
+      active = false;
+    };
+  }, [banner.id, onAcknowledgeApproval, requiresApproval]);
 
   const reset = useCallback(() => {
     swipe.current = null;
@@ -214,7 +230,12 @@ export function SwipeDismissBanner({
     });
   };
   const decideApproval = (decision: "allowOnce" | "deny") => {
-    if (!banner.approval || approvalStarted.current || dismissStarted.current) return;
+    if (
+      !banner.approval ||
+      !approvalReady ||
+      approvalStarted.current ||
+      dismissStarted.current
+    ) return;
     approvalStarted.current = true;
     setApprovalPending(true);
     void onDecideApproval(banner.id, decision).then((decided) => {
@@ -279,7 +300,7 @@ export function SwipeDismissBanner({
               <div className="aizu-banner__actions">
                 <button
                   className="aizu-banner__action aizu-banner__action--deny"
-                  disabled={approvalPending}
+                  disabled={!approvalReady || approvalPending}
                   onClick={() => decideApproval("deny")}
                   type="button"
                 >
@@ -287,7 +308,7 @@ export function SwipeDismissBanner({
                 </button>
                 <button
                   className="aizu-banner__action aizu-banner__action--allow"
-                  disabled={approvalPending}
+                  disabled={!approvalReady || approvalPending}
                   onClick={() => decideApproval("allowOnce")}
                   type="button"
                 >

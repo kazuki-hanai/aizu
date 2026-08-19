@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import {
   appViewSchema,
@@ -17,6 +17,7 @@ export type BannerClient = {
   getBanners: () => Promise<BannerNotification[]>;
   dismiss: (id: number) => Promise<void>;
   activate: (id: number) => Promise<void>;
+  acknowledgeApproval: (id: number) => Promise<void>;
   decideApproval: (id: number, decision: "allowOnce" | "deny") => Promise<void>;
   resize: (height: number) => Promise<void>;
   subscribe: (onChange: (banners: BannerNotification[]) => void) => Promise<UnlistenFn>;
@@ -121,6 +122,9 @@ export const bannerBackend: BannerClient = {
   },
   activate: async (id) => {
     await invokeBackend("activate_banner", { id });
+  },
+  acknowledgeApproval: async (id) => {
+    await invokeBackend("acknowledge_banner_approval", { id });
   },
   decideApproval: async (id, decision) => {
     await invokeBackend("decide_banner_approval", { id, decision });
@@ -318,12 +322,17 @@ declare global {
       string,
       (args?: Record<string, unknown>) => unknown
     >;
+    __aizu_e2e_emit_to__?: (target: string, event: string, payload: unknown) => Promise<void>;
     __TAURI__?: {
       core?: {
         invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
       };
     };
   }
+}
+
+if (import.meta.env.VITE_DESKTOP_E2E === "1") {
+  window.__aizu_e2e_emit_to__ = (target, event, payload) => emitTo(target, event, payload);
 }
 
 export const defaultBackend =

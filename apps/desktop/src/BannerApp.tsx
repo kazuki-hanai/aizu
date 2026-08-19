@@ -66,6 +66,17 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
     }
   }, [client, refresh]);
 
+  const acknowledgeApproval = useCallback(async (id: number) => {
+    try {
+      await client.acknowledgeApproval(id);
+      setUnavailable(false);
+      return true;
+    } catch {
+      setUnavailable(true);
+      return false;
+    }
+  }, [client]);
+
   const decideApproval = useCallback(async (id: number, decision: "allowOnce" | "deny") => {
     try {
       await client.decideApproval(id, decision);
@@ -128,6 +139,7 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
         <SwipeDismissBanner
           banner={banner}
           key={banner.id}
+          onAcknowledgeApproval={acknowledgeApproval}
           onActivate={activate}
           onDecideApproval={decideApproval}
           onDismiss={dismiss}

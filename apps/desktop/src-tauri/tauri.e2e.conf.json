@@ -13,7 +13,8 @@
           "description": "Test-only WebDriver permissions for the Aizu desktop E2E binary",
           "windows": ["main"],
           "permissions": [
-            "core:default",
+            "core:event:allow-listen",
+            "core:event:allow-unlisten",
             "wdio:allow-execute",
             "wdio:allow-get-window-states",
             "wdio-webdriver:default"

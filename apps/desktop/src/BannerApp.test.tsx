@@ -91,6 +91,7 @@ function client(): BannerClient {
       queued = queued.filter((notice) => notice.id !== id);
       return Promise.resolve();
     }),
+    acknowledgeApproval: vi.fn().mockResolvedValue(undefined),
     decideApproval: vi.fn((id: number) => {
       queued = queued.filter((notice) => notice.id !== id);
       return Promise.resolve();
@@ -453,6 +454,7 @@ describe("Aizu Banner", () => {
 
   it("shows the exact command and returns a one-shot approval decision", async () => {
     const backend = client();
+    const pendingAcknowledgement = deferred<undefined>();
     const pendingDecision = deferred<undefined>();
     const approval: BannerNotification = {
       ...notices[1],
@@ -467,6 +469,7 @@ describe("Aizu Banner", () => {
     };
     let approvalQueue = [approval];
     backend.getBanners = vi.fn(() => Promise.resolve(approvalQueue));
+    backend.acknowledgeApproval = vi.fn(() => pendingAcknowledgement.promise);
     backend.decideApproval = vi.fn(() => pendingDecision.promise.then(() => {
       approvalQueue = [];
     }));
@@ -478,6 +481,11 @@ describe("Aizu Banner", () => {
     );
     const allow = screen.getByRole("button", { name: "Allow once" });
     const deny = screen.getByRole("button", { name: "Deny" });
+    expect(allow).toBeDisabled();
+    expect(deny).toBeDisabled();
+    await waitFor(() => expect(backend.acknowledgeApproval).toHaveBeenCalledWith(-1));
+    pendingAcknowledgement.resolve(undefined);
+    await waitFor(() => expect(allow).toBeEnabled());
     await userEvent.click(allow);
 
     expect(allow).toBeDisabled();

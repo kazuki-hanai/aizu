@@ -22,20 +22,22 @@ use std::{
     sync::Arc,
 };
 
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, WindowEvent, Wry};
 
 #[cfg(feature = "desktop-e2e")]
 use crate::commands::{
-    get_e2e_notifications, get_e2e_terminal_activation_count, hide_e2e_main_window,
-    is_e2e_main_window_visible, set_e2e_remote_status, show_e2e_terminal_banner,
+    get_e2e_banners, get_e2e_notifications, get_e2e_terminal_activation_count,
+    hide_e2e_main_window, is_e2e_main_window_visible, set_e2e_remote_status,
+    show_e2e_terminal_banner,
 };
 use crate::{
     commands::{
-        activate_banner, add_remote_source, clear_history, complete_onboarding, configure_agents,
-        confirm_codex_hook_trust, confirm_remote_identity, decide_banner_approval, dismiss_banner,
-        get_app_view, get_banners, install_cli, reconnect_remote_source, remove_remote_source,
-        request_notification_permission, resize_banner, send_test_notification,
-        set_notifications_paused, test_ssh_connection, update_preferences,
+        acknowledge_banner_approval, activate_banner, add_remote_source, clear_history,
+        complete_onboarding, configure_agents, confirm_codex_hook_trust, confirm_remote_identity,
+        decide_banner_approval, dismiss_banner, get_app_view, get_banners, install_cli,
+        reconnect_remote_source, remove_remote_source, request_notification_permission,
+        resize_banner, send_test_notification, set_notifications_paused, test_ssh_connection,
+        update_preferences,
     },
     state::{AppService, DesktopState},
     store::SettingsStore,
@@ -156,6 +158,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_banners,
             dismiss_banner,
+            acknowledge_banner_approval,
             activate_banner,
             decide_banner_approval,
             resize_banner,
@@ -175,6 +178,8 @@ pub fn run() {
             configure_agents,
             confirm_codex_hook_trust,
             #[cfg(feature = "desktop-e2e")]
+            get_e2e_banners,
+            #[cfg(feature = "desktop-e2e")]
             get_e2e_notifications,
             #[cfg(feature = "desktop-e2e")]
             get_e2e_terminal_activation_count,
@@ -189,12 +194,14 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("Aizu desktop runtime failed");
-    app.run(|app, event| {
-        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-            app.state::<approval_broker::ApprovalBroker>().shutdown();
-            app.state::<worker::LocalWorker>().shutdown();
-        }
-    });
+    app.run(|app, event| handle_run_event(app, &event));
+}
+
+fn handle_run_event(app: &AppHandle<Wry>, event: &RunEvent) {
+    if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+        app.state::<approval_broker::ApprovalBroker>().shutdown();
+        app.state::<worker::LocalWorker>().shutdown();
+    }
 }
 
 #[cfg(test)]
@@ -217,5 +224,21 @@ mod tests {
         drop(first);
         WorkerLease::acquire(&directory).expect("lease should be released after worker exits");
         fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn frontend_capabilities_can_listen_but_cannot_forge_backend_events() {
+        let configurations = [
+            include_str!("../capabilities/default.json"),
+            include_str!("../tauri.e2e.conf.json"),
+        ];
+
+        for configuration in configurations {
+            assert!(configuration.contains("core:event:allow-listen"));
+            assert!(configuration.contains("core:event:allow-unlisten"));
+            assert!(!configuration.contains("core:default"));
+            assert!(!configuration.contains("core:event:allow-emit\""));
+            assert!(!configuration.contains("core:event:allow-emit-to"));
+        }
     }
 }

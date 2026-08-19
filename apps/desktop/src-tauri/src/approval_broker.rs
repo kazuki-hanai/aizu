@@ -33,7 +33,14 @@ const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 struct PendingApproval {
     request_id: uuid::Uuid,
     sender: SyncSender<LocalApprovalResponse>,
-    presented: bool,
+    frontend_rendered: bool,
+    window_shown: bool,
+}
+
+impl PendingApproval {
+    fn presented(&self) -> bool {
+        self.frontend_rendered && self.window_shown
+    }
 }
 
 #[derive(Default)]
@@ -64,13 +71,14 @@ impl ApprovalRegistry {
             PendingApproval {
                 request_id,
                 sender,
-                presented: false,
+                frontend_rendered: false,
+                window_shown: false,
             },
         );
         Ok(id)
     }
 
-    fn mark_presented(&self, id: i32) -> Result<bool, BrokerError> {
+    fn mark_frontend_rendered(&self, id: i32) -> Result<bool, BrokerError> {
         let mut pending = self
             .pending
             .lock()
@@ -78,7 +86,19 @@ impl ApprovalRegistry {
         let Some(pending) = pending.get_mut(&id) else {
             return Ok(false);
         };
-        pending.presented = true;
+        pending.frontend_rendered = true;
+        Ok(true)
+    }
+
+    fn mark_window_shown(&self, id: i32) -> Result<bool, BrokerError> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| BrokerError::StateUnavailable)?;
+        let Some(pending) = pending.get_mut(&id) else {
+            return Ok(false);
+        };
+        pending.window_shown = true;
         Ok(true)
     }
 
@@ -87,7 +107,7 @@ impl ApprovalRegistry {
             .pending
             .lock()
             .map_err(|_| BrokerError::StateUnavailable)?;
-        if !pending.get(&id).is_some_and(|pending| pending.presented) {
+        if !pending.get(&id).is_some_and(PendingApproval::presented) {
             return Ok(false);
         }
         let pending = pending.remove(&id);
@@ -112,7 +132,7 @@ impl ApprovalRegistry {
         };
         let _ = pending.sender.send(LocalApprovalResponse::Unavailable {
             request_id: pending.request_id,
-            presented: pending.presented,
+            presented: pending.presented(),
         });
         Ok(true)
     }
@@ -125,7 +145,7 @@ impl ApprovalRegistry {
         if pending.get(&id).map(|entry| entry.request_id) != Some(request_id) {
             return Ok(None);
         }
-        Ok(pending.remove(&id).map(|pending| pending.presented))
+        Ok(pending.remove(&id).map(|pending| pending.presented()))
     }
 
     fn cancel_all(&self) -> Vec<i32> {
@@ -138,7 +158,7 @@ impl ApprovalRegistry {
         for (_, pending) in pending {
             let _ = pending.sender.send(LocalApprovalResponse::Unavailable {
                 request_id: pending.request_id,
-                presented: pending.presented,
+                presented: pending.presented(),
             });
         }
         ids
@@ -218,8 +238,12 @@ impl ApprovalBroker {
         self.registry.complete(id, decision)
     }
 
-    pub fn mark_presented(&self, id: i32) -> Result<bool, BrokerError> {
-        self.registry.mark_presented(id)
+    pub fn mark_frontend_rendered(&self, id: i32) -> Result<bool, BrokerError> {
+        self.registry.mark_frontend_rendered(id)
+    }
+
+    pub fn mark_window_shown(&self, id: i32) -> Result<bool, BrokerError> {
+        self.registry.mark_window_shown(id)
     }
 
     pub fn cancel(&self, id: i32) -> Result<bool, BrokerError> {
@@ -309,6 +333,7 @@ fn handle_connection(
     }
     let notification = approval_notification(&request, &preferences, id);
     if crate::banner::show(app, &notification).is_err() {
+        let _ = crate::banner::dismiss(app, id);
         let _ = registry.expire(id, request.request_id);
         let _ = write_response(
             &mut stream,
@@ -330,22 +355,28 @@ fn handle_connection(
             Err(mpsc::RecvTimeoutError::Disconnected) => break None,
         }
     };
-    let response = response.unwrap_or_else(|| {
-        let presented = registry
-            .expire(id, request.request_id)
-            .ok()
-            .flatten()
-            .unwrap_or(false);
-        LocalApprovalResponse::Unavailable {
-            request_id: request.request_id,
-            presented,
-        }
-    });
+    let response = response.unwrap_or_else(|| expiry_response(registry, id, request.request_id));
     let _ = registry.expire(id, request.request_id);
     // The handler also owns cleanup so a cancellation that races banner
     // presentation cannot leave an orphaned approval visible.
     let _ = crate::banner::dismiss(app, id);
     let _ = write_response(&mut stream, response);
+}
+
+fn expiry_response(
+    registry: &ApprovalRegistry,
+    id: i32,
+    request_id: uuid::Uuid,
+) -> LocalApprovalResponse {
+    let presented = registry
+        .expire(id, request_id)
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    LocalApprovalResponse::Unavailable {
+        request_id,
+        presented,
+    }
 }
 
 fn approval_notification(
@@ -501,7 +532,7 @@ mod tests {
 
     use aizu_core::{ApprovalDecision, LocalApprovalResponse};
 
-    use super::{ApprovalRegistry, bind_listener};
+    use super::{ApprovalRegistry, bind_listener, expiry_response};
 
     #[test]
     fn decisions_are_one_shot_and_preserve_the_request_identifier() {
@@ -510,7 +541,8 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         let id = registry.register(request_id, sender).unwrap();
 
-        assert!(registry.mark_presented(id).unwrap());
+        assert!(registry.mark_window_shown(id).unwrap());
+        assert!(registry.mark_frontend_rendered(id).unwrap());
         assert!(registry.complete(id, ApprovalDecision::AllowOnce).unwrap());
         assert!(!registry.complete(id, ApprovalDecision::Deny).unwrap());
         assert_eq!(
@@ -558,7 +590,8 @@ mod tests {
         let presented_request_id = uuid::Uuid::new_v4();
         let (sender, receiver) = mpsc::sync_channel(1);
         let id = registry.register(presented_request_id, sender).unwrap();
-        assert!(registry.mark_presented(id).unwrap());
+        assert!(registry.mark_window_shown(id).unwrap());
+        assert!(registry.mark_frontend_rendered(id).unwrap());
         assert!(registry.cancel(id).unwrap());
         assert_eq!(
             receiver.recv().unwrap(),
@@ -576,9 +609,28 @@ mod tests {
         let (sender, _receiver) = mpsc::sync_channel(1);
         let id = registry.register(request_id, sender).unwrap();
 
+        assert!(registry.mark_frontend_rendered(id).unwrap());
         assert!(!registry.complete(id, ApprovalDecision::AllowOnce).unwrap());
-        assert!(registry.mark_presented(id).unwrap());
+        assert!(registry.mark_window_shown(id).unwrap());
         assert!(registry.complete(id, ApprovalDecision::AllowOnce).unwrap());
+    }
+
+    #[test]
+    fn a_frontend_ack_without_a_successful_window_show_is_not_presented() {
+        let registry = ApprovalRegistry::default();
+        let request_id = uuid::Uuid::new_v4();
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let id = registry.register(request_id, sender).unwrap();
+        assert!(registry.mark_frontend_rendered(id).unwrap());
+
+        assert_eq!(
+            expiry_response(&registry, id, request_id),
+            LocalApprovalResponse::Unavailable {
+                request_id,
+                presented: false,
+            }
+        );
+        assert!(!registry.complete(id, ApprovalDecision::AllowOnce).unwrap());
     }
 
     #[cfg(unix)]

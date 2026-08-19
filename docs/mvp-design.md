@@ -748,7 +748,7 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 - first-party local `PermissionRequest` の canonical `Bash` tool が完全な `tool_input.command` を持つ場合だけ、CLI は private state directory の Unix domain socket へ versioned strict-JSON request を1件送る。generic hook、remote bridge、Bash以外のtool、commandを完全表示できないinputは対象外
 - request は random ID、固定 agent kind、64 byte以下の tool label、16 KiB以下の完全な command だけを含む。raw command は spool、desktop DB、history、settings、log、Notification Center、SSH frameへ保存・転送しない。bannerを実際に提示したlocal eventにはAizu生成のboolean markerだけを保存し、同じrequestの通常通知を抑制して二重表示を防ぐ。このmarkerはremote sourceやgeneric eventの通知を抑制しない
 - socket directory は `0700`、socket node は `0600` とし、symlink/non-socketを拒否する。frameは32 KiB、read 2秒、同時待機1件、decision待機45秒、hook外側timeout 50秒で上限を固定する
-- Aizu Banner は完全なcommandをselect/scroll可能な領域で表示し、`今回だけ許可` / `拒否` だけを返す。decisionは一度だけconsumeする。close/swipe、無効設定、app停止、timeout、busy、invalid inputはdenyに変換せず、decisionなしでagent標準promptへfallbackする
+- Aizu Banner は完全なcommandをselect/scroll可能な領域で表示し、`今回だけ許可` / `拒否` だけを返す。native windowのshow成功とbanner WebViewによるexact command/action controlsのrender ACKが両方揃うまでdecisionを受け付けず、decisionは一度だけconsumeする。banner data/action commandはcaller window labelで制限し、frontend capabilityにはevent emit/emit-toを付与しない。close/swipe、無効設定、app停止、timeout、busy、invalid inputはdenyに変換せず、decisionなしでagent標準promptへfallbackする
 - Aizuはraw commandを実行しない。常時許可、permission rule変更、free-form回答は提供しない。通常通知がNotification Center設定でも、直接承認は完全表示できるAizu Bannerだけを使う
 - 本節はlocal hookだけを対象とする。SSH sourceの承認はbridge protocolを双方向へversion upする別設計までsource terminalの標準promptへfallbackする
 

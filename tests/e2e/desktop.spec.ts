@@ -40,10 +40,14 @@ type View = {
 };
 
 type CapturedNotification = {
+  id: number;
   title: string;
   body: string;
   textSize: string;
   canActivateTerminal: boolean;
+  approval?: {
+    command: string;
+  } | null;
 };
 
 const invokeView = async (command: string, args?: Record<string, unknown>): Promise<View> => {
@@ -53,6 +57,21 @@ const invokeView = async (command: string, args?: Record<string, unknown>): Prom
   });
   return result as View;
 };
+
+const invokeCurrentWindow = async <T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> => browser.execute(async (payload) => {
+  const core = (window as typeof window & {
+    __TAURI__?: {
+      core?: {
+        invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+      };
+    };
+  }).__TAURI__?.core;
+  if (!core) throw new Error("Tauri core API is unavailable in the current window");
+  return core.invoke(payload.command, payload.args);
+}, { command, args }) as Promise<T>;
 
 const runPermissionHook = (stateRoot: string) => {
   const child = spawn(cliBinary, [
@@ -163,13 +182,12 @@ describe("Aizu desktop MVP", () => {
       request: { ...systemPreferences, notificationDelivery: "aizuBanner" },
     });
     await invokeView("send_test_notification");
-    const banners = await browser.tauri.execute(({ core }) =>
-      core.invoke("get_banners")) as CapturedNotification[];
+    await browser.switchToWindow("banner");
+    const banners = await invokeCurrentWindow<CapturedNotification[]>("get_banners");
     expect(banners).toContainEqual(expect.objectContaining({
       title: "Aizu test notification",
       body: "Aizu Banner is ready.",
     }));
-    await browser.switchToWindow("banner");
     await expect($("strong=Aizu test notification")).toBeDisplayed();
     await expect($("span=Aizu Banner is ready.")).toBeDisplayed();
     const banner = $(".aizu-banner");
@@ -202,7 +220,7 @@ describe("Aizu desktop MVP", () => {
     expect(largeHeadingSize).toBeGreaterThan(standardHeadingSize);
     await browser.switchToWindow("banner");
     await browser.waitUntil(async () => {
-      const queued = await browser.tauri.execute(({ core }) => core.invoke("get_banners")) as CapturedNotification[];
+      const queued = await invokeCurrentWindow<CapturedNotification[]>("get_banners");
       return queued[0]?.textSize === "large";
     }, {
       timeout: 2_000,
@@ -241,15 +259,79 @@ describe("Aizu desktop MVP", () => {
     await expect(banner).not.toBeExisting();
     await browser.waitUntil(async () => {
       const remaining = await browser.tauri.execute(({ core }) =>
-        core.invoke("get_banners")) as CapturedNotification[];
+        core.invoke("get_e2e_banners")) as CapturedNotification[];
       return remaining.length === 0;
     }, { timeout: 2_000, timeoutMsg: "swiped banner remained in the backend queue" });
     await browser.switchToWindow("main");
     await expect($("h1=Agents")).toBeDisplayed();
     const permissionHook = runPermissionHook(stateRoot as string);
+    const blockedBannerRead = await browser.execute(async () => {
+      const core = (window as typeof window & {
+        __TAURI__?: { core?: { invoke: (command: string) => Promise<unknown> } };
+      }).__TAURI__?.core;
+      if (!core) return "core API unavailable";
+      try {
+        await core.invoke("get_banners");
+        return "allowed";
+      } catch (error) {
+        return String(error);
+      }
+    }) as string;
+    expect(blockedBannerRead).toContain("only from the banner window");
+    const forgedEvent = await browser.execute(async () => {
+      const emitTo = (window as typeof window & {
+        __aizu_e2e_emit_to__?: (
+          target: string,
+          event: string,
+          payload: unknown,
+        ) => Promise<void>;
+      }).__aizu_e2e_emit_to__;
+      if (!emitTo) return "event API unavailable";
+      try {
+        await emitTo("banner", "aizu://banners-changed", []);
+        return "allowed";
+      } catch (error) {
+        return String(error);
+      }
+    });
+    expect(forgedEvent).not.toBe("event API unavailable");
+    expect(forgedEvent).not.toBe("allowed");
     await browser.switchToWindow("banner");
     await expect($("strong=Codex requests permission")).toBeDisplayed();
     await expect($("pre=printf 'Aizu approval E2E'")).toBeDisplayed();
+    const approvalBanners = await invokeCurrentWindow<CapturedNotification[]>("get_banners");
+    const approvalBanner = approvalBanners.find((candidate) => candidate.approval !== null);
+    expect(approvalBanner?.approval?.command).toBe("printf 'Aizu approval E2E'");
+    const approvalId = approvalBanner?.id ?? 0;
+    await browser.switchToWindow("main");
+    const blockedDismiss = await browser.execute(async (id) => {
+      const core = (window as typeof window & {
+        __TAURI__?: {
+          core?: {
+            invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+          };
+        };
+      }).__TAURI__?.core;
+      if (!core) return "core API unavailable";
+      try {
+        await core.invoke("dismiss_banner", { id });
+        return "allowed";
+      } catch (error) {
+        return String(error);
+      }
+    }, approvalId) as string;
+    expect(blockedDismiss).toContain("only from the banner window");
+    const approvalPreferences = (await invokeView("get_app_view")).preferences;
+    await invokeView("update_preferences", {
+      request: { ...approvalPreferences, notificationDelivery: "system" },
+    });
+    await browser.switchToWindow("banner");
+    await expect($("pre=printf 'Aizu approval E2E'")).toBeDisplayed();
+    await browser.switchToWindow("main");
+    await invokeView("update_preferences", {
+      request: { ...approvalPreferences, notificationDelivery: "aizuBanner" },
+    });
+    await browser.switchToWindow("banner");
     await $("button=Allow once").click();
     const hookResult = await permissionHook;
     expect(hookResult.code).toBe(0);
@@ -264,7 +346,7 @@ describe("Aizu desktop MVP", () => {
     }, { timeout: 2_000, timeoutMsg: "approved command event was not retained as suppressed history" });
     await browser.waitUntil(async () => {
       const remaining = await browser.tauri.execute(({ core }) =>
-        core.invoke("get_banners")) as CapturedNotification[];
+        core.invoke("get_e2e_banners")) as CapturedNotification[];
       return remaining.length === 0;
     }, { timeout: 2_000, timeoutMsg: "approved command banner remained queued" });
     await browser.switchToWindow("main");
