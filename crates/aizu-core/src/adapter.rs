@@ -15,6 +15,8 @@ pub trait AgentAdapter {
 pub struct ClaudeCodeAdapter;
 
 const NOTIFICATION_EXCERPT_MAX_CHARS: usize = 240;
+const MAX_PERCENT_DECODE_ROUNDS: usize = 4;
+const MAX_CLASSIFICATION_BYTES: usize = 4_096;
 /// Placeholder substituted for a redacted credential-like token.
 const REDACTED_PLACEHOLDER: &str = "[redacted]";
 /// Placeholder substituted for a redacted private filesystem path.
@@ -317,21 +319,6 @@ fn redact_sensitive(value: &str) -> String {
     let mut redacted = Vec::new();
     for line in value.split('\n') {
         let uppercase = line.to_ascii_uppercase();
-        if state.block == BlockState::PublicCertificate {
-            if uppercase.contains("-----END CERTIFICATE-----") {
-                state.block = BlockState::None;
-                redacted.push(if line.trim() == "-----END CERTIFICATE-----" {
-                    line.to_owned()
-                } else {
-                    redact_line(line, &mut state)
-                });
-            } else if is_certificate_payload(line) && !looks_like_known_credential(line.trim()) {
-                redacted.push(line.to_owned());
-            } else {
-                redacted.push(redact_line(line, &mut state));
-            }
-            continue;
-        }
         if state.block == BlockState::PrivateKey {
             if private_key_end(&uppercase) {
                 state.block = BlockState::None;
@@ -352,6 +339,21 @@ fn redact_sensitive(value: &str) -> String {
             });
             if !private_key_end(&uppercase) {
                 state.block = BlockState::PrivateKey;
+            }
+            continue;
+        }
+        if state.block == BlockState::PublicCertificate {
+            if uppercase.contains("-----END CERTIFICATE-----") {
+                state.block = BlockState::None;
+                redacted.push(if line.trim() == "-----END CERTIFICATE-----" {
+                    line.to_owned()
+                } else {
+                    redact_line(line, &mut state)
+                });
+            } else if is_certificate_payload(line) && !looks_like_known_credential(line.trim()) {
+                redacted.push(line.to_owned());
+            } else {
+                redacted.push(redact_line(line, &mut state));
             }
             continue;
         }
@@ -523,7 +525,9 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
             index += 1;
             continue;
         }
-        if index + 1 == tokens.len() && matches!(lower.as_str(), "token" | "blob") {
+        if index + 1 == tokens.len()
+            && matches!(lower.as_str(), "token" | "blob" | "base64" | "encoded")
+        {
             out.push(token.to_owned());
             state.secret = SecretState::AwaitTokenOrDelimiter;
             index += 1;
@@ -607,7 +611,7 @@ fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String
 
     // Human-readable agent text may say `Token <value>` or
     // `Secret value <value>` instead of using key/value punctuation.
-    if !is_sensitive_key(token) && lower != "blob" {
+    if !is_sensitive_key(token) && !matches!(lower.as_str(), "blob" | "base64" | "encoded") {
         return None;
     }
     let filler = tokens
@@ -763,17 +767,11 @@ fn redact_file_url(token: &str) -> Option<String> {
     }
     let path_start = file + 5;
     let path = token.get(path_start..)?;
-    let mut classified_path = path.to_ascii_lowercase();
-    for _ in 0..2 {
-        let decoded = classified_path.replace("%25", "%");
-        if decoded == classified_path {
-            break;
-        }
-        classified_path = decoded;
-    }
+    let classified_path = bounded_percent_decode(path).to_ascii_lowercase();
     let absolute = path.starts_with(['/', '\\'])
         || classified_path.starts_with("%2f")
         || classified_path.starts_with("%5c")
+        || classified_path.starts_with(['/', '\\'])
         || (path.as_bytes().get(1) == Some(&b':')
             && matches!(path.as_bytes().get(2), Some(b'\\' | b'/')));
     absolute.then(|| {
@@ -806,13 +804,11 @@ fn redact_uri_secrets(token: &str) -> Option<String> {
     if !looks_like_non_file_uri(token) {
         return None;
     }
-    let lower = token.to_ascii_lowercase();
-    let sensitive_assignment = SENSITIVE_KEYS.iter().any(|key| {
-        [format!("{key}="), format!("{key}:")]
-            .iter()
-            .any(|pattern| lower.contains(pattern))
-    });
-    let credential_component = token
+    let classified = bounded_percent_decode(token);
+    let sensitive_assignment = classified
+        .split(['?', '&', '#', ',', ';'])
+        .any(uri_segment_has_sensitive_value);
+    let credential_component = classified
         .split(|character: char| {
             matches!(
                 character,
@@ -821,6 +817,59 @@ fn redact_uri_secrets(token: &str) -> Option<String> {
         })
         .any(looks_like_credential_value);
     (sensitive_assignment || credential_component).then(|| "[redacted URI]".to_owned())
+}
+
+fn uri_segment_has_sensitive_value(segment: &str) -> bool {
+    let Some((key, value)) = segment.split_once('=').or_else(|| segment.split_once(':')) else {
+        return false;
+    };
+    let key = key.rsplit('/').next().unwrap_or_default();
+    if !is_sensitive_key(key) || value.is_empty() {
+        return false;
+    }
+    let normalized_key = key.to_ascii_lowercase();
+    normalized_key != "token" || looks_like_credential_value(value) || looks_like_token_value(value)
+}
+
+fn bounded_percent_decode(value: &str) -> String {
+    if value.len() > MAX_CLASSIFICATION_BYTES {
+        return value.chars().take(MAX_CLASSIFICATION_BYTES).collect();
+    }
+    let mut current = value.as_bytes().to_vec();
+    for _ in 0..MAX_PERCENT_DECODE_ROUNDS {
+        let mut decoded = Vec::with_capacity(current.len());
+        let mut index = 0;
+        let mut changed = false;
+        while index < current.len() {
+            if current[index] == b'%'
+                && let (Some(high), Some(low)) = (
+                    current.get(index + 1).and_then(|byte| hex_value(*byte)),
+                    current.get(index + 2).and_then(|byte| hex_value(*byte)),
+                )
+            {
+                decoded.push((high << 4) | low);
+                index += 3;
+                changed = true;
+            } else {
+                decoded.push(current[index]);
+                index += 1;
+            }
+        }
+        current = decoded;
+        if !changed {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&current).into_owned()
+}
+
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn uri_authority_start(token: &str) -> Option<usize> {
@@ -947,7 +996,7 @@ fn contextual_secret_candidate(key: &str, candidate: &str) -> bool {
             !character.is_ascii_alphanumeric() && character != '_' && character != '-'
         })
         .to_owned();
-    if matches!(key.as_str(), "token" | "blob") {
+    if matches!(key.as_str(), "token" | "blob" | "base64" | "encoded") {
         looks_like_credential_value(candidate) || looks_like_token_value(candidate)
     } else {
         looks_like_secret_candidate(candidate)
@@ -956,10 +1005,29 @@ fn contextual_secret_candidate(key: &str, candidate: &str) -> bool {
 
 fn looks_like_token_value(token: &str) -> bool {
     let token = trimmed_token(token);
-    token.len() >= 16
-        && token.bytes().all(|byte| {
+    if token.len() < 24
+        || !token.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'_' | b'-' | b'=')
         })
+    {
+        return false;
+    }
+    let has_digit = token.bytes().any(|byte| byte.is_ascii_digit());
+    let has_encoding_symbol = token
+        .bytes()
+        .any(|byte| matches!(byte, b'+' | b'/' | b'_' | b'-' | b'='));
+    let mut distinct = [false; 62];
+    for byte in token.bytes().filter(u8::is_ascii_alphanumeric) {
+        let index = match byte {
+            b'0'..=b'9' => usize::from(byte - b'0'),
+            b'A'..=b'Z' => 10 + usize::from(byte - b'A'),
+            b'a'..=b'z' => 36 + usize::from(byte - b'a'),
+            _ => continue,
+        };
+        distinct[index] = true;
+    }
+    let low_diversity = distinct.into_iter().filter(|present| *present).count() <= 4;
+    has_digit || has_encoding_symbol || low_diversity
 }
 
 fn looks_like_long_random_candidate(token: &str) -> bool {
@@ -1379,6 +1447,10 @@ mod tests {
                 "Open file:%252Froot%252F.ssh%252Fid_rsa",
                 "Open file:[path]",
             ),
+            (
+                "Open file:%2525252Froot%2525252F.ssh%2525252Fid_rsa",
+                "Open file:[path]",
+            ),
             (r"Open \\server\share\Alice\secret.txt", "Open [path]"),
             (r"Open \\?\C:\Users\Alice\secret.txt", "Open [path]"),
             (r"path=\\server\share\Alice\secret.txt", "[path]"),
@@ -1412,6 +1484,30 @@ mod tests {
             (
                 "Open data:text/plain,password=hunter2",
                 "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/path?token%3Dghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/path?pass%77ord=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/path?token%253Dghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open data:text/plain,password%3Dhunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host.example/docs?token=estimate",
+                "Open https://host.example/docs?token=estimate",
+            ),
+            (
+                "Open https://host.example/docs?mytoken=estimate",
+                "Open https://host.example/docs?mytoken=estimate",
             ),
             (
                 "Contact mailto:user@example.com",
@@ -1480,6 +1576,14 @@ mod tests {
                 "Blob [redacted]",
             ),
             (
+                "Base64 QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+                "Base64 [redacted]",
+            ),
+            (
+                "Encoded AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCD",
+                "Encoded [redacted]",
+            ),
+            (
                 "Authorization is required before deployment",
                 "Authorization is required before deployment",
             ),
@@ -1516,6 +1620,18 @@ mod tests {
                 "Bearer [redacted]",
             ),
             ("Token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "Token [redacted]"),
+            (
+                "Bearer internationalization remains supported",
+                "Bearer internationalization remains supported",
+            ),
+            (
+                "Token version2026identifier remains documented",
+                "Token version2026identifier remains documented",
+            ),
+            (
+                "Blob storageidentifier2026 remains documented",
+                "Blob storageidentifier2026 remains documented",
+            ),
         ] {
             assert_eq!(
                 safe_agent_excerpt(message).as_deref(),
@@ -1622,6 +1738,17 @@ mod tests {
         let excerpt = safe_agent_excerpt(mixed).expect("private marker wins");
         assert!(excerpt.contains("[redacted private key]"));
         assert!(!excerpt.contains("secretBody"));
+
+        let nested = concat!(
+            "-----BEGIN CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE KEY-----\n",
+            "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB\n",
+            "-----END PRIVATE KEY-----\n",
+            "-----END CERTIFICATE-----"
+        );
+        let excerpt = safe_agent_excerpt(nested).expect("nested private marker wins");
+        assert!(excerpt.contains("[redacted private key]"));
+        assert!(!excerpt.contains("QUFBQUFB"));
     }
 
     #[test]

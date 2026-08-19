@@ -592,6 +592,16 @@ mod tests {
                 "AbCdEfGh",
             ),
             (
+                "Base64 QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+                "Base64 [redacted]",
+                "QUFBQUFB",
+            ),
+            (
+                "Encoded AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCD",
+                "Encoded [redacted]",
+                "AbCdEfGh",
+            ),
+            (
                 "-----BEGIN PRIVATE\nKEY-----\nshortSecretBody\n-----END PRIVATE KEY-----\nsafe ending",
                 "[redacted private key]",
                 "shortSecretBody",
@@ -647,6 +657,11 @@ mod tests {
                 "secretBody",
             ),
             (
+                "-----BEGIN CERTIFICATE-----\n-----BEGIN PRIVATE KEY-----\nQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB\n-----END PRIVATE KEY-----\n-----END CERTIFICATE-----",
+                "[redacted private key]",
+                "QUFBQUFB",
+            ),
+            (
                 "Open file:///Users/alice/.ssh/id_ed25519",
                 "Open file:[path]",
                 "/Users/alice",
@@ -674,6 +689,11 @@ mod tests {
                 "Open file:%252Froot%252F.ssh%252Fid_rsa",
                 "Open file:[path]",
                 "%252Froot",
+            ),
+            (
+                "Open file:%2525252Froot%2525252F.ssh%2525252Fid_rsa",
+                "Open file:[path]",
+                "%2525252Froot",
             ),
             (
                 "Open https://user:pa@ss@host.example/path",
@@ -712,6 +732,26 @@ mod tests {
             ),
             (
                 "Open data:text/plain,password=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host.example/path?token%3Dghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+                "ghp_",
+            ),
+            (
+                "Open https://host.example/path?pass%77ord=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host.example/path?token%253Dghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                "Open [redacted URI]",
+                "ghp_",
+            ),
+            (
+                "Open data:text/plain,password%3Dhunter2",
                 "Open [redacted URI]",
                 "hunter2",
             ),
