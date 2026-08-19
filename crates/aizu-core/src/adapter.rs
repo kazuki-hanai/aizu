@@ -842,15 +842,18 @@ fn redact_uri_secrets(token: &str) -> Option<String> {
 fn uri_has_sensitive_assignment(uri: &str) -> bool {
     uri.split(['?', '&', '#', ',', ';']).any(|component| {
         let fields: Vec<&str> = component.split(['=', ':']).collect();
-        fields.windows(2).any(|pair| {
-            let Some(key) = sensitive_key_path_segment(pair[0]) else {
+        fields.iter().enumerate().any(|(index, field)| {
+            let Some(key) = sensitive_key_path_segment(field) else {
                 return false;
             };
-            let value = pair[1];
-            !value.is_empty()
-                && (key != "token"
-                    || looks_like_credential_value(value)
-                    || looks_like_token_value(value))
+            let value = fields[index + 1..]
+                .iter()
+                .copied()
+                .find(|value| !value.is_empty());
+            let Some(value) = value else {
+                return true;
+            };
+            key != "token" || looks_like_credential_value(value) || looks_like_token_value(value)
         })
     })
 }
@@ -1018,24 +1021,7 @@ fn looks_like_secret_candidate(token: &str) -> bool {
             }))
 }
 
-fn looks_like_bearer_value(token: &str) -> bool {
-    if looks_like_credential_value(token) || looks_like_long_random_candidate(token) {
-        return true;
-    }
-    let token = trimmed_token(token);
-    if token.to_ascii_lowercase().starts_with("version") {
-        return false;
-    }
-    (6..=10).contains(&token.len())
-        && token.bytes().any(|byte| byte.is_ascii_digit())
-        && token.bytes().all(|byte| byte.is_ascii_alphanumeric())
-        || looks_like_token_value(token)
-}
-
-fn contextual_value_should_redact(key: &str, candidate: &str, following_tokens: &[&str]) -> bool {
-    if looks_like_credential_value(candidate) {
-        return true;
-    }
+fn contextual_value_should_redact(key: &str, candidate: &str, _following_tokens: &[&str]) -> bool {
     let key = key
         .to_ascii_lowercase()
         .trim_matches(|character: char| {
@@ -1046,37 +1032,10 @@ fn contextual_value_should_redact(key: &str, candidate: &str, following_tokens: 
         key.as_str(),
         "token" | "blob" | "base64" | "encoded" | "bearer" | "basic"
     ) {
-        let shaped = if matches!(key.as_str(), "bearer" | "basic") {
-            looks_like_bearer_value(candidate)
-        } else {
-            looks_like_token_value(candidate)
-        };
-        shaped && !looks_like_safe_contextual_prose(following_tokens)
+        !trimmed_token(candidate).is_empty()
     } else {
         looks_like_secret_candidate(candidate)
     }
-}
-
-fn looks_like_safe_contextual_prose(following_tokens: &[&str]) -> bool {
-    let Some(first) = following_tokens.first() else {
-        return false;
-    };
-    let first = first
-        .trim_matches(|character: char| character.is_ascii_punctuation())
-        .to_ascii_lowercase();
-    let grammatical_start = first == "remains"
-        || (first == "identifies"
-            && following_tokens
-                .get(1)
-                .is_some_and(|token| token.eq_ignore_ascii_case("the")));
-    grammatical_start
-        && following_tokens.len() <= 5
-        && following_tokens.iter().all(|token| {
-            token
-                .trim_matches(|character: char| character.is_ascii_punctuation())
-                .chars()
-                .all(char::is_alphabetic)
-        })
 }
 
 fn looks_like_token_value(token: &str) -> bool {
@@ -1089,17 +1048,6 @@ fn looks_like_token_value(token: &str) -> bool {
         return false;
     }
     true
-}
-
-fn looks_like_long_random_candidate(token: &str) -> bool {
-    let token = trimmed_token(token);
-    token.len() >= 24
-        && token.bytes().any(|byte| byte.is_ascii_digit())
-        && token.bytes().any(|byte| byte.is_ascii_lowercase())
-        && token.bytes().any(|byte| byte.is_ascii_uppercase())
-        && token.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'_' | b'-' | b'=')
-        })
 }
 
 fn trimmed_token(token: &str) -> &str {
@@ -1636,6 +1584,26 @@ mod tests {
                 "Open [redacted URI]",
             ),
             (
+                "Open https://host/path?password==hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password::hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password[]==hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?foo=password==hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?password%3D%3Dhunter2",
+                "Open [redacted URI]",
+            ),
+            (
                 "Open https://host/path?password%GGhunter2",
                 "Open [redacted URI]",
             ),
@@ -1727,7 +1695,7 @@ mod tests {
             ),
             (
                 "Bearer plants grow well here",
-                "Bearer plants grow well here",
+                "Bearer [redacted] grow well here",
             ),
             (
                 "Deploy to Asia after the checks",
@@ -1747,17 +1715,20 @@ mod tests {
             ),
             (
                 "Token version2026 identifies the format",
-                "Token version2026 identifies the format",
+                "Token [redacted] identifies the format",
             ),
             (
                 "Bearer version2026 compatibility is documented",
-                "Bearer version2026 compatibility is documented",
+                "Bearer [redacted] compatibility is documented",
             ),
             (
                 "Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "Bearer [redacted]",
             ),
             ("Token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "Token [redacted]"),
+            ("Bearer abcdef", "Bearer [redacted]"),
+            ("Token secret", "Token [redacted]"),
+            ("Base64 QUFB", "Base64 [redacted]"),
             (
                 "Bearer abcdefghijklmnopqrstuvwxyzabcdef",
                 "Bearer [redacted]",
@@ -1774,19 +1745,19 @@ mod tests {
             ),
             (
                 "Bearer internationalization remains supported",
-                "Bearer internationalization remains supported",
+                "Bearer [redacted] remains supported",
             ),
             (
                 "Token version2026identifier remains documented",
-                "Token version2026identifier remains documented",
+                "Token [redacted] remains documented",
             ),
             (
                 "Blob storageidentifier2026 remains documented",
-                "Blob storageidentifier2026 remains documented",
+                "Blob [redacted] remains documented",
             ),
             (
                 "Token releasecandidate2026identifier remains documented",
-                "Token releasecandidate2026identifier remains documented",
+                "Token [redacted] remains documented",
             ),
             (
                 "Bearer releaseabcdefghijklmnopqrstuvwxyz",
@@ -1803,11 +1774,11 @@ mod tests {
             ),
             (
                 "Token antidisestablishmentarianism remains a word",
-                "Token antidisestablishmentarianism remains a word",
+                "Token [redacted] remains a word",
             ),
             (
                 "Blob customerreferenceidentifier remains documented",
-                "Blob customerreferenceidentifier remains documented",
+                "Blob [redacted] remains documented",
             ),
             (
                 "Bearer correcthorsebatterystaple expires tomorrow",

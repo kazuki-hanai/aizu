@@ -20,6 +20,7 @@ architectural invariant #12（prompt/response/絶対 path/secret を既定で通
 2. `safe_agent_excerpt` を「破棄」から「in-place redaction」に変更する。
    - private path token → `[path]`
    - credential value token（known provider token、JWT/high-entropy token）、secret `key=value`、Authorization header、credential-bearing URL → `[redacted]`
+   - `Bearer` / `Basic` / `Token` / `Blob` / `Base64` / `Encoded` の直後は、値の語形・長さ・後続文に関係なく明示的な sensitive-value context として `[redacted]`。普通語の false positive より credential 漏えい防止を優先し、値以外のメッセージは保持する。
    - multiline private key block 全体 → `[redacted private key]`
    - 残りのメッセージは保持し、必ず表示する。
    - 表示不能な non-whitespace control character を含む値のみ、従来通り excerpt 全体を破棄する。

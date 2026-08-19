@@ -318,6 +318,10 @@ notification に表示する source label は pinned `source_id` に紐づく de
   credential-bearing URL、JWT/high-entropy token、known provider token、multiline
   private key block を stateful に扱う。従来のように 1 個の sensitive token で
   メッセージ全体を破棄しないため、残りの agent メッセージは必ず表示される。
+- `Bearer` / `Basic` / `Token` / `Blob` / `Base64` / `Encoded` は、長さや後続文に
+  関係なく次の token を明示的な credential/encoded-value context として必ず
+  `[redacted]` にする。普通語がこの形で使われた場合も値だけを保守的にマスクし、
+  前後の agent メッセージは保持する。
 - path は原則 basename のみ。絶対パスは保存しない。
 - 通常ログへ title/body を出さない。
 

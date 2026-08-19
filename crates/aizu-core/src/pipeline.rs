@@ -535,6 +535,7 @@ mod tests {
             ),
             ("password :hunter2", "password :[redacted]", "hunter2"),
             ("Bearer hunter2", "Bearer [redacted]", "hunter2"),
+            ("Bearer abcdef", "Bearer [redacted]", "abcdef"),
             ("Bearer\nhunter2", "Bearer\n[redacted]", "hunter2"),
             (
                 "Bearer abcdefghijklmnopqrstuvwxyz123456",
@@ -566,6 +567,8 @@ mod tests {
                 "Token [redacted]",
                 "aaaaaaaaaaaaaaaa",
             ),
+            ("Token secret", "Token [redacted]", "secret"),
+            ("Base64 QUFB", "Base64 [redacted]", "QUFB"),
             (
                 "Secret value 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "Secret value [redacted]",
@@ -962,6 +965,31 @@ mod tests {
             ),
             (
                 "Open https://host/path?user%2Epassword=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?password==hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?password::hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?password[]==hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?foo=password==hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?password%3D%3Dhunter2",
                 "Open [redacted URI]",
                 "hunter2",
             ),
