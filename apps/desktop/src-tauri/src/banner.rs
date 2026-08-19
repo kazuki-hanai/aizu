@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     sync::{
         Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -40,8 +40,10 @@ struct PendingSound {
 #[derive(Default)]
 pub struct BannerState {
     banners: Mutex<VecDeque<Notification>>,
+    activation_claims: Mutex<BTreeMap<i32, u64>>,
     pending_sound: Mutex<Option<PendingSound>>,
     retry: Mutex<PresentationRetry>,
+    next_activation_claim: AtomicU64,
     generation: AtomicU64,
     dirty: AtomicBool,
     presentation_scheduled: AtomicBool,
@@ -53,6 +55,9 @@ impl BannerState {
             .banners
             .lock()
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
+        let mut activation_claims = self.activation_claims.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner activation state is unavailable".to_owned())
+        })?;
         let mut pending_sound = self.pending_sound.lock().map_err(|_| {
             NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
         })?;
@@ -71,12 +76,15 @@ impl BannerState {
             .iter_mut()
             .find(|existing| existing.id == notification.id)
         {
+            activation_claims.remove(&notification.id);
             *existing = notification;
             self.dirty.store(true, Ordering::Release);
             return Ok(());
         }
-        if banners.len() == MAX_VISIBLE_BANNERS {
-            banners.pop_front();
+        if banners.len() == MAX_VISIBLE_BANNERS
+            && let Some(evicted) = banners.pop_front()
+        {
+            activation_claims.remove(&evicted.id);
         }
         banners.push_back(notification);
         self.dirty.store(true, Ordering::Release);
@@ -88,6 +96,20 @@ impl BannerState {
             .banners
             .lock()
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
+        self.activation_claims
+            .lock()
+            .map_err(|_| {
+                NotifyError::Scheduling("Aizu banner activation state is unavailable".to_owned())
+            })?
+            .remove(&id);
+        self.remove_banner(&mut banners, id)
+    }
+
+    fn remove_banner(
+        &self,
+        banners: &mut VecDeque<Notification>,
+        id: i32,
+    ) -> Result<bool, NotifyError> {
         let mut pending_sound = self.pending_sound.lock().map_err(|_| {
             NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
         })?;
@@ -117,6 +139,66 @@ impl BannerState {
             .lock()
             .map(|banners| banners.iter().cloned().collect())
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))
+    }
+
+    fn claim_activation(
+        &self,
+        id: i32,
+    ) -> Result<(BannerActivationClaim, aizu_core::TerminalActivation), NotifyError> {
+        let banners = self
+            .banners
+            .lock()
+            .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
+        let target = banners
+            .iter()
+            .find(|banner| banner.id == id)
+            .and_then(|banner| banner.activation.clone())
+            .ok_or_else(|| {
+                NotifyError::Scheduling("terminal activation is unavailable".to_owned())
+            })?;
+        let mut claims = self.activation_claims.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner activation state is unavailable".to_owned())
+        })?;
+        if claims.contains_key(&id) {
+            return Err(NotifyError::Scheduling(
+                "terminal activation is already in progress".to_owned(),
+            ));
+        }
+        let token = self.next_activation_claim.fetch_add(1, Ordering::AcqRel) + 1;
+        claims.insert(id, token);
+        Ok((BannerActivationClaim { id, token }, target))
+    }
+
+    fn cancel_activation(&self, claim: &BannerActivationClaim) -> Result<(), NotifyError> {
+        let mut claims = self.activation_claims.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner activation state is unavailable".to_owned())
+        })?;
+        if claims.get(&claim.id) == Some(&claim.token) {
+            claims.remove(&claim.id);
+        }
+        Ok(())
+    }
+
+    fn complete_activation(&self, claim: &BannerActivationClaim) -> Result<bool, NotifyError> {
+        let mut banners = self
+            .banners
+            .lock()
+            .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
+        let mut claims = self.activation_claims.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner activation state is unavailable".to_owned())
+        })?;
+        if claims.get(&claim.id) != Some(&claim.token) {
+            return if banners.iter().any(|banner| banner.id == claim.id) {
+                Err(NotifyError::Scheduling(
+                    "terminal activation is no longer current".to_owned(),
+                ))
+            } else {
+                Ok(banners.is_empty())
+            };
+        }
+        claims.remove(&claim.id);
+        drop(claims);
+        self.remove_banner(&mut banners, claim.id)
     }
 
     fn update_text_size(&self, text_size: TextSize) -> Result<bool, NotifyError> {
@@ -222,6 +304,11 @@ impl BannerState {
         })? = PresentationRetry::default();
         Ok(())
     }
+}
+
+pub struct BannerActivationClaim {
+    id: i32,
+    token: u64,
 }
 
 fn retry_delay(attempts: u8) -> Duration {
@@ -344,6 +431,29 @@ pub fn dismiss(app: &AppHandle<Wry>, id: i32) -> Result<(), NotifyError> {
     Ok(())
 }
 
+pub fn claim_activation(
+    app: &AppHandle<Wry>,
+    id: i32,
+) -> Result<(BannerActivationClaim, aizu_core::TerminalActivation), NotifyError> {
+    app.state::<BannerState>().claim_activation(id)
+}
+
+pub fn cancel_activation(
+    app: &AppHandle<Wry>,
+    claim: &BannerActivationClaim,
+) -> Result<(), NotifyError> {
+    app.state::<BannerState>().cancel_activation(claim)
+}
+
+pub fn complete_activation(
+    app: &AppHandle<Wry>,
+    claim: &BannerActivationClaim,
+) -> Result<(), NotifyError> {
+    app.state::<BannerState>().complete_activation(claim)?;
+    let _ = request_present(app);
+    Ok(())
+}
+
 pub fn clear(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
     let ids = app
         .state::<BannerState>()
@@ -447,6 +557,8 @@ mod tests {
             delivery: crate::model::NotificationDelivery::AizuBanner,
             language: crate::model::LanguagePreference::English,
             text_size: crate::model::TextSize::Standard,
+            can_activate_terminal: false,
+            activation: None,
         }
     }
 
@@ -479,6 +591,51 @@ mod tests {
         assert!(!state.dismiss(1).expect("dismiss first"));
         assert_eq!(state.snapshot().expect("remaining banners").len(), 1);
         assert!(state.dismiss(2).expect("dismiss second"));
+    }
+
+    #[test]
+    fn frontend_receives_only_activation_availability_not_the_target() {
+        let state = BannerState::default();
+        let mut banner = notification(1, "ready");
+        banner.can_activate_terminal = true;
+        banner.activation = Some(aizu_core::TerminalActivation {
+            application: aizu_core::TerminalApplication::Iterm2,
+            application_session: Some("w0t0p0:ABCD".to_owned()),
+            tmux: None,
+        });
+        state.push(banner).expect("queue actionable banner");
+
+        let (claim, target) = state.claim_activation(1).expect("activation claim");
+        assert_eq!(target.application, aizu_core::TerminalApplication::Iterm2);
+        state.cancel_activation(&claim).expect("cancel claim");
+        let serialized = serde_json::to_value(state.snapshot().expect("snapshot"))
+            .expect("serialize frontend snapshot");
+        assert_eq!(serialized[0]["canActivateTerminal"], true);
+        assert!(serialized[0].get("activation").is_none());
+        assert!(!serialized.to_string().contains("w0t0p0"));
+    }
+
+    #[test]
+    fn activation_is_claimed_once_and_failure_keeps_the_banner() {
+        let state = BannerState::default();
+        let mut banner = notification(1, "ready");
+        banner.activation = Some(aizu_core::TerminalActivation {
+            application: aizu_core::TerminalApplication::Iterm2,
+            application_session: Some("w0t0p0:ABCD".to_owned()),
+            tmux: None,
+        });
+        state.push(banner).expect("queue actionable banner");
+
+        let (claim, _) = state.claim_activation(1).expect("first claim");
+        assert!(state.claim_activation(1).is_err());
+        state
+            .cancel_activation(&claim)
+            .expect("cancel failed action");
+        assert_eq!(state.snapshot().expect("snapshot").len(), 1);
+
+        let (claim, _) = state.claim_activation(1).expect("retry claim");
+        assert!(state.complete_activation(&claim).expect("complete action"));
+        assert!(state.snapshot().expect("snapshot").is_empty());
     }
 
     #[test]

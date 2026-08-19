@@ -61,7 +61,6 @@ dependencies = [
  "directories",
  "mac-usernotifications",
  "nix",
- "notify-rust",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -79,6 +78,7 @@ dependencies = [
  "tauri-plugin-wdio-webdriver",
  "tempfile",
  "thiserror 2.0.20",
+ "user-notify-reborn",
  "uuid",
 ]
 
@@ -2718,7 +2718,6 @@ dependencies = [
  "futures-lite",
  "log",
  "mac-notification-sys",
- "mac-usernotifications",
  "serde",
  "tauri-winrt-notification",
  "zbus",
@@ -3241,7 +3240,7 @@ checksum = "7da1d65da6dd5d1e44199ac0f58712d241c0f439f80adea8924d832384087f85"
 dependencies = [
  "base64 0.22.1",
  "indexmap 2.14.0",
- "quick-xml",
+ "quick-xml 0.41.0",
  "serde",
  "time",
 ]
@@ -3428,6 +3427,15 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "quick-xml"
+version = "0.38.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "quick-xml"
@@ -3893,6 +3901,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "send_wrapper"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4271,6 +4285,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
 dependencies = [
  "proc-macro2",
+ "quote",
  "unicode-ident",
 ]
 
@@ -4946,6 +4961,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
@@ -5152,6 +5168,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
+name = "trace"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ad0c048e114d19d1140662762bfdb10682f3bc806d8be18af846600214dd9af"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "tracing"
 version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5316,6 +5343,33 @@ dependencies = [
  "serde",
  "unic-ucd-ident",
  "url",
+]
+
+[[package]]
+name = "user-notify-reborn"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a27ce33642582f25ac86dbd4da2b9d3cf66dd00fdf78f749e7b788165b8ca82"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "block2",
+ "log",
+ "objc2",
+ "objc2-foundation",
+ "objc2-user-notifications",
+ "quick-xml 0.38.4",
+ "send_wrapper",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "trace",
+ "url",
+ "uuid",
+ "windows 0.61.3",
+ "windows-collections 0.2.0",
 ]
 
 [[package]]

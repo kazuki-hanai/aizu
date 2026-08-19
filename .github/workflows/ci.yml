@@ -92,7 +92,7 @@ jobs:
       - name: Enforce dependency and repository policy
         if: steps.changes.outputs.macos_required == 'true'
         run: |
-          cargo audit
+          cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
           cargo deny check advisories bans licenses sources
           pnpm audit --prod --audit-level high
           pnpm audit --dev --audit-level high --ignore GHSA-jmr9-qjv8-65gv

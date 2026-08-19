@@ -42,6 +42,7 @@ type CapturedNotification = {
   title: string;
   body: string;
   textSize: string;
+  canActivateTerminal: boolean;
 };
 
 const invokeView = async (command: string, args?: Record<string, unknown>): Promise<View> => {
@@ -295,13 +296,34 @@ describe("Aizu desktop MVP", () => {
     }, { timeout: 5_000, timeoutMsg: "local CLI event was not delivered after quiet hours ended" });
     await expect($(`strong=${title}`)).toBeDisplayed();
 
+    await browser.tauri.execute(({ core }) => core.invoke("hide_e2e_main_window"));
     const second = await executeFile(desktopBinary, [], {
       env: process.env,
       timeout: 5_000,
     });
     expect(second.stderr).toBe("");
+    await browser.waitUntil(async () =>
+      await browser.tauri.execute(({ core }) =>
+        core.invoke("is_e2e_main_window_visible")) as boolean,
+    { timeout: 2_000, timeoutMsg: "second instance did not reveal the existing main window" });
     expect((await invokeView("get_app_view")).sources).toContainEqual(
       expect.objectContaining({ id: "local", status: "connected" }),
     );
+
+    await browser.tauri.execute(({ core }) => core.invoke("hide_e2e_main_window"));
+    await browser.tauri.execute(({ core }) => core.invoke("show_e2e_terminal_banner"));
+    await browser.switchToWindow("banner");
+    const actionable = $('[data-banner-id="8675309"]');
+    await expect(actionable).toHaveAttribute("data-terminal-activation", "available");
+    await actionable.$(".aizu-banner__content").click();
+    await browser.waitUntil(async () => {
+      const count = await browser.tauri.execute(({ core }) =>
+        core.invoke("get_e2e_terminal_activation_count")) as number;
+      return count === 1;
+    }, { timeout: 2_000, timeoutMsg: "banner click did not activate its terminal target" });
+    await expect(actionable).not.toBeExisting();
+    const mainVisible = await browser.tauri.execute(({ core }) =>
+      core.invoke("is_e2e_main_window_visible")) as boolean;
+    expect(mainVisible).toBe(false);
   });
 });

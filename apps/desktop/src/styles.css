@@ -38,6 +38,19 @@
   --font-size-display-lg: calc(34px + var(--text-size-adjustment));
 }
 
+.aizu-banner[data-terminal-activation="available"] {
+  cursor: pointer;
+}
+
+.aizu-banner[data-terminal-activation="available"] .aizu-banner__body {
+  cursor: text;
+}
+
+.aizu-banner[data-terminal-activation="available"] .aizu-banner__content:focus-visible {
+  outline: 2px solid #7ac7a8;
+  outline-offset: -3px;
+}
+
 html[data-text-size="small"] { --text-size-adjustment: -1px; }
 html[data-text-size="large"] { --text-size-adjustment: 2px; }
 

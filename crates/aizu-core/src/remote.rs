@@ -242,9 +242,10 @@ impl RemoteBridgeConsumer {
                 }
                 .into());
             }
+            let event = without_remote_terminal_activation(event);
             match self
                 .desktop
-                .ingest_event(&self.source_key, *sequence, event, received_at)?
+                .ingest_event(&self.source_key, *sequence, &event, received_at)?
             {
                 IngestResult::Duplicate => report.duplicates = 1,
                 IngestResult::Inserted { .. } => {
@@ -273,9 +274,10 @@ impl RemoteBridgeConsumer {
                 self.handshake_complete = true;
             }
             ParsedBridgeFrame::Known(BridgeFrame::Event { sequence, event }) => {
+                let event = without_remote_terminal_activation(event);
                 match self
                     .desktop
-                    .ingest_event(&self.source_key, *sequence, event, received_at)?
+                    .ingest_event(&self.source_key, *sequence, &event, received_at)?
                 {
                     IngestResult::Inserted { .. } => report.ingested = 1,
                     IngestResult::Duplicate => report.duplicates = 1,
@@ -310,6 +312,12 @@ impl RemoteBridgeConsumer {
         self.last_frame_at = received_at;
         Ok(report)
     }
+}
+
+fn without_remote_terminal_activation(event: &crate::NormalizedEvent) -> crate::NormalizedEvent {
+    let mut event = event.clone();
+    crate::remove_terminal_activation_metadata(&mut event);
+    event
 }
 
 fn classify_remote_error(code: &str) -> ReconnectDisposition {
@@ -435,6 +443,43 @@ mod tests {
         assert_eq!(consumer.cursor(), 1);
         assert_eq!(desktop.source("ssh:build").unwrap().unwrap().cursor, 1);
         assert_eq!(desktop.pending_outbox(None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remote_terminal_activation_is_removed_before_durable_ingest() {
+        let temp = TempDir::new().unwrap();
+        let desktop = state(&temp);
+        let id = source_id("7a4881c7-c667-47dc-b544-f98a46ab17ca");
+        let mut remote_event = event(id, EventKind::TaskCompleted);
+        remote_event.metadata.get_or_insert_default().insert(
+            crate::TERMINAL_ACTIVATION_METADATA_KEY.to_owned(),
+            serde_json::json!({
+                "application": "iterm2",
+                "application_session": "w0t0p0:REMOTE"
+            }),
+        );
+        let mut consumer =
+            RemoteBridgeConsumer::open(desktop.clone(), "ssh:build", "Build server", now())
+                .unwrap();
+
+        consumer
+            .push_stdout(
+                &lines(&[
+                    BridgeFrame::hello(id, Some(1), 1),
+                    BridgeFrame::Event {
+                        sequence: 1,
+                        event: Box::new(remote_event),
+                    },
+                ]),
+                now(),
+            )
+            .unwrap();
+
+        let outbox = desktop.pending_outbox(None).unwrap();
+        assert_eq!(outbox.len(), 1);
+        assert!(outbox[0].event.metadata.as_ref().is_none_or(|metadata| {
+            !metadata.contains_key(crate::TERMINAL_ACTIVATION_METADATA_KEY)
+        }));
     }
 
     #[test]

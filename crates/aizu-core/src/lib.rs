@@ -14,6 +14,7 @@ pub mod protocol;
 pub mod remote;
 pub mod spool;
 pub mod ssh;
+pub mod terminal_activation;
 
 pub use adapter::{
     AdapterError, AgentAdapter, ClaudeCodeAdapter, CodexAdapter, safe_agent_excerpt,
@@ -62,6 +63,10 @@ pub use spool::{
 pub use ssh::{
     SshCommandSpec, SshConfigurationError, SshFailureCategory, SystemSshSource,
     classify_ssh_failure, validate_host_alias, validate_preflight_output,
+};
+pub use terminal_activation::{
+    TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation, TerminalApplication, TmuxActivation,
+    remove_terminal_activation_metadata,
 };
 
 /// Maximum serialized normalized event size.

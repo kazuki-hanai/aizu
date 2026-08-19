@@ -289,7 +289,11 @@ Responsibilities:
 - `title`: 最大 120 Unicode scalar values。
 - `body`: 最大 1,000 Unicode scalar values。
 - event 全体: 最大 64 KiB。
-- metadata: JSON object。秘密、会話全文、生の環境変数を入れない。
+- metadata: JSON object。秘密、会話全文、生の環境変数を入れない。first-party hook が
+  予約 key `aizu_terminal_activation` を付ける場合は、固定 enum の terminal 種別、
+  bounded session/pane ID、tmux socket label だけを持てる。cwd、argv、任意 command、
+  bundle ID、tmux socket path、生の環境変数は含めない。generic `emit` / hook はこの
+  key を指定できない。
 - `urgency`: source からの hint に過ぎず、desktop の user policy、quiet hours、event kind が最終決定する。remote payload だけで sound/bypass を強制できない。
 - title/source identifiers では control characters を拒否する。body では改行・tab 以外の C0 control characters と DEL を拒否する。
 - 将来の optional field は top-level、`source`、`metadata` のいずれでも許容し、receiver は未知 field を無視する。
@@ -691,13 +695,32 @@ trait Notifier {
 }
 ```
 
-- 既定は app-owned Aizu Banner とし、macOS 通知権限を要求しない。app 稼働中は右上へ最大3件を表示し、privacy filter 後の本文を省略せず、ユーザーが右上の close button または横スワイプで閉じるまで自動消去しない。短いドラッグや縦操作では閉じず、本文は選択可能な受動表示とし、クリックで app を開かない。新規表示とスワイプ終了には短い animation を使い、OS の reduced-motion 設定時は無効化する。超過分および app 再起動後は Recent activity を確認経路とする。
+- 既定は app-owned Aizu Banner とし、macOS 通知権限を要求しない。app 稼働中は右上へ最大3件を表示し、privacy filter 後の本文を省略せず、ユーザーが右上の close button または横スワイプで閉じるまで自動消去しない。短いドラッグや縦操作では閉じず、本文は選択可能とする。復帰情報を持つ local first-party 通知の通常クリック/Enter/Spaceだけは terminal 復帰を行い、本文選択中や swipe 後の合成 click は復帰させない。クリックで Aizu main window は開かない。新規表示とスワイプ終了には短い animation を使い、OS の reduced-motion 設定時は無効化する。超過分および app 再起動後は Recent activity を確認経路とする。
 - Aizu Banner の透明な装飾なし WebView は Tauri の `macos-private-api` feature を使う。MVP は Mac App Store sandbox を対象外とする既存方針を維持し、この feature を notification window の透過だけに限定する。
 - macOS Notifications へ即時切替できる。権限要求は初回起動直後ではなく、テスト通知などの明示操作で行う。
 - macOS Notifications が拒否された場合は System Settings への案内を表示する。
 - テストでは `FakeNotifier` を利用する。
-- macOS Notification Center の通知クリック時は app を前面化し、Agents と直近 activity を表示する。event 固有の deep link は MVP では持たない。
+- macOS Notification Center は app-lifetime の単一 response delegate と最大64件の
+  notification ID → terminal activation 対応表を使う。通知ごとの task/future/waiter は
+  作らない。local first-party 通知の通常クリックは対応表から target を一度だけ取り出して
+  Aizu Banner と同じ固定 adapter を background 実行し、dismiss/その他actionはtargetを
+  破棄する。上限超過時は古いtargetからaction対象外にするが通知表示は維持する。クリックで
+  Aizu main window は開かない。
 - question は音あり、completed は既定で音なしを推奨する。
+
+terminal 復帰は `TerminalActivation` の固定 adapter 境界に置く。iTerm2 は bounded
+session ID の reveal URL、WezTerm は numeric pane ID の固定 CLI、tmux は current user
+の socket label と `%N` pane ID を固定 argv で選択する。Apple Terminal、Ghostty、
+Warp、Kitty、VS Code は固定 bundle ID の application focus へ fallback する。iTerm2 と
+WezTerm は exact identifier がない場合はaction自体を作らず、bundle focusへfallback
+しない。shell command string、AppleScript、remote payload が指定した executable/bundle
+ID は実行しない。adapter process は timeout 付きで、Aizu が起動した child だけを終了する。
+
+この action は `source_key == "local"` かつ trusted Codex/Claude Code adapter の event
+だけに付与する。SSH source の hook environment は接続先 host の terminal を表し、
+受信 Mac 上の元の interactive SSH shell を証明しないため、activation metadata は
+bridge frame 出力前に除去し、受信側でも durable ingest 前に再度除去する。表示先で
+terminal action として採用せず、新規 SSH session を代替として開かない。
 
 ### 13.3 Menu bar and startup
 
@@ -989,6 +1012,8 @@ Frontend:
 - event history
 - privacy setting
 - tray/icon accessibility labels and visible status text
+- actionable local banner click/keyboard activation, selectable text, swipe suppression, and
+  non-actionable remote/generic banners
 
 ### 18.2 Integration tests
 
@@ -1000,6 +1025,13 @@ Frontend:
 4. `FakeNotifier` が一件受信したことを確認する。
 5. 再読込で重複通知されないことを確認する。
 6. 2つ目の desktop instance が worker を開始せず、二重通知しないことを確認する。
+7. trusted first-party hook の terminal activation descriptor は local source だけ notifier
+   へ到達し、同じ event を remote source として ingest した場合は action がないことを
+   確認する。
+8. desktop E2E は actionable Aizu Banner の click が test-only fixed adapter に1回だけ
+   到達して queue から消え、hidden main window を開かないことを実 WebKit で確認する。
+9. macOS Notification Center の response registry は最大64件で、replacement、schedule
+   failure、default click、dismissを処理しても古いtargetが復活しないことをunit testする。
 
 #### Bridge pipeline
 
@@ -1254,6 +1286,7 @@ Metrics はローカル Diagnostics 画面だけで表示する。
 ### 22.1 Functional
 
 - [ ] macOS で app を起動し、Aizu Bannerを権限要求なしで利用できる。macOS Notifications選択時は明示操作で通知権限を取得できる。
+- [ ] local Codex / Claude Code 通知の click で対応 terminal/tmux target へ復帰し、Aizu main window は開かない。remote/generic/test 通知は任意 terminal action を持たない。
 - [ ] Finder、Dock、Notification Center、System Settings に正式な Aizu app icon が表示され、Tauri default icon が残っていない。
 - [ ] menu bar icon が light/dark appearance へ template image として適応し、`normal` / `attention` / `paused` / `error` を色だけに依存せず区別できる。
 - [ ] bundled CLI をユーザー領域へインストールできる。

@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -14,6 +15,8 @@ use chrono::Utc;
 use predicates::prelude::*;
 use serde_json::Value;
 use tempfile::TempDir;
+
+static PROCESS_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
 fn aizu() -> AssertCommand {
     AssertCommand::new(assert_cmd::cargo::cargo_bin!("aizu"))
@@ -131,6 +134,9 @@ impl Notifier for RecordingNotifier {
 
 #[test]
 fn process_emit_to_desktop_outbox_to_notifier_is_end_to_end() {
+    let _process_load = PROCESS_LOAD_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let directory = TempDir::new().unwrap();
     let source_root = directory.path().join("source");
     let started = std::time::Instant::now();
@@ -327,11 +333,11 @@ fn emit_rejects_invalid_inputs_without_persisting() {
 }
 
 #[test]
-fn generic_inputs_cannot_spoof_first_party_adapter_provenance() {
+fn generic_inputs_cannot_spoof_first_party_adapter_or_terminal_provenance() {
     let directory = TempDir::new().unwrap();
     let state_dir = directory.path().to_str().unwrap();
     let reserved_error = predicate::str::contains(
-        "metadata key \"aizu_adapter\" is reserved for first-party adapters",
+        "metadata key \"aizu_adapter\" is reserved for Aizu-generated data",
     );
 
     aizu()
@@ -375,6 +381,23 @@ fn generic_inputs_cannot_spoof_first_party_adapter_provenance() {
         .assert()
         .failure()
         .stderr(reserved_error);
+
+    aizu()
+        .args([
+            "--state-dir",
+            state_dir,
+            "emit",
+            "task.completed",
+            "--title",
+            "Spoofed terminal target",
+            "--metadata",
+            r#"{"aizu_terminal_activation":{"application":"iterm2","application_session":"attacker"}}"#,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "metadata key \"aizu_terminal_activation\" is reserved for Aizu-generated data",
+        ));
 
     let doctor = aizu()
         .args(["--state-dir", state_dir, "doctor", "--json"])
@@ -602,6 +625,85 @@ fn codex_fixtures_map_to_private_normalized_events() {
         assert!(!serialized.contains("fixture command"));
         assert!(!serialized.contains("/Users/example"));
     }
+}
+
+#[test]
+fn first_party_hook_captures_only_bounded_terminal_identifiers() {
+    let directory = TempDir::new().unwrap();
+    let input = br#"{"session_id":"thread-1","cwd":"/home/dev/aizu","hook_event_name":"Stop","last_assistant_message":"Completed."}"#;
+    aizu()
+        .env("TERM_PROGRAM", "tmux")
+        .env("ITERM_SESSION_ID", "w0t1p0:0123-ABCD")
+        .env("TMUX_PANE", "%17")
+        .env("TMUX", "/private/tmp/tmux-501/work,123,0")
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "hook",
+            "--agent",
+            "codex",
+            "--event",
+            "Stop",
+            "--strict",
+        ])
+        .write_stdin(input)
+        .assert()
+        .success();
+
+    let spool = Spool::open(StatePaths::new(directory.path())).unwrap();
+    let local_event = spool.events_after(0, Some(1)).unwrap().remove(0).event;
+    let activation = &local_event.metadata.as_ref().unwrap()["aizu_terminal_activation"];
+    assert_eq!(activation["application"], "iterm2");
+    assert_eq!(activation["application_session"], "w0t1p0:0123-ABCD");
+    assert_eq!(activation["tmux"]["socket_name"], "work");
+    assert_eq!(activation["tmux"]["pane_id"], "%17");
+    let serialized = serde_json::to_string(&local_event).unwrap();
+    assert!(!serialized.contains("/private/tmp"));
+    assert!(!serialized.contains("123,0"));
+
+    let output = aizu()
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "bridge",
+            "--protocol",
+            "1",
+            "--after",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    let event: Value = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice::<Value>(line).unwrap())
+        .find(|frame| frame["type"] == "event")
+        .expect("event frame");
+    let serialized = serde_json::to_string(&event).unwrap();
+    assert!(!serialized.contains("aizu_terminal_activation"));
+    assert!(!serialized.contains("w0t1p0:0123-ABCD"));
+    assert!(!serialized.contains("%17"));
+
+    let generic = aizu()
+        .env("ITERM_SESSION_ID", "w0t1p0:0123-ABCD")
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "emit",
+            "task.completed",
+            "--title",
+            "Manual event",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let generic: Value = serde_json::from_slice(&generic.stdout).unwrap();
+    assert!(
+        generic["event"]["metadata"]
+            .get("aizu_terminal_activation")
+            .is_none()
+    );
 }
 
 #[test]
@@ -885,6 +987,9 @@ fn bridge_reports_gap_when_every_event_was_pruned() {
 
 #[test]
 fn concurrent_process_emit_allocates_every_sequence_once() {
+    let _process_load = PROCESS_LOAD_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let directory = TempDir::new().unwrap();
     let binary = assert_cmd::cargo::cargo_bin!("aizu");
     let mut children = Vec::new();

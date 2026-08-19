@@ -243,6 +243,7 @@ fn notification_context(
         received_at: item.received_at,
         now,
         local_minute,
+        allow_terminal_activation: item.source_key == "local",
     }
 }
 
@@ -445,6 +446,70 @@ mod tests {
             notifications[0].body,
             "Implemented reconnect handling and all checks pass.\naizu on Remote host"
         );
+        assert!(notifications[0].activation.is_none());
+    }
+
+    #[test]
+    fn local_first_party_activation_reaches_the_notifier_but_remote_activation_does_not() {
+        fn request() -> EmitRequest {
+            let mut request = CodexAdapter
+                .parse_hook(
+                    "Stop",
+                    br#"{"session_id":"thread-1","cwd":"/home/dev/aizu","hook_event_name":"Stop","last_assistant_message":"Completed."}"#,
+                )
+                .expect("valid Codex hook")
+                .pop()
+                .expect("one event");
+            request
+                .metadata
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("adapter metadata")
+                .insert(
+                    crate::TERMINAL_ACTIVATION_METADATA_KEY.to_owned(),
+                    serde_json::json!({
+                        "application": "iterm2",
+                        "application_session": "w0t0p0:ABCD",
+                        "tmux": {"socket_name": "work", "pane_id": "%7"}
+                    }),
+                );
+            request
+        }
+
+        let (_directory, spool, desktop) = fixture();
+        spool.emit(request(), None).expect("emit local event");
+        ingest_spool(&spool, &desktop, "local", "My Mac", timestamp()).expect("ingest local");
+        let notifier = FakeNotifier::successful();
+        dispatch_outbox(
+            &desktop,
+            &notifier,
+            &NotificationPolicy::default(),
+            timestamp(),
+            None,
+        )
+        .expect("dispatch local");
+        assert!(notifier.notifications.borrow()[0].activation.is_some());
+
+        let (_directory, spool, desktop) = fixture();
+        spool.emit(request(), None).expect("emit remote event");
+        ingest_spool(
+            &spool,
+            &desktop,
+            "ssh:remote-host",
+            "Remote host",
+            timestamp(),
+        )
+        .expect("ingest remote");
+        let notifier = FakeNotifier::successful();
+        dispatch_outbox(
+            &desktop,
+            &notifier,
+            &NotificationPolicy::default(),
+            timestamp(),
+            None,
+        )
+        .expect("dispatch remote");
+        assert!(notifier.notifications.borrow()[0].activation.is_none());
     }
 
     #[test]

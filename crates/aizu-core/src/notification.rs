@@ -3,7 +3,9 @@ use std::fmt::Write;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde_json::Value;
 
-use crate::{EventKind, NormalizedEvent, Outcome};
+use crate::{
+    EventKind, NormalizedEvent, Outcome, TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation,
+};
 
 /// Maximum trusted source-label length shown in a notification.
 const MAX_SOURCE_LABEL_CHARS: usize = 200;
@@ -92,6 +94,7 @@ pub struct PreparedNotification {
     pub identifier: String,
     pub title: String,
     pub body: String,
+    pub activation: Option<TerminalActivation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,6 +110,8 @@ pub struct NotificationContext {
     pub now: DateTime<Utc>,
     /// Current local minute (`0..1440`) as resolved by the platform adapter.
     pub local_minute: Option<u16>,
+    /// Only local source events may activate a terminal on this desktop.
+    pub allow_terminal_activation: bool,
 }
 
 impl NotificationPolicy {
@@ -185,8 +190,23 @@ impl NotificationPolicy {
             identifier: format!("aizu-event-{}-{}", event.source.source_id, event.id),
             title,
             body,
+            activation: context
+                .allow_terminal_activation
+                .then(|| trusted_terminal_activation(event))
+                .flatten(),
         })
     }
+}
+
+fn trusted_terminal_activation(event: &NormalizedEvent) -> Option<TerminalActivation> {
+    if !trusted_adapter(event) {
+        return None;
+    }
+    let value = event
+        .metadata
+        .as_ref()?
+        .get(TERMINAL_ACTIVATION_METADATA_KEY)?;
+    TerminalActivation::from_metadata(value)
 }
 
 fn trusted_adapter_title(event: &NormalizedEvent) -> Option<String> {
@@ -304,6 +324,7 @@ pub fn aggregate_backlog_count(
             identifier: "aizu-backlog-summary".to_owned(),
             title: "Aizu backlog".to_owned(),
             body: format!("{count} agent events arrived while disconnected"),
+            activation: None,
         }),
     }
 }
@@ -377,6 +398,7 @@ mod tests {
                 received_at: timestamp(12),
                 now: timestamp(12),
                 local_minute: None,
+                allow_terminal_activation: false,
             },
         );
         let NotificationDecision::Notify(notification) = decision else {
@@ -412,6 +434,7 @@ mod tests {
                 received_at: timestamp(12),
                 now: timestamp(12),
                 local_minute: None,
+                allow_terminal_activation: false,
             },
         ) else {
             panic!("expected notification")
@@ -419,6 +442,64 @@ mod tests {
 
         assert_eq!(notification.title, "Claude Code task failed");
         assert_eq!(notification.body, "Failed in My Mac");
+    }
+
+    #[test]
+    fn only_trusted_local_events_expose_a_valid_terminal_activation() {
+        let mut event = event(
+            EventKind::TaskCompleted,
+            Some(Outcome::Succeeded),
+            timestamp(12),
+        );
+        event.source.agent = "codex".to_owned();
+        event.metadata = serde_json::json!({
+            "aizu_adapter": "codex-v1",
+            TERMINAL_ACTIVATION_METADATA_KEY: {
+                "application": "iterm2",
+                "application_session": "w0t0p0:ABCD",
+                "tmux": {"socket_name": "work", "pane_id": "%7"}
+            }
+        })
+        .as_object()
+        .cloned();
+        let local_context = NotificationContext {
+            received_at: timestamp(12),
+            now: timestamp(12),
+            local_minute: None,
+            allow_terminal_activation: true,
+        };
+
+        let NotificationDecision::Notify(local) =
+            NotificationPolicy::default().decide(&event, "My Mac", local_context)
+        else {
+            panic!("expected local notification")
+        };
+        let activation = local.activation.expect("trusted local activation");
+        assert_eq!(activation.application, crate::TerminalApplication::Iterm2);
+        assert_eq!(activation.tmux.expect("tmux target").pane_id, "%7");
+
+        let remote_context = NotificationContext {
+            allow_terminal_activation: false,
+            ..local_context
+        };
+        let NotificationDecision::Notify(remote) =
+            NotificationPolicy::default().decide(&event, "Remote host", remote_context)
+        else {
+            panic!("expected remote notification")
+        };
+        assert!(remote.activation.is_none());
+
+        event
+            .metadata
+            .as_mut()
+            .expect("metadata")
+            .remove("aizu_adapter");
+        let NotificationDecision::Notify(untrusted) =
+            NotificationPolicy::default().decide(&event, "My Mac", local_context)
+        else {
+            panic!("expected untrusted notification")
+        };
+        assert!(untrusted.activation.is_none());
     }
 
     #[test]
@@ -438,6 +519,7 @@ mod tests {
             received_at: timestamp(12),
             now: timestamp(12),
             local_minute: None,
+            allow_terminal_activation: false,
         };
 
         // Agent details are on by default, so the agent message reaches the notification.
@@ -498,6 +580,7 @@ mod tests {
                 received_at: timestamp(12),
                 now: timestamp(12),
                 local_minute: None,
+                allow_terminal_activation: false,
             },
         );
         assert!(matches!(decision, NotificationDecision::Notify(_)));
@@ -525,6 +608,7 @@ mod tests {
                 received_at: timestamp(12),
                 now: timestamp(12),
                 local_minute: Some(23 * 60),
+                allow_terminal_activation: false,
             },
         );
         assert!(matches!(decision, NotificationDecision::Notify(_)));
@@ -544,6 +628,7 @@ mod tests {
                 received_at: timestamp(12),
                 now: timestamp(12),
                 local_minute: None,
+                allow_terminal_activation: false,
             },
         );
         let NotificationDecision::Notify(notification) = decision else {
@@ -559,6 +644,7 @@ mod tests {
                 identifier: format!("id-{index}"),
                 title: "Task finished".to_owned(),
                 body: "Task finished on Local".to_owned(),
+                activation: None,
             })
             .collect();
         let BacklogPlan::Summary(summary) = aggregate_backlog(items) else {
