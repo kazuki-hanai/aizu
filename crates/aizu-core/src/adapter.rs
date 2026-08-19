@@ -262,7 +262,11 @@ pub fn safe_agent_excerpt(value: &str) -> Option<String> {
         return None;
     }
 
-    let normalized = redact_sensitive(&normalize_excerpt(value));
+    let normalized = normalize_excerpt(value);
+    if has_obfuscated_private_key_begin(&normalized) {
+        return Some("[redacted private key]".to_owned());
+    }
+    let normalized = redact_sensitive(&normalized);
     let normalized = normalized.trim();
     if normalized.is_empty() {
         return None;
@@ -304,17 +308,14 @@ fn redact_sensitive(value: &str) -> String {
     for line in value.split('\n') {
         let uppercase = line.to_ascii_uppercase();
         if state.block == BlockState::PublicCertificate {
-            redacted.push(line.to_owned());
             if uppercase.contains("-----END CERTIFICATE-----") {
                 state.block = BlockState::None;
+                redacted.push(line.to_owned());
+            } else if is_certificate_payload(line) {
+                redacted.push(line.to_owned());
+            } else {
+                redacted.push(redact_line(line, &mut state));
             }
-            continue;
-        }
-        if uppercase.contains("-----BEGIN CERTIFICATE-----") {
-            if !uppercase.contains("-----END CERTIFICATE-----") {
-                state.block = BlockState::PublicCertificate;
-            }
-            redacted.push(line.to_owned());
             continue;
         }
         if state.block == BlockState::PrivateKey {
@@ -340,6 +341,15 @@ fn redact_sensitive(value: &str) -> String {
             }
             continue;
         }
+        // Private markers take precedence if malformed input places both public and
+        // private BEGIN markers on one line.
+        if uppercase.contains("-----BEGIN CERTIFICATE-----") {
+            if !uppercase.contains("-----END CERTIFICATE-----") {
+                state.block = BlockState::PublicCertificate;
+            }
+            redacted.push(line.to_owned());
+            continue;
+        }
         redacted.push(redact_line(line, &mut state));
     }
     redacted.join("\n")
@@ -359,6 +369,8 @@ enum SecretState {
     None,
     AwaitDelimiter,
     AwaitValue,
+    AwaitBearerValue,
+    AwaitTokenOrDelimiter,
 }
 
 #[derive(Default)]
@@ -368,17 +380,69 @@ struct RedactionState {
 }
 
 fn private_key_begin(uppercase: &str) -> Option<usize> {
-    let begin = uppercase.find("-----BEGIN")?;
-    let label = uppercase.get(begin..)?;
-    (label.contains("PRIVATE") || label.contains("SECRET")).then_some(begin)
+    pem_labels(uppercase, "-----BEGIN")
+        .find_map(|(offset, label)| is_private_key_label(label).then_some(offset))
 }
 
 fn private_key_end(uppercase: &str) -> bool {
-    uppercase.find("-----END").is_some_and(|end| {
-        uppercase
-            .get(end..)
-            .is_some_and(|label| label.contains("PRIVATE") || label.contains("SECRET"))
+    pem_labels(uppercase, "-----END").any(|(_, label)| is_private_key_label(label))
+}
+
+fn pem_labels<'a>(line: &'a str, marker: &'static str) -> impl Iterator<Item = (usize, &'a str)> {
+    line.match_indices(marker).filter_map(move |(offset, _)| {
+        let remainder = line.get(offset + marker.len()..)?.trim_start();
+        let end = remainder.find("-----")?;
+        let label = remainder.get(..end)?.trim();
+        (!label.is_empty()).then_some((offset, label))
     })
+}
+
+fn is_private_key_label(label: &str) -> bool {
+    matches!(
+        label,
+        "PRIVATE KEY"
+            | "RSA PRIVATE KEY"
+            | "EC PRIVATE KEY"
+            | "DSA PRIVATE KEY"
+            | "OPENSSH PRIVATE KEY"
+            | "ENCRYPTED PRIVATE KEY"
+            | "SECRET KEY"
+            | "PGP PRIVATE KEY BLOCK"
+    )
+}
+
+fn has_obfuscated_private_key_begin(value: &str) -> bool {
+    let uppercase = value.to_ascii_uppercase();
+    if uppercase
+        .lines()
+        .any(|line| private_key_begin(line).is_some())
+    {
+        return false;
+    }
+    let collapsed: String = uppercase
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    [
+        "-----BEGINPRIVATEKEY-----",
+        "-----BEGINRSAPRIVATEKEY-----",
+        "-----BEGINGINPRIVATEKEY-----",
+        "-----BEGINOPENSSHPRIVATEKEY-----",
+        "-----BEGINENCRYPTEDPRIVATEKEY-----",
+        "-----BEGINSECRETKEY-----",
+    ]
+    .iter()
+    .any(|marker| collapsed.contains(marker))
+        || collapsed.contains("-----BEGINPRIVATEKEY")
+}
+
+fn is_certificate_payload(line: &str) -> bool {
+    let line = line.trim();
+    line.len() >= 20
+        && line.len().is_multiple_of(4)
+        && line
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
 }
 
 fn redact_line(line: &str, state: &mut RedactionState) -> String {
@@ -389,44 +453,8 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         let token = tokens[index];
         let lower = token.to_ascii_lowercase();
 
-        if let Some(masked) = redact_expected_delimiter(token, state) {
+        if let Some(masked) = redact_direct_token(token, state) {
             out.push(masked);
-            index += 1;
-            continue;
-        }
-        if let Some(masked) = redact_expected_secret(token, state) {
-            out.push(masked);
-            index += 1;
-            continue;
-        }
-        if let Some(masked) = redact_file_url(token) {
-            out.push(masked);
-            index += 1;
-            continue;
-        }
-        if let Some(masked) = redact_url_userinfo(token) {
-            out.push(masked);
-            index += 1;
-            continue;
-        }
-        if looks_like_private_path(token) {
-            out.push(PATH_PLACEHOLDER.to_owned());
-            index += 1;
-            continue;
-        }
-        if looks_like_credential_value(token) {
-            out.push(REDACTED_PLACEHOLDER.to_owned());
-            index += 1;
-            continue;
-        }
-        if let Some(redaction) = redact_key_value(token) {
-            match redaction {
-                KeyValueRedaction::Inline(masked) => out.push(masked),
-                KeyValueRedaction::NeedsValue(label) => {
-                    out.push(label);
-                    state.secret = SecretState::AwaitValue;
-                }
-            }
             index += 1;
             continue;
         }
@@ -444,13 +472,18 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
             continue;
         }
 
-        if let Some(redaction) = redact_authorization_header(token) {
-            out.push(redaction.label);
-            state.secret = if redaction.needs_value {
-                SecretState::AwaitValue
-            } else {
-                SecretState::None
-            };
+        if looks_like_non_file_uri(token) {
+            out.push(token.to_owned());
+            index += 1;
+            continue;
+        }
+        if looks_like_private_path(token) {
+            out.push(PATH_PLACEHOLDER.to_owned());
+            index += 1;
+            continue;
+        }
+        if looks_like_credential_value(token) {
+            out.push(REDACTED_PLACEHOLDER.to_owned());
             index += 1;
             continue;
         }
@@ -478,6 +511,18 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         // Keep the key/header visible and carry only the delimiter expectation across
         // a line boundary. If the next line is ordinary prose rather than `:`/`=`,
         // the pending state is cancelled without redacting it.
+        if index + 1 == tokens.len() && matches!(lower.as_str(), "bearer" | "basic") {
+            out.push(token.to_owned());
+            state.secret = SecretState::AwaitBearerValue;
+            index += 1;
+            continue;
+        }
+        if index + 1 == tokens.len() && lower == "token" {
+            out.push(token.to_owned());
+            state.secret = SecretState::AwaitTokenOrDelimiter;
+            index += 1;
+            continue;
+        }
         if index + 1 == tokens.len() && (is_sensitive_key(token) || lower == "authorization") {
             out.push(token.to_owned());
             state.secret = SecretState::AwaitDelimiter;
@@ -489,6 +534,51 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         index += 1;
     }
     out.join(" ")
+}
+
+fn redact_direct_token(token: &str, state: &mut RedactionState) -> Option<String> {
+    if let Some(masked) = redact_expected_context(token, state)
+        .or_else(|| redact_expected_delimiter(token, state))
+        .or_else(|| redact_expected_secret(token, state))
+        .or_else(|| redact_file_url(token))
+        .or_else(|| redact_url_userinfo(token))
+    {
+        return Some(masked);
+    }
+    if let Some(redaction) = redact_key_value(token) {
+        return Some(match redaction {
+            KeyValueRedaction::Inline(masked) => masked,
+            KeyValueRedaction::NeedsValue(label) => {
+                state.secret = SecretState::AwaitValue;
+                label
+            }
+        });
+    }
+    let redaction = redact_authorization_header(token)?;
+    state.secret = if redaction.needs_value {
+        SecretState::AwaitValue
+    } else {
+        SecretState::None
+    };
+    Some(redaction.label)
+}
+
+fn redact_expected_context(token: &str, state: &mut RedactionState) -> Option<String> {
+    match state.secret {
+        SecretState::AwaitBearerValue => {
+            state.secret = SecretState::None;
+            looks_like_bearer_value(token).then(|| REDACTED_PLACEHOLDER.to_owned())
+        }
+        SecretState::AwaitTokenOrDelimiter => {
+            state.secret = SecretState::None;
+            if split_leading_separator(token).is_some() {
+                state.secret = SecretState::AwaitValue;
+                return redact_expected_secret(token, state);
+            }
+            contextual_secret_candidate("token", token).then(|| REDACTED_PLACEHOLDER.to_owned())
+        }
+        _ => None,
+    }
 }
 
 fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String>, usize)> {
@@ -655,30 +745,86 @@ fn split_leading_separator(token: &str) -> Option<(char, &str)> {
 
 fn redact_file_url(token: &str) -> Option<String> {
     let lower = token.to_ascii_lowercase();
-    if !lower.starts_with("file:") {
+    let file = lower.find("file:")?;
+    if file > 0
+        && !matches!(
+            token.as_bytes().get(file.wrapping_sub(1)),
+            Some(b'=' | b':' | b'"' | b'\'' | b'`' | b'(' | b'[' | b'{')
+        )
+    {
         return None;
     }
-    let path = token.get(5..)?;
+    let path_start = file + 5;
+    let path = token.get(path_start..)?;
     let absolute = path.starts_with(['/', '\\'])
+        || path.to_ascii_lowercase().starts_with("%2f")
+        || path.to_ascii_lowercase().starts_with("%5c")
         || (path.as_bytes().get(1) == Some(&b':')
             && matches!(path.as_bytes().get(2), Some(b'\\' | b'/')));
-    absolute.then(|| format!("{}{}", token.get(..5).unwrap_or("file:"), PATH_PLACEHOLDER))
+    absolute.then(|| {
+        format!(
+            "{}{PATH_PLACEHOLDER}",
+            token.get(..path_start).unwrap_or("file:")
+        )
+    })
 }
 
 fn redact_url_userinfo(token: &str) -> Option<String> {
-    let scheme_end = token.find("://")? + 3;
-    let remainder = token.get(scheme_end..)?;
+    let authority_start = uri_authority_start(token)?;
+    let remainder = token.get(authority_start..)?;
     let authority_end = remainder
         .find(['/', '?', '#'])
-        .map_or(token.len(), |offset| scheme_end + offset);
-    let at = token.get(scheme_end..authority_end)?.rfind('@')? + scheme_end;
-    (at > scheme_end).then(|| {
+        .map_or(token.len(), |offset| authority_start + offset);
+    let at = token.get(authority_start..authority_end)?.rfind('@')? + authority_start;
+    (at > authority_start).then(|| {
         format!(
             "{}{REDACTED_PLACEHOLDER}@{}",
-            token.get(..scheme_end).unwrap_or_default(),
+            token.get(..authority_start).unwrap_or_default(),
             token.get(at + 1..).unwrap_or_default()
         )
     })
+}
+
+fn uri_authority_start(token: &str) -> Option<usize> {
+    if let Some(scheme) = token.find("://") {
+        return Some(scheme + 3);
+    }
+    if let Some(relative) = token.find("//")
+        && (relative == 0
+            || matches!(
+                token.as_bytes().get(relative.wrapping_sub(1)),
+                Some(b'=' | b':' | b'"' | b'\'' | b'`' | b'(' | b'[' | b'{')
+            ))
+    {
+        return Some(relative + 2);
+    }
+    let colon = token.find(':')?;
+    let scheme_start = token
+        .get(..colon)?
+        .rfind(['=', '"', '\'', '`', '(', '[', '{'])
+        .map_or(0, |position| position + 1);
+    let scheme = token.get(scheme_start..colon)?;
+    (scheme.len() >= 2
+        && scheme.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphabetic()
+                || (index > 0 && matches!(byte, b'+' | b'-' | b'.' | b'0'..=b'9'))
+        }))
+    .then_some(colon + 1)
+}
+
+fn looks_like_non_file_uri(token: &str) -> bool {
+    let Some(authority_start) = uri_authority_start(token) else {
+        return false;
+    };
+    let prefix = token
+        .get(..authority_start)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !prefix.ends_with("file:")
+        && !prefix.ends_with("file://")
+        && token
+            .get(authority_start..)
+            .is_some_and(|value| !value.is_empty())
 }
 
 fn looks_like_credential_value(token: &str) -> bool {
@@ -744,9 +890,15 @@ fn looks_like_bearer_value(token: &str) -> bool {
         return true;
     }
     let token = trimmed_token(token);
+    if token.to_ascii_lowercase().starts_with("version") {
+        return false;
+    }
     (6..=10).contains(&token.len())
         && token.bytes().any(|byte| byte.is_ascii_digit())
         && token.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        || (token.len() >= 16
+            && token.bytes().any(|byte| byte.is_ascii_digit())
+            && token.bytes().all(|byte| byte.is_ascii_alphanumeric()))
 }
 
 fn contextual_secret_candidate(key: &str, candidate: &str) -> bool {
@@ -795,7 +947,7 @@ fn looks_like_jwt(token: &str) -> bool {
 }
 
 fn looks_like_high_entropy_blob(token: &str) -> bool {
-    if token.len() < 40 {
+    if token.len() < 40 || !token.len().is_multiple_of(4) {
         return false;
     }
     if token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -803,19 +955,15 @@ fn looks_like_high_entropy_blob(token: &str) -> bool {
         // redacted only when a preceding secret-key cue marks them as a value.
         return false;
     }
-    let mut lower = false;
-    let mut upper = false;
     let mut base64_symbol = false;
     for byte in token.bytes() {
         match byte {
-            b'a'..=b'z' => lower = true,
-            b'A'..=b'Z' => upper = true,
-            b'0'..=b'9' => {}
-            b'+' | b'/' | b'_' | b'-' | b'=' => base64_symbol = true,
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' => {}
+            b'+' | b'/' | b'=' => base64_symbol = true,
             _ => return false,
         }
     }
-    lower && upper && base64_symbol
+    base64_symbol
 }
 
 fn looks_like_private_path(token: &str) -> bool {
@@ -825,18 +973,16 @@ fn looks_like_private_path(token: &str) -> bool {
             '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '"' | '\'' | '`'
         )
     });
-    [
-        "/Users/",
-        "/home/",
-        "/root/",
-        "/private/",
-        "/tmp/",
-        "/var/folders/",
-        "~/",
-    ]
-    .iter()
-    .any(|prefix| token.contains(prefix))
-        || token.starts_with(r"\\")
+    token.starts_with("~/")
+        || token.contains(r"\\")
+        || token.as_bytes().iter().enumerate().any(|(index, byte)| {
+            *byte == b'/'
+                && (index == 0
+                    || matches!(
+                        token.as_bytes()[index - 1],
+                        b'=' | b':' | b'"' | b'\'' | b'`' | b'(' | b'[' | b'{'
+                    ))
+        })
         || token
             .as_bytes()
             .windows(3)
@@ -1119,8 +1265,17 @@ mod tests {
                 "Authorization\n:\nBearer\nhunter2",
                 "Authorization\n:\nBearer\n[redacted]",
             ),
+            ("Bearer\nhunter2", "Bearer\n[redacted]"),
+            (
+                "Token\naB1cD2eF3gH4iJ5kL6mN7pQ8rS9tU0vW1xY2zA3b",
+                "Token\n[redacted]",
+            ),
             ("password :hunter2", "password :[redacted]"),
             ("Bearer hunter2", "Bearer [redacted]"),
+            (
+                "Bearer abcdefghijklmnopqrstuvwxyz123456",
+                "Bearer [redacted]",
+            ),
             (
                 "Fetch https://alice:hunter2@example.com/resource",
                 "Fetch https://[redacted]@example.com/resource",
@@ -1134,6 +1289,14 @@ mod tests {
                 "Open https://[redacted]@host.example/path",
             ),
             (
+                "Open //user:pass@host.example/path",
+                "Open //[redacted]@host.example/path",
+            ),
+            (
+                "Open https:user:pass@host.example/path",
+                "Open https:[redacted]@host.example/path",
+            ),
+            (
                 "Open file:///Users/alice/.ssh/id_ed25519",
                 "Open file:[path]",
             ),
@@ -1141,9 +1304,21 @@ mod tests {
                 "Open file:README.md for details",
                 "Open file:README.md for details",
             ),
+            ("Open file:%2Froot%2F.ssh%2Fid_rsa", "Open file:[path]"),
             (r"Open \\server\share\Alice\secret.txt", "Open [path]"),
             (r"Open \\?\C:\Users\Alice\secret.txt", "Open [path]"),
+            (r"path=\\server\share\Alice\secret.txt", "[path]"),
             ("Open /root/.ssh/id_rsa", "Open [path]"),
+            ("Open /etc/aizu/private.conf", "Open [path]"),
+            ("path=/etc/aizu/private.conf", "[path]"),
+            (
+                "Open https://example.com/root/docs",
+                "Open https://example.com/root/docs",
+            ),
+            (
+                "Open https://example.com/home/start",
+                "Open https://example.com/home/start",
+            ),
             (
                 "AWS_SECRET_ACCESS_KEY = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
                 "AWS_SECRET_ACCESS_KEY = [redacted]",
@@ -1186,6 +1361,10 @@ mod tests {
                 "Blob [redacted]",
             ),
             (
+                "Blob QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==",
+                "Blob [redacted]",
+            ),
+            (
                 "Authorization is required before deployment",
                 "Authorization is required before deployment",
             ),
@@ -1204,6 +1383,10 @@ mod tests {
             (
                 "Artifact BuildIDAbC1234567890DefGhIjKlMnOpQrStUvWxYz completed",
                 "Artifact BuildIDAbC1234567890DefGhIjKlMnOpQrStUvWxYz completed",
+            ),
+            (
+                "Artifact Build_ID_AbCdEfGhIjKlMnOpQrStUvWxYz123456789 completed",
+                "Artifact Build_ID_AbCdEfGhIjKlMnOpQrStUvWxYz123456789 completed",
             ),
             (
                 "Token version2026 identifies the format",
@@ -1249,10 +1432,7 @@ mod tests {
             "safe ending"
         );
         let excerpt = safe_agent_excerpt(split_marker).expect("malformed key block is redacted");
-        assert!(excerpt.contains("[redacted private key]"));
-        assert!(excerpt.contains("safe ending"));
-        assert!(!excerpt.contains("shortSecretBody"));
-        assert!(!excerpt.contains("KEY-----"));
+        assert_eq!(excerpt, "[redacted private key]");
 
         let misleading_end = concat!(
             "-----BEGIN PRIVATE KEY-----\n",
@@ -1268,12 +1448,23 @@ mod tests {
         assert!(!excerpt.contains("firstSecret"));
         assert!(!excerpt.contains("secondSecret"));
         assert!(!excerpt.contains("END PRIVATE KEY"));
+
+        for obfuscated in [
+            "-----BEGIN\nPRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+            "-----BE\nGIN PRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+        ] {
+            assert_eq!(
+                safe_agent_excerpt(obfuscated).as_deref(),
+                Some("[redacted private key]")
+            );
+        }
     }
 
     #[test]
     fn excerpts_preserve_non_secret_begin_end_blocks() {
         for message in [
             "-----BEGIN REPORT-----\nAll checks passed\n-----END REPORT-----\nDone",
+            "-----BEGIN REPORT----- private results follow\nnormal report body\n-----END REPORT-----",
             "-----BEGIN CERTIFICATE-----\nYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ==\n-----END CERTIFICATE-----",
         ] {
             assert_eq!(
@@ -1282,6 +1473,18 @@ mod tests {
                 "non-secret block should remain visible"
             );
         }
+
+        assert_eq!(
+            safe_agent_excerpt(
+                "-----BEGIN CERTIFICATE-----\npassword=hunter2\n-----END CERTIFICATE-----"
+            )
+            .as_deref(),
+            Some("-----BEGIN CERTIFICATE-----\npassword=[redacted]\n-----END CERTIFICATE-----")
+        );
+        let mixed = "-----BEGIN CERTIFICATE----- -----BEGIN PRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----";
+        let excerpt = safe_agent_excerpt(mixed).expect("private marker wins");
+        assert!(excerpt.contains("[redacted private key]"));
+        assert!(!excerpt.contains("secretBody"));
     }
 
     #[test]

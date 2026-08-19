@@ -514,6 +514,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn adversarial_secret_corpus_is_redacted_at_every_pipeline_stage() {
         for (message, expected, leaked) in [
             (
@@ -534,6 +535,12 @@ mod tests {
             ),
             ("password :hunter2", "password :[redacted]", "hunter2"),
             ("Bearer hunter2", "Bearer [redacted]", "hunter2"),
+            ("Bearer\nhunter2", "Bearer\n[redacted]", "hunter2"),
+            (
+                "Bearer abcdefghijklmnopqrstuvwxyz123456",
+                "Bearer [redacted]",
+                "abcdefghijklmnopqrstuvwxyz",
+            ),
             (
                 "Slack xapp-1-A1234567890-1234567890-abcdef",
                 "Slack [redacted]",
@@ -542,6 +549,11 @@ mod tests {
             (
                 "Token aB1cD2eF3gH4iJ5kL6mN7pQ8rS9tU0vW1xY2zA3b",
                 "Token [redacted]",
+                "aB1cD2",
+            ),
+            (
+                "Token\naB1cD2eF3gH4iJ5kL6mN7pQ8rS9tU0vW1xY2zA3b",
+                "Token\n[redacted]",
                 "aB1cD2",
             ),
             (
@@ -555,6 +567,11 @@ mod tests {
                 "YWFhYWFh",
             ),
             (
+                "Blob QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==",
+                "Blob [redacted]",
+                "QUFBQUFB",
+            ),
+            (
                 "-----BEGIN PRIVATE\nKEY-----\nshortSecretBody\n-----END PRIVATE KEY-----\nsafe ending",
                 "[redacted private key]",
                 "shortSecretBody",
@@ -563,6 +580,26 @@ mod tests {
                 "-----BEGIN PRIVATE KEY-----\nfirstSecret\n-----END CERTIFICATE-----\nsecondSecret\n-----END PRIVATE KEY-----\nsafe ending",
                 "[redacted private key]",
                 "secondSecret",
+            ),
+            (
+                "-----BEGIN\nPRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+                "[redacted private key]",
+                "secretBody",
+            ),
+            (
+                "-----BE\nGIN PRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+                "[redacted private key]",
+                "secretBody",
+            ),
+            (
+                "-----BEGIN CERTIFICATE-----\npassword=hunter2\n-----END CERTIFICATE-----",
+                "password=[redacted]",
+                "hunter2",
+            ),
+            (
+                "-----BEGIN CERTIFICATE----- -----BEGIN PRIVATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+                "[redacted private key]",
+                "secretBody",
             ),
             (
                 "Open file:///Users/alice/.ssh/id_ed25519",
@@ -579,11 +616,29 @@ mod tests {
                 "Open [path]",
                 "Alice",
             ),
+            (r"path=\\server\share\Alice\secret.txt", "[path]", "Alice"),
             ("Open /root/.ssh/id_rsa", "Open [path]", "/root/"),
+            ("Open /etc/aizu/private.conf", "Open [path]", "/etc/"),
+            ("path=/etc/aizu/private.conf", "[path]", "/etc/"),
+            (
+                "Open file:%2Froot%2F.ssh%2Fid_rsa",
+                "Open file:[path]",
+                "%2Froot",
+            ),
             (
                 "Open https://user:pa@ss@host.example/path",
                 "Open https://[redacted]@host.example/path",
                 "pa@ss",
+            ),
+            (
+                "Open //user:pass@host.example/path",
+                "Open //[redacted]@host.example/path",
+                "user:pass",
+            ),
+            (
+                "Open https:user:pass@host.example/path",
+                "Open https:[redacted]@host.example/path",
+                "user:pass",
             ),
         ] {
             assert_pipeline_redacts(message, expected, leaked);
