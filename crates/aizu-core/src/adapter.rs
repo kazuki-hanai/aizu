@@ -431,7 +431,7 @@ fn has_obfuscated_private_key_begin(value: &str) -> bool {
     }
     let collapsed: String = uppercase
         .chars()
-        .filter(|character| !character.is_whitespace())
+        .filter(|character| !character.is_whitespace() && !is_default_ignorable_format(*character))
         .collect();
     PRIVATE_KEY_LABELS.iter().any(|label| {
         let label: String = label
@@ -441,6 +441,13 @@ fn has_obfuscated_private_key_begin(value: &str) -> bool {
         collapsed.contains(&format!("-----BEGIN{label}-----"))
             || collapsed.contains(&format!("-----BEGIN{label}"))
     })
+}
+
+fn is_default_ignorable_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{00AD}'
+    )
 }
 
 fn is_certificate_payload(line: &str) -> bool {
@@ -575,6 +582,7 @@ fn redact_explicit_context(token: &str) -> Option<ExplicitContextAction> {
 }
 
 fn is_explicit_context_label(value: &str) -> bool {
+    let value = value.trim_matches(|character: char| !character.is_ascii_alphanumeric());
     matches!(
         value.to_ascii_lowercase().as_str(),
         "bearer" | "basic" | "token" | "blob" | "base64" | "encoded"
@@ -597,16 +605,16 @@ fn redact_expected_explicit_value(token: &str, state: &mut RedactionState) -> Op
         let separators = token.get(..separator_length).unwrap_or_default();
         return Some(format!("{separators}{REDACTED_PLACEHOLDER}"));
     }
+    if token.chars().all(|character| !character.is_alphanumeric()) {
+        return Some(token.to_owned());
+    }
     state.secret = SecretState::None;
     Some(REDACTED_PLACEHOLDER.to_owned())
 }
 
 fn redact_direct_token(token: &str, state: &mut RedactionState) -> Option<String> {
-    if let Some(masked) = redact_expected_delimiter(token, state)
-        .or_else(|| redact_expected_secret(token, state))
-        .or_else(|| redact_file_url(token))
-        .or_else(|| redact_url_userinfo(token))
-        .or_else(|| redact_uri_secrets(token))
+    if let Some(masked) =
+        redact_expected_delimiter(token, state).or_else(|| redact_expected_secret(token, state))
     {
         return Some(masked);
     }
@@ -619,13 +627,18 @@ fn redact_direct_token(token: &str, state: &mut RedactionState) -> Option<String
             }
         });
     }
-    let redaction = redact_authorization_header(token)?;
-    state.secret = if redaction.needs_value {
-        SecretState::AwaitValue
-    } else {
-        SecretState::None
-    };
-    Some(redaction.label)
+    if let Some(redaction) = redact_authorization_header(token) {
+        state.secret = if redaction.needs_value {
+            SecretState::AwaitValue
+        } else {
+            SecretState::None
+        };
+        return Some(redaction.label);
+    }
+    redact_file_url(token)
+        .or_else(|| redact_encoded_private_path(token))
+        .or_else(|| redact_url_userinfo(token))
+        .or_else(|| redact_uri_secrets(token))
 }
 
 fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String>, usize)> {
@@ -656,8 +669,11 @@ fn redact_expected_delimiter(token: &str, state: &mut RedactionState) -> Option<
     if state.secret != SecretState::AwaitDelimiter {
         return None;
     }
-    state.secret = SecretState::None;
-    split_leading_separator(token)?;
+    let separator_length = leading_separator_length(token);
+    if separator_length == 0 {
+        state.secret = SecretState::None;
+        return None;
+    }
     state.secret = SecretState::AwaitValue;
     redact_expected_secret(token, state)
 }
@@ -670,14 +686,17 @@ fn redact_expected_secret(token: &str, state: &mut RedactionState) -> Option<Str
     if matches!(lower.as_str(), "=" | ":" | "bearer" | "basic" | "token") {
         return Some(token.to_owned());
     }
-    if let Some((separator, remainder)) = split_leading_separator(token) {
+    let separator_length = leading_separator_length(token);
+    if separator_length > 0 {
+        let separators = token.get(..separator_length).unwrap_or_default();
+        let remainder = token.get(separator_length..).unwrap_or_default();
         let lower_remainder = remainder.to_ascii_lowercase();
         if remainder.is_empty() || matches!(lower_remainder.as_str(), "bearer" | "basic" | "token")
         {
             return Some(token.to_owned());
         }
         state.secret = SecretState::None;
-        return Some(format!("{separator}{REDACTED_PLACEHOLDER}"));
+        return Some(format!("{separators}{REDACTED_PLACEHOLDER}"));
     }
     state.secret = SecretState::None;
     Some(REDACTED_PLACEHOLDER.to_owned())
@@ -688,13 +707,15 @@ fn redact_expected_secret(token: &str, state: &mut RedactionState) -> Option<Str
 fn redact_key_value(token: &str) -> Option<KeyValueRedaction> {
     for separator in ['=', ':'] {
         if let Some(position) = token.find(separator) {
-            let (key, remainder) = token.split_at(position);
-            let value = &remainder[separator.len_utf8()..];
+            let key = token.get(..position)?;
+            let separator_length = leading_separator_length(token.get(position..)?);
+            let separators = token.get(position..position + separator_length)?;
+            let value = token.get(position + separator_length..)?;
             if is_sensitive_key(key) {
                 return Some(if value.is_empty() {
                     KeyValueRedaction::NeedsValue(token.to_owned())
                 } else {
-                    KeyValueRedaction::Inline(format!("{key}{separator}{REDACTED_PLACEHOLDER}"))
+                    KeyValueRedaction::Inline(format!("{key}{separators}{REDACTED_PLACEHOLDER}"))
                 });
             }
         }
@@ -776,6 +797,13 @@ fn split_leading_separator(token: &str) -> Option<(char, &str)> {
     Some((separator, token.get(separator.len_utf8()..)?))
 }
 
+fn leading_separator_length(token: &str) -> usize {
+    token
+        .bytes()
+        .take_while(|byte| matches!(byte, b':' | b'='))
+        .count()
+}
+
 fn redact_file_url(token: &str) -> Option<String> {
     let lower = token.to_ascii_lowercase();
     let file = lower.find("file:")?;
@@ -810,6 +838,15 @@ fn redact_file_url(token: &str) -> Option<String> {
     })
 }
 
+fn redact_encoded_private_path(token: &str) -> Option<String> {
+    if !token.contains('%') {
+        return None;
+    }
+    let classified = bounded_percent_decode(token)?;
+    (!looks_like_non_file_uri(&classified) && looks_like_private_path(&classified))
+        .then(|| PATH_PLACEHOLDER.to_owned())
+}
+
 fn redact_url_userinfo(token: &str) -> Option<String> {
     let authority_start = uri_authority_start(token)?;
     let remainder = token.get(authority_start..)?;
@@ -840,6 +877,7 @@ fn redact_uri_secrets(token: &str) -> Option<String> {
     }
     let sensitive_assignment =
         classified.chars().any(char::is_control) || uri_has_sensitive_assignment(&classified);
+    let private_path = uri_has_private_path(&classified);
     let credential_component = classified
         .split(|character: char| {
             matches!(
@@ -848,7 +886,24 @@ fn redact_uri_secrets(token: &str) -> Option<String> {
             )
         })
         .any(looks_like_credential_value);
-    (sensitive_assignment || credential_component).then(|| "[redacted URI]".to_owned())
+    (sensitive_assignment || credential_component || private_path)
+        .then(|| "[redacted URI]".to_owned())
+}
+
+fn uri_has_private_path(uri: &str) -> bool {
+    let query_or_fragment = uri
+        .find(['?', '#'])
+        .and_then(|position| uri.get(position + 1..));
+    let data_payload = uri
+        .to_ascii_lowercase()
+        .starts_with("data:")
+        .then(|| uri.split_once(',').map(|(_, payload)| payload))
+        .flatten();
+    [query_or_fragment, data_payload]
+        .into_iter()
+        .flatten()
+        .flat_map(|component| component.split(['&', ';', ',', '#']))
+        .any(looks_like_private_path)
 }
 
 fn uri_has_sensitive_assignment(uri: &str) -> bool {
@@ -865,7 +920,10 @@ fn uri_has_sensitive_assignment(uri: &str) -> bool {
             let Some(value) = value else {
                 return true;
             };
-            key != "token" || looks_like_credential_value(value) || looks_like_token_value(value)
+            key != "token"
+                || looks_like_credential_value(value)
+                || looks_like_token_value(value)
+                || looks_like_secret_candidate(value)
         })
     })
 }
@@ -877,7 +935,7 @@ fn sensitive_key_path_segment(field: &str) -> Option<String> {
         .unwrap_or_default()
         .split(['[', ']', '.'])
         .filter(|segment| !segment.is_empty())
-        .find(|segment| is_sensitive_key(segment))
+        .find(|segment| is_sensitive_key(segment) || segment.eq_ignore_ascii_case("authorization"))
         .map(str::to_ascii_lowercase)
 }
 
@@ -973,12 +1031,7 @@ fn looks_like_non_file_uri(token: &str) -> bool {
 }
 
 fn looks_like_credential_value(token: &str) -> bool {
-    let token = token.trim_matches(|character: char| {
-        matches!(
-            character,
-            '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '"' | '\'' | '`'
-        )
-    });
+    let token = security_token_core(token);
     looks_like_known_credential(token) || looks_like_high_entropy_blob(token)
 }
 
@@ -1063,11 +1116,16 @@ fn looks_like_token_value(token: &str) -> bool {
 }
 
 fn trimmed_token(token: &str) -> &str {
+    security_token_core(token)
+}
+
+fn security_token_core(token: &str) -> &str {
     token.trim_matches(|character: char| {
-        matches!(
-            character,
-            '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '"' | '\'' | '`'
-        )
+        !(character.is_ascii_alphanumeric()
+            || matches!(
+                character,
+                '_' | '-' | '.' | '+' | '/' | '=' | '\\' | ':' | '~'
+            ))
     })
 }
 
@@ -1083,7 +1141,7 @@ fn looks_like_jwt(token: &str) -> bool {
 }
 
 fn looks_like_high_entropy_blob(token: &str) -> bool {
-    if token.len() < 40 || !token.len().is_multiple_of(4) {
+    if token.len() < 40 {
         return false;
     }
     if token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -1091,24 +1149,28 @@ fn looks_like_high_entropy_blob(token: &str) -> bool {
         // redacted only when a preceding secret-key cue marks them as a value.
         return false;
     }
-    let mut base64_symbol = false;
+    let mut lower = false;
+    let mut upper = false;
+    let mut digit = false;
+    let mut symbol = false;
     for byte in token.bytes() {
         match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' => {}
-            b'+' | b'/' | b'=' => base64_symbol = true,
+            b'a'..=b'z' => lower = true,
+            b'A'..=b'Z' => upper = true,
+            b'0'..=b'9' => digit = true,
+            b'+' | b'/' | b'_' | b'-' | b'=' => symbol = true,
             _ => return false,
         }
     }
-    base64_symbol
+    [lower, upper, digit, symbol]
+        .into_iter()
+        .filter(|present| *present)
+        .count()
+        >= 3
 }
 
 fn looks_like_private_path(token: &str) -> bool {
-    let token = token.trim_matches(|character: char| {
-        matches!(
-            character,
-            '(' | ')' | '[' | ']' | '{' | '}' | ',' | '.' | ':' | ';' | '"' | '\'' | '`'
-        )
-    });
+    let token = security_token_core(token);
     token.starts_with("~/")
         || contains_unc_path(token)
         || token.as_bytes().iter().enumerate().any(|(index, byte)| {
@@ -1360,6 +1422,11 @@ mod tests {
         // reaches the notification instead of vanishing entirely.
         for (message, expected) in [
             ("Use password=hunter2", "Use password=[redacted]"),
+            ("password := hunter2", "password := [redacted]"),
+            ("password :: hunter2", "password :: [redacted]"),
+            ("password:: secret", "password:: [redacted]"),
+            ("Authorization := hunter2", "Authorization := [redacted]"),
+            ("Authorization == hunter2", "Authorization == [redacted]"),
             ("Read /Users/alice/private.txt", "Read [path]"),
             ("token: Bearer abc123", "token: [redacted] abc123"),
             ("Read `/home/user/private.txt` next", "Read [path] next"),
@@ -1498,6 +1565,8 @@ mod tests {
             (r"path=\\server\share\Alice\secret.txt", "[path]"),
             ("Open /root/.ssh/id_rsa", "Open [path]"),
             ("Open /etc/aizu/private.conf", "Open [path]"),
+            ("Open **/Users/alice/.ssh/id_ed25519**", "Open [path]"),
+            ("Open “/Users/alice/.ssh/id_ed25519”", "Open [path]"),
             ("path=/etc/aizu/private.conf", "[path]"),
             (
                 "Open https://example.com/root/docs",
@@ -1507,6 +1576,11 @@ mod tests {
                 "Open https://example.com/home/start",
                 "Open https://example.com/home/start",
             ),
+            (
+                "Open https://host.example/view?path=/Users/alice/.ssh/id_ed25519",
+                "Open [redacted URI]",
+            ),
+            ("Open %2FUsers%2Falice%2F.ssh%2Fid_ed25519", "Open [path]"),
             (
                 "Open https://host.example/callback?token=ghp_1234567890abcdefghijklmnopqrstuvwxyz",
                 "Open [redacted URI]",
@@ -1554,6 +1628,18 @@ mod tests {
             (
                 "Open https://host.example/docs?mytoken=estimate",
                 "Open https://host.example/docs?mytoken=estimate",
+            ),
+            (
+                "Open https://host/path?token=hunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?token%3Dhunter2",
+                "Open [redacted URI]",
+            ),
+            (
+                "Open https://host/path?authorization=Bearer%20hunter2",
+                "Open [redacted URI]",
             ),
             (
                 "Open https://host/path?foo=password=hunter2",
@@ -1652,6 +1738,18 @@ mod tests {
                 "GitHub OAuth gho_1234567890abcdefghijklmnopqrstuvwxyz",
                 "GitHub OAuth [redacted]",
             ),
+            (
+                "Wrapped **ghp_1234567890abcdefghijklmnopqrstuvwxyz**",
+                "Wrapped [redacted]",
+            ),
+            (
+                "Wrapped ghp_1234567890abcdefghijklmnopqrstuvwxyz!",
+                "Wrapped [redacted]",
+            ),
+            (
+                "Generated key AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCD",
+                "Generated key [redacted]",
+            ),
             ("GitLab glpat-1234567890abcdefghijkl", "GitLab [redacted]"),
             (
                 "Slack app token xapp-1-A1234567890-1234567890-abcdef",
@@ -1719,11 +1817,11 @@ mod tests {
             ("Ask Aizawa for review", "Ask Aizawa for review"),
             (
                 "Artifact BuildIDAbC1234567890DefGhIjKlMnOpQrStUvWxYz completed",
-                "Artifact BuildIDAbC1234567890DefGhIjKlMnOpQrStUvWxYz completed",
+                "Artifact [redacted] completed",
             ),
             (
                 "Artifact Build_ID_AbCdEfGhIjKlMnOpQrStUvWxYz123456789 completed",
-                "Artifact Build_ID_AbCdEfGhIjKlMnOpQrStUvWxYz123456789 completed",
+                "Artifact [redacted] completed",
             ),
             (
                 "Token version2026 identifies the format",
@@ -1748,6 +1846,18 @@ mod tests {
             (
                 "Basic: secret surrounding message",
                 "Basic: [redacted] surrounding message",
+            ),
+            (
+                "**Bearer** hunter2 surrounding message",
+                "**Bearer** [redacted] surrounding message",
+            ),
+            (
+                "(Bearer) hunter2 surrounding message",
+                "(Bearer) [redacted] surrounding message",
+            ),
+            (
+                "Bearer : , hunter2 surrounding message",
+                "Bearer : , [redacted] surrounding message",
             ),
             (
                 "Blob: secret surrounding message",
@@ -1969,6 +2079,8 @@ mod tests {
             "-----BEGIN EC\nPRIVATE KEY-----\nsecretBody\n-----END EC PRIVATE KEY-----",
             "-----BEGIN DSA\nPRIVATE KEY-----\nsecretBody\n-----END DSA PRIVATE KEY-----",
             "-----BEGIN PGP\nPRIVATE KEY BLOCK-----\nsecretBody\n-----END PGP PRIVATE KEY BLOCK-----",
+            "-----BEGIN PRI\u{200B}VATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+            "-----BEGIN PRI\u{FEFF}VATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
         ] {
             assert_eq!(
                 safe_agent_excerpt(obfuscated).as_deref(),

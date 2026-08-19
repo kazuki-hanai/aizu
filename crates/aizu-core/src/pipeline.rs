@@ -534,6 +534,19 @@ mod tests {
                 "hunter2",
             ),
             ("password :hunter2", "password :[redacted]", "hunter2"),
+            ("password := hunter2", "password := [redacted]", "hunter2"),
+            ("password :: hunter2", "password :: [redacted]", "hunter2"),
+            ("password:: secret", "password:: [redacted]", "secret"),
+            (
+                "Authorization := hunter2",
+                "Authorization := [redacted]",
+                "hunter2",
+            ),
+            (
+                "Authorization == hunter2",
+                "Authorization == [redacted]",
+                "hunter2",
+            ),
             ("Bearer hunter2", "Bearer [redacted]", "hunter2"),
             ("Bearer abcdef", "Bearer [redacted]", "abcdef"),
             (
@@ -545,6 +558,21 @@ mod tests {
                 "Basic: secret surrounding message",
                 "Basic: [redacted] surrounding message",
                 "secret",
+            ),
+            (
+                "**Bearer** hunter2 surrounding message",
+                "**Bearer** [redacted] surrounding message",
+                "hunter2",
+            ),
+            (
+                "(Bearer) hunter2 surrounding message",
+                "(Bearer) [redacted] surrounding message",
+                "hunter2",
+            ),
+            (
+                "Bearer : , hunter2 surrounding message",
+                "Bearer : , [redacted] surrounding message",
+                "hunter2",
             ),
             (
                 "Blob: secret surrounding message",
@@ -586,6 +614,16 @@ mod tests {
                 "Slack xapp-1-A1234567890-1234567890-abcdef",
                 "Slack [redacted]",
                 "xapp-1-",
+            ),
+            (
+                "Generated key AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCD",
+                "Generated key [redacted]",
+                "AbCdEfGh",
+            ),
+            (
+                "Wrapped **ghp_1234567890abcdefghijklmnopqrstuvwxyz**",
+                "Wrapped [redacted]",
+                "ghp_",
             ),
             (
                 "Token aB1cD2eF3gH4iJ5kL6mN7pQ8rS9tU0vW1xY2zA3b",
@@ -825,6 +863,16 @@ mod tests {
                 "secretBody",
             ),
             (
+                "-----BEGIN PRI\u{200B}VATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+                "[redacted private key]",
+                "secretBody",
+            ),
+            (
+                "-----BEGIN PRI\u{FEFF}VATE KEY-----\nsecretBody\n-----END PRIVATE KEY-----",
+                "[redacted private key]",
+                "secretBody",
+            ),
+            (
                 "-----BEGIN CERTIFICATE-----\npassword=hunter2\n-----END CERTIFICATE-----",
                 "password=[redacted]",
                 "hunter2",
@@ -867,7 +915,22 @@ mod tests {
             (r"path=\\server\share\Alice\secret.txt", "[path]", "Alice"),
             ("Open /root/.ssh/id_rsa", "Open [path]", "/root/"),
             ("Open /etc/aizu/private.conf", "Open [path]", "/etc/"),
+            (
+                "Open **/Users/alice/.ssh/id_ed25519**",
+                "Open [path]",
+                "/Users/alice",
+            ),
+            (
+                "Open “/Users/alice/.ssh/id_ed25519”",
+                "Open [path]",
+                "/Users/alice",
+            ),
             ("path=/etc/aizu/private.conf", "[path]", "/etc/"),
+            (
+                "Open %2FUsers%2Falice%2F.ssh%2Fid_ed25519",
+                "Open [path]",
+                "%2FUsers",
+            ),
             (
                 "Open file:%2Froot%2F.ssh%2Fid_rsa",
                 "Open file:[path]",
@@ -950,6 +1013,26 @@ mod tests {
             ),
             (
                 "Open data:text/plain,password=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host.example/view?path=/Users/alice/.ssh/id_ed25519",
+                "Open [redacted URI]",
+                "/Users/alice",
+            ),
+            (
+                "Open https://host/path?token=hunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?token%3Dhunter2",
+                "Open [redacted URI]",
+                "hunter2",
+            ),
+            (
+                "Open https://host/path?authorization=Bearer%20hunter2",
                 "Open [redacted URI]",
                 "hunter2",
             ),
