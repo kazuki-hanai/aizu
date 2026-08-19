@@ -95,13 +95,10 @@ impl SettingsStore {
                 let mut settings: StoredSettings =
                     serde_json::from_value(value).map_err(StoreError::Decode)?;
                 if settings.settings_version == 0 {
-                    // v0.1.0-dev.1 persisted the old default (`false`) with no
-                    // settings schema version. There is no way to distinguish that
-                    // old default from an intentional opt-out, so this one-time
-                    // product migration applies the new "always show agent
-                    // messages" default to every pre-versioned installation. Once
-                    // version 1 is saved, an explicit opt-out remains false.
-                    settings.preferences.agent_details_enabled = true;
+                    // Pre-versioned settings cannot distinguish the old `false`
+                    // default from an intentional privacy opt-out. Preserve the
+                    // stored value; only a missing field receives the new `true`
+                    // serde default.
                     settings.settings_version = CURRENT_SETTINGS_VERSION;
                     self.save(&settings)?;
                 }
@@ -217,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_pre_versioned_false_agent_details_to_the_new_true_default_once() {
+    fn versions_pre_versioned_settings_without_overriding_agent_details_opt_out() {
         let (directory, path) = temporary_settings_path("migrate-agent-details");
         // Full shape written by the pre-versioned v0.1.0-dev.1 settings model.
         fs::write(
@@ -253,7 +250,7 @@ mod tests {
         let store = SettingsStore::new(path.clone());
         let migrated = store.load().expect("old settings migrate");
         assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
-        assert!(migrated.preferences.agent_details_enabled);
+        assert!(!migrated.preferences.agent_details_enabled);
 
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).expect("read migrated settings"))
@@ -268,8 +265,44 @@ mod tests {
             persisted
                 .pointer("/preferences/agentDetailsEnabled")
                 .and_then(serde_json::Value::as_bool),
-            Some(true)
+            Some(false)
         );
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn pre_versioned_missing_agent_details_uses_the_new_true_default() {
+        let (directory, path) = temporary_settings_path("default-agent-details");
+        let fixture = serde_json::json!({
+            "onboardingComplete": true,
+            "paused": false,
+            "preferences": {
+                "language": "system",
+                "textSize": "standard",
+                "completionEnabled": true,
+                "questionEnabled": true,
+                "soundEnabled": true,
+                "notificationDelivery": "aizuBanner",
+                "notificationSound": "default",
+                "privacyMode": "generic",
+                "launchAtLogin": false,
+                "quietHours": {
+                    "enabled": false,
+                    "start": "22:00",
+                    "end": "07:00",
+                    "questionsBypass": false
+                }
+            },
+            "remoteSources": [],
+            "codexHookTrustConfirmed": false
+        });
+        fs::write(&path, fixture.to_string()).expect("write old settings fixture");
+
+        let store = SettingsStore::new(path);
+        let migrated = store.load().expect("old settings migrate");
+
+        assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
+        assert!(migrated.preferences.agent_details_enabled);
         fs::remove_dir_all(directory).expect("temporary directory should be removable");
     }
 

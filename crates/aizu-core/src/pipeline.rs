@@ -529,6 +529,51 @@ mod tests {
             ),
             ("password\n:hunter2", "password\n:[redacted]", "hunter2"),
             (
+                "password=\"correct horse battery staple\" after deploy",
+                "password=[redacted] after deploy",
+                "correct horse battery staple",
+            ),
+            (
+                "password: 'correct horse battery staple'; deploy finished",
+                "password: [redacted]; deploy finished",
+                "correct horse battery staple",
+            ),
+            (
+                "password=\"correct horse\nbattery staple\"\nfinished",
+                "password=[redacted]\nfinished",
+                "battery staple",
+            ),
+            (
+                "password=\"correct horse\nbattery staple",
+                "password=[redacted]",
+                "battery staple",
+            ),
+            (
+                "password=hunter2 deployment finished",
+                "password=[redacted] deployment finished",
+                "hunter2",
+            ),
+            (
+                "pass\u{200B}word=hunter2 after deploy",
+                "password=[redacted] after deploy",
+                "hunter2",
+            ),
+            (
+                "database.password=hunter2 after deploy",
+                "database.password=[redacted] after deploy",
+                "hunter2",
+            ),
+            (
+                "credentials[password]=hunter2 after deploy",
+                "credentials[password]=[redacted] after deploy",
+                "hunter2",
+            ),
+            (
+                "config={\"user\":{\"password\":\"hunter2\"}} after deploy",
+                "config={\"user\":{\"password\":[redacted]}} after deploy",
+                "hunter2",
+            ),
+            (
                 "Authorization\n:\nBearer\nhunter2",
                 "Authorization\n:\nBearer\n[redacted]",
                 "hunter2",
@@ -546,6 +591,11 @@ mod tests {
                 "Authorization == hunter2",
                 "Authorization == [redacted]",
                 "hunter2",
+            ),
+            (
+                "Authorization: Bea\u{200B}rer abc123 after deploy",
+                "Authorization: Bearer [redacted] after deploy",
+                "abc123",
             ),
             ("Bearer hunter2", "Bearer [redacted]", "hunter2"),
             ("Bearer abcdef", "Bearer [redacted]", "abcdef"),
@@ -616,6 +666,11 @@ mod tests {
                 "xapp-1-",
             ),
             (
+                "Deploy uses ghp_\u{200B}1234567890abcdefghijklmnopqrstuvwxyz after deploy",
+                "Deploy uses [redacted] after deploy",
+                "ghp_",
+            ),
+            (
                 "Generated key AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_ABCD",
                 "Generated key [redacted]",
                 "AbCdEfGh",
@@ -644,8 +699,8 @@ mod tests {
             ("Base64 QUFB", "Base64 [redacted]", "QUFB"),
             (
                 "Blob value surrounding message",
-                "Blob [redacted] surrounding message",
-                "Blob value",
+                "Blob value [redacted] message",
+                "surrounding",
             ),
             ("Blob value", "Blob [redacted]", "Blob value"),
             ("Token value", "Token [redacted]", "Token value"),
@@ -794,8 +849,38 @@ mod tests {
             ),
             (
                 "Token value abcdefghijklmnopqrstuvwxyzabcdef is active",
-                "Token [redacted] abcdefghijklmnopqrstuvwxyzabcdef is active",
-                "Token value",
+                "Token value [redacted] is active",
+                "abcdefghijklmnopqrstuvwxyzabcdef",
+            ),
+            (
+                "Token is abcdefghijklmnopqrstuvwxyzabcdef",
+                "Token is [redacted]",
+                "abcdefghijklmnopqrstuvwxyzabcdef",
+            ),
+            (
+                "Token value is abcdefghijklmnopqrstuvwxyzabcdef",
+                "Token value is [redacted]",
+                "abcdefghijklmnopqrstuvwxyzabcdef",
+            ),
+            (
+                "Token value equals abcdefghijklmnopqrstuvwxyzabcdef",
+                "Token value equals [redacted]",
+                "abcdefghijklmnopqrstuvwxyzabcdef",
+            ),
+            (
+                "Token value is equals abcdefghijklmnopqrstuvwxyzabcdef after deploy",
+                "Token value is [redacted]",
+                "abcdefghijklmnopqrstuvwxyzabcdef",
+            ),
+            (
+                "Authorization: Bearer value abcdefghijklmnopqrstuvwxyzabcdef",
+                "Authorization: Bearer value [redacted]",
+                "abcdefghijklmnopqrstuvwxyzabcdef",
+            ),
+            (
+                "token: Bearer abc123 deployment finished",
+                "token: Bearer [redacted] deployment finished",
+                "abc123",
             ),
             (
                 "Bearer correcthorsebatterystaple expires tomorrow",
@@ -901,6 +986,41 @@ mod tests {
                 "Open file:///Users/alice/.ssh/id_ed25519",
                 "Open file:[path]",
                 "/Users/alice",
+            ),
+            (
+                "Open \"/Users/alice/Secret Project/.env\" after deploy",
+                "Open [path] after deploy",
+                "Secret Project",
+            ),
+            (
+                r#"Open "C:\Users\Alice\Secret Project\.env" after deploy"#,
+                "Open [path] after deploy",
+                "Secret Project",
+            ),
+            (
+                "Open \"/Users/alice/Secret\nProject/.env\" after deploy",
+                "Open [path] after deploy",
+                "Project/.env",
+            ),
+            (
+                r"Open /Users/alice/Secret\ Project/.env after deploy",
+                "Open [path] after deploy",
+                "Project/.env",
+            ),
+            (
+                "Open /Users/alice/Secret Project; after deploy",
+                "Open [path]; after deploy",
+                "Secret Project",
+            ),
+            (
+                "Open /Users/alice/Secret Project after deploy",
+                "Open [path]",
+                "Secret Project",
+            ),
+            (
+                "Open `/Users/alice/Secret Project` after deploy",
+                "Open [path] after deploy",
+                "Secret Project",
             ),
             (
                 r"Open \\server\share\Alice\secret.txt",
@@ -1157,12 +1277,18 @@ mod tests {
     }
 
     #[test]
-    fn oversized_encoded_uri_fails_closed_before_persistence() {
+    fn oversized_encoded_values_fail_closed_before_persistence() {
         let message = format!(
             "https://host.example/path?token%3Dghp_1234567890abcdefghijklmnopqrstuvwxyz{}",
             "x".repeat(crate::MAX_EVENT_BYTES)
         );
         assert_pipeline_redacts(&message, "[redacted URI]", "ghp_");
+
+        let message = format!(
+            "%2FUsers%2Falice%2FSecret{}",
+            "x".repeat(crate::MAX_EVENT_BYTES)
+        );
+        assert_pipeline_redacts(&message, "[path]", "%2FUsers");
     }
 
     fn assert_pipeline_redacts(message: &str, expected: &str, leaked: &str) {

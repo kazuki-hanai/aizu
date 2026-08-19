@@ -467,7 +467,7 @@ mod tests {
             panic!("expected notification")
         };
         assert_eq!(redacted.title, "Codex is waiting for permission");
-        assert_eq!(redacted.body, "Read [path]\naizu on My Mac");
+        assert_eq!(redacted.body, "Read [path]?\naizu on My Mac");
         assert!(!redacted.body.contains("id_ed25519"));
 
         // Untrusted / non-first-party events never expose the raw body.

@@ -16,11 +16,14 @@ architectural invariant #12（prompt/response/絶対 path/secret を既定で通
 
 ## Decision
 
-1. `agent_details_enabled` の既定を `true` にする（core policy / desktop `Preferences` / frontend contract / persisted settings の serde default）。first-party adapter（`codex-v1` / `claude-code-v1`）のメッセージは既定で通知と activity に表示する。pre-versioned settings に旧既定 `false` が保存済みの場合は、settings schema version 1 への一回限りの migration で `true` にする。version 1 以後に user が明示した `false` は保持する。
+1. `agent_details_enabled` の既定を `true` にする（core policy / desktop `Preferences` / frontend contract / persisted settings の serde default）。first-party adapter（`codex-v1` / `claude-code-v1`）のメッセージは既定で通知と activity に表示する。pre-versioned settings では、field がない場合だけ新しい `true` の既定を適用する。保存済みの `false` は旧既定か user の明示 opt-out かを判別できないため、settings schema version 1 へ version を付ける際も保持する。version 1 以後の `false` も同様に保持する。
 2. `safe_agent_excerpt` を「破棄」から「in-place redaction」に変更する。
    - private path token → `[path]`
    - credential value token（known provider token、JWT/high-entropy token）、secret `key=value`、Authorization header、credential-bearing URL → `[redacted]`
-   - `Bearer` / `Basic` / `Token` / `Blob` / `Base64` / `Encoded` の直後は、値の語形・長さ・後続文に関係なく明示的な sensitive-value context として `[redacted]`。普通語の false positive より credential 漏えい防止を優先し、値以外のメッセージは保持する。
+   - quote された複数語の secret assignment と private path は、対応する closing quote までを 1 個の `[redacted]` / `[path]` にする。Markdown backtick で囲まれた private path も同様に扱う。
+   - `Bearer` / `Basic` / `Token` / `Blob` / `Base64` / `Encoded` の直後は、値の語形・長さ・後続文に関係なく明示的な sensitive-value context として `[redacted]`。`value` / `is` / `was` / `equals` は最大 2 語まで値導入語として保持し、その次の値をマスクする。普通語の false positive より credential 漏えい防止を優先し、値以外のメッセージは保持する。
+   - unquoted の secret assignment または空白を含み得る private path で、値/path と後続本文の境界を決定できない場合は、その行の残りを fail-closed で省略する。単一 token 値、quoted 値、escaped-space path、明示的な path 終端がある場合は後続本文を保持する。
+   - sensitive key、provider token、Authorization scheme の分類時は default-ignorable format character を除いた canonical view を使い、zero-width 文字による判定回避を許さない。benign token の表示値は変更しない。
    - multiline private key block 全体 → `[redacted private key]`
    - 残りのメッセージは保持し、必ず表示する。
    - 表示不能な non-whitespace control character を含む値のみ、従来通り excerpt 全体を破棄する。

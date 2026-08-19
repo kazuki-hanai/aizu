@@ -309,10 +309,10 @@ notification に表示する source label は pinned `source_id` に紐づく de
 - `agent.question`: “Agent is waiting for input on &lt;source&gt;”
 - プロンプト全文や生成物を本文へ自動挿入しない。
 - first-party adapter のメッセージ excerpt は既定 (`agent_details_enabled = true`) で
-  通知に表示する。pre-versioned settings で旧既定 `false` が保存済みの installation
-  は settings schema version 1 への一回限りの migration で `true` にする。その後
-  user が明示的に off にした version 1 settings は保持し、安全な generic
-  テンプレートへ戻る。
+  通知に表示する。pre-versioned settings に field がなければ新しい `true` の既定を
+  適用する。保存済みの `false` は旧既定か user の明示 opt-out かを判別できないため、
+  settings schema version 1 へ version を付ける際も保持する。off の場合は安全な
+  generic テンプレートへ戻る。
 - excerpt 内の credential らしい token と private path は、その部分だけを
   `[redacted]` / `[path]` に置換する。Authorization header、secret key/value、
   credential-bearing URL、JWT/high-entropy token、known provider token、multiline
@@ -320,8 +320,15 @@ notification に表示する source label は pinned `source_id` に紐づく de
   メッセージ全体を破棄しないため、残りの agent メッセージは必ず表示される。
 - `Bearer` / `Basic` / `Token` / `Blob` / `Base64` / `Encoded` は、長さや後続文に
   関係なく次の token を明示的な credential/encoded-value context として必ず
-  `[redacted]` にする。普通語がこの形で使われた場合も値だけを保守的にマスクし、
-  前後の agent メッセージは保持する。
+  `[redacted]` にする。`value` / `is` / `was` / `equals` は最大 2 語まで値導入語として
+  保持し、その次の token をマスクする。quote された複数語の secret/path、Markdown
+  backtick 内の path、escaped-space path は closing quote/path 終端までを 1 個の
+  placeholder にする。普通語がこの形で使われた場合も値だけを保守的にマスクし、
+  前後の agent メッセージは保持する。ただし unquoted secret assignment または
+  private path と後続本文の境界を決定できない場合は、その行の残りを fail-closed で
+  省略する。sensitive key/provider token/Authorization scheme は
+  default-ignorable format character を除いた canonical view でも分類し、zero-width
+  文字による判定回避を許さない。
 - path は原則 basename のみ。絶対パスは保存しない。
 - 通常ログへ title/body を出さない。
 
@@ -569,8 +576,10 @@ Requirements:
   activity に表示する。credential value、Authorization header、credential-bearing
   URL、JWT/high-entropy token、multiline private key block と private path は
   `[redacted]` / `[redacted private key]` / `[path]` にマスクし、残りのメッセージは
-  保持する。表示可能でない non-whitespace control character を含む値だけは excerpt
-  全体を破棄する。
+  保持する。quote された複数語と Markdown backtick/escaped-space path はまとまりで
+  マスクする。unquoted secret assignment または private path の境界が曖昧な場合は、
+  その行の残りを fail-closed で省略する。表示可能でない non-whitespace control
+  character を含む値だけは excerpt 全体を破棄する。
   command や tool input 全体、transcript は excerpt の入力に採用しない。
 
 正式 MVP では、Codex と Claude Code の両方について `task.completed` と `agent.question` を fixture 付きで実装する。Codex/Claude Code の `Stop` は正常終了を保証する field を持たないため `outcome: unknown` とし、Claude Code の `StopFailure` だけを `outcome: failed` とする。
@@ -1376,12 +1385,10 @@ Codex と Claude Code は MVP の同時 first-party 対象として確定済み�
 2. **SSH 到達性**
    - 本設計は Mac から remote へ既存 SSH alias で接続できる前提。
    - 到達できない環境を MVP 対象にするなら、Tailscale 等のユーザー管理ネットワークを optional prerequisite とするか、active SSH tunnel mode を追加する。
-3. **通知本文の privacy**
-   - 推奨: generic 文言を既定にし、agent の質問要約は opt-in。
-4. **配布 identity**
+3. **配布 identity**
    - bundle identifier、Apple Developer Team、GitHub repository、正式 app name。
    - GitHub repository の visibility/plan を確認し、artifact attestation が使えない場合の dedicated release signing key 管理を確定する。
-6. **Visual identity / icon direction**
+4. **Visual identity / icon direction**
    - Aizu の正式名称を継続するか、mark のモチーフ、brand color、角・線の性格を決める。
    - 推奨: 「通知」「agent」「複数端末」を小さな terminal 文字で直接描かず、16〜18 px でも識別できる一つの単純な mark に抽象化する。
    - M0 は明示的な development icon で進められるが、M4 release candidate 前に app/tray icon と provenance を owner が `branding_status=approved` にする。

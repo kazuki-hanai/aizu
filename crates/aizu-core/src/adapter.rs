@@ -317,6 +317,7 @@ fn normalize_excerpt(value: &str) -> String {
 fn redact_sensitive(value: &str) -> String {
     let mut state = RedactionState::default();
     let mut redacted = Vec::new();
+    let value = redact_quoted_sensitive_spans(value);
     for line in value.split('\n') {
         let uppercase = line.to_ascii_uppercase();
         if state.block == BlockState::PrivateKey {
@@ -389,15 +390,22 @@ enum SecretState {
     #[default]
     None,
     AwaitDelimiter,
+    AwaitAssignmentDelimiter,
     AwaitValue,
+    AwaitAssignmentValue,
     AwaitExplicitValue,
+    RedactLineTail,
 }
 
 #[derive(Default)]
 struct RedactionState {
     block: BlockState,
     secret: SecretState,
+    explicit_fillers: u8,
+    value_fillers: u8,
 }
+
+const MAX_VALUE_FILLERS: u8 = 2;
 
 fn private_key_begin(uppercase: &str) -> Option<usize> {
     pem_labels(uppercase, "-----BEGIN")
@@ -450,6 +458,13 @@ fn is_default_ignorable_format(character: char) -> bool {
     )
 }
 
+fn security_classification_view(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !is_default_ignorable_format(*character))
+        .collect()
+}
+
 fn is_certificate_payload(line: &str) -> bool {
     let line = line.trim();
     line.len() >= 20
@@ -459,36 +474,141 @@ fn is_certificate_payload(line: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
 }
 
+fn redact_quoted_sensitive_spans(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut output = String::with_capacity(line.len());
+    let mut copied_until = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let quote = bytes[index];
+        if !matches!(quote, b'"' | b'\'' | b'`') || byte_is_escaped(bytes, index) {
+            index += 1;
+            continue;
+        }
+        let mut end = index + 1;
+        while end < bytes.len() && (bytes[end] != quote || byte_is_escaped(bytes, end)) {
+            end += 1;
+        }
+        let closed = end < bytes.len();
+        let content = line.get(index + 1..end).unwrap_or_default();
+        let placeholder = if looks_like_private_path(content) {
+            Some(PATH_PLACEHOLDER)
+        } else if quoted_value_has_sensitive_key(line.get(..index).unwrap_or_default()) {
+            Some(REDACTED_PLACEHOLDER)
+        } else {
+            None
+        };
+        if let Some(placeholder) = placeholder {
+            output.push_str(line.get(copied_until..index).unwrap_or_default());
+            output.push_str(placeholder);
+            copied_until = end + usize::from(closed);
+        }
+        if !closed {
+            break;
+        }
+        index = end + 1;
+    }
+    output.push_str(line.get(copied_until..).unwrap_or_default());
+    output
+}
+
+fn byte_is_escaped(bytes: &[u8], index: usize) -> bool {
+    let mut backslashes = 0;
+    let mut cursor = index;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        backslashes += 1;
+        cursor -= 1;
+    }
+    backslashes % 2 == 1
+}
+
+fn quoted_value_has_sensitive_key(prefix: &str) -> bool {
+    let prefix = prefix.trim_end();
+    let separator_start = prefix.trim_end_matches([':', '=']).trim_end();
+    if separator_start.len() == prefix.len() {
+        return false;
+    }
+    let key = if let Some(quote) = separator_start
+        .as_bytes()
+        .last()
+        .copied()
+        .filter(|quote| matches!(quote, b'"' | b'\'' | b'`'))
+    {
+        separator_start
+            .get(..separator_start.len().saturating_sub(1))
+            .and_then(|value| {
+                value
+                    .rfind(char::from(quote))
+                    .map(|start| &value[start + 1..])
+            })
+            .unwrap_or_default()
+    } else {
+        separator_start
+            .rsplit(|character: char| character.is_whitespace() || matches!(character, '{' | ','))
+            .next()
+            .unwrap_or_default()
+    };
+    is_sensitive_assignment_key(key) || key.eq_ignore_ascii_case("authorization")
+}
+
+fn path_sentence_suffix(token: &str) -> &str {
+    let trimmed = token.trim_end_matches([',', ';', ')', ']', '}', '>']);
+    token.get(trimmed.len()..).unwrap_or_default()
+}
+
+fn consume_path_continuation(tokens: &[&str], index: usize) -> (usize, String, bool) {
+    let mut cursor = index + 1;
+    let mut previous = tokens[index];
+    let mut suffix = path_sentence_suffix(previous).to_owned();
+    let mut consumed_continuation = false;
+    while let Some(next) = tokens.get(cursor) {
+        let next_suffix = path_sentence_suffix(next);
+        if !previous.ends_with('\\') && !next.contains(['/', '\\']) && next_suffix.is_empty() {
+            break;
+        }
+        consumed_continuation = true;
+        next_suffix.clone_into(&mut suffix);
+        previous = next;
+        cursor += 1;
+        if !suffix.is_empty() {
+            break;
+        }
+    }
+    let path_core = previous.trim_end_matches([',', ';', ')', ']', '}', '>']);
+    let final_component_has_extension = path_core
+        .rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|component| component.contains('.'));
+    let redact_line_tail = cursor < tokens.len()
+        && suffix.is_empty()
+        && !consumed_continuation
+        && !final_component_has_extension;
+    (cursor, suffix, redact_line_tail)
+}
+
 fn redact_line(line: &str, state: &mut RedactionState) -> String {
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut index = 0;
     while index < tokens.len() {
+        if state.secret == SecretState::RedactLineTail {
+            index += 1;
+            continue;
+        }
         let token = tokens[index];
         let lower = token.to_ascii_lowercase();
 
-        if let Some(masked) = redact_expected_explicit_value(token, state) {
+        let has_following_token = tokens.get(index + 1).is_some();
+        if let Some(masked) = redact_expected_explicit_value(token, state, has_following_token) {
             out.push(masked);
             index += 1;
             continue;
         }
-        if let Some(action) = redact_explicit_context(token) {
-            match action {
-                ExplicitContextAction::AwaitValue(label) => {
-                    out.push(label);
-                    state.secret = SecretState::AwaitExplicitValue;
-                }
-                ExplicitContextAction::Inline(masked) => out.push(masked),
-            }
-            index += 1;
-            continue;
-        }
-        if let Some(masked) = redact_direct_token(token, state) {
+        if let Some(masked) = redact_direct_token(token, state, has_following_token) {
             out.push(masked);
             index += 1;
             continue;
         }
-
         // Authorization with whitespace around the delimiter, e.g.
         // `Authorization : Bearer value` or `Authorization =Bearer value`.
         if lower == "authorization"
@@ -498,6 +618,7 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         {
             out.push(token.to_owned());
             state.secret = SecretState::AwaitValue;
+            state.value_fillers = 0;
             index += 1;
             continue;
         }
@@ -508,8 +629,12 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
             continue;
         }
         if looks_like_private_path(token) {
-            out.push(PATH_PLACEHOLDER.to_owned());
-            index += 1;
+            let (next_index, suffix, redact_line_tail) = consume_path_continuation(&tokens, index);
+            out.push(format!("{PATH_PLACEHOLDER}{suffix}"));
+            if redact_line_tail {
+                state.secret = SecretState::RedactLineTail;
+            }
+            index = next_index;
             continue;
         }
         if looks_like_credential_value(token) {
@@ -521,13 +646,13 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         // Handle whitespace-separated assignments such as
         // `AWS_SECRET_ACCESS_KEY = value` without treating normal prose that happens
         // to contain the word "password" as an assignment.
-        if is_sensitive_key(token)
+        if is_sensitive_assignment_key(token)
             && tokens
                 .get(index + 1)
                 .is_some_and(|separator| split_leading_separator(separator).is_some())
         {
             out.push(token.to_owned());
-            state.secret = SecretState::AwaitValue;
+            state.secret = SecretState::AwaitAssignmentValue;
             index += 1;
             continue;
         }
@@ -541,15 +666,24 @@ fn redact_line(line: &str, state: &mut RedactionState) -> String {
         // Keep the key/header visible and carry only the delimiter expectation across
         // a line boundary. If the next line is ordinary prose rather than `:`/`=`,
         // the pending state is cancelled without redacting it.
-        if index + 1 == tokens.len() && (is_sensitive_key(token) || lower == "authorization") {
+        if index + 1 == tokens.len()
+            && (is_sensitive_assignment_key(token) || lower == "authorization")
+        {
             out.push(token.to_owned());
-            state.secret = SecretState::AwaitDelimiter;
+            state.secret = if lower == "authorization" {
+                SecretState::AwaitDelimiter
+            } else {
+                SecretState::AwaitAssignmentDelimiter
+            };
             index += 1;
             continue;
         }
 
         out.push(token.to_owned());
         index += 1;
+    }
+    if state.secret == SecretState::RedactLineTail {
+        state.secret = SecretState::None;
     }
     out.join(" ")
 }
@@ -582,6 +716,7 @@ fn redact_explicit_context(token: &str) -> Option<ExplicitContextAction> {
 }
 
 fn is_explicit_context_label(value: &str) -> bool {
+    let value = security_classification_view(value);
     let value = value.trim_matches(|character: char| !character.is_ascii_alphanumeric());
     matches!(
         value.to_ascii_lowercase().as_str(),
@@ -589,7 +724,18 @@ fn is_explicit_context_label(value: &str) -> bool {
     )
 }
 
-fn redact_expected_explicit_value(token: &str, state: &mut RedactionState) -> Option<String> {
+fn is_value_filler(token: &str) -> bool {
+    matches!(
+        security_token_core(token).to_ascii_lowercase().as_str(),
+        "value" | "is" | "was" | "equals"
+    )
+}
+
+fn redact_expected_explicit_value(
+    token: &str,
+    state: &mut RedactionState,
+    has_following_token: bool,
+) -> Option<String> {
     if state.secret != SecretState::AwaitExplicitValue {
         return None;
     }
@@ -602,29 +748,73 @@ fn redact_expected_explicit_value(token: &str, state: &mut RedactionState) -> Op
             return Some(token.to_owned());
         }
         state.secret = SecretState::None;
+        state.explicit_fillers = 0;
         let separators = token.get(..separator_length).unwrap_or_default();
         return Some(format!("{separators}{REDACTED_PLACEHOLDER}"));
     }
     if token.chars().all(|character| !character.is_alphanumeric()) {
         return Some(token.to_owned());
     }
+    if has_following_token && is_value_filler(token) {
+        if state.explicit_fillers < MAX_VALUE_FILLERS {
+            state.explicit_fillers += 1;
+            return Some(token.to_owned());
+        }
+        state.secret = SecretState::RedactLineTail;
+        state.explicit_fillers = 0;
+        return Some(REDACTED_PLACEHOLDER.to_owned());
+    }
     state.secret = SecretState::None;
+    state.explicit_fillers = 0;
     Some(REDACTED_PLACEHOLDER.to_owned())
 }
 
-fn redact_direct_token(token: &str, state: &mut RedactionState) -> Option<String> {
-    if let Some(masked) =
-        redact_expected_delimiter(token, state).or_else(|| redact_expected_secret(token, state))
+fn redact_direct_token(
+    token: &str,
+    state: &mut RedactionState,
+    has_following_token: bool,
+) -> Option<String> {
+    let canonical = security_classification_view(token);
+    if canonical != token
+        && let Some(masked) = redact_direct_token(&canonical, state, has_following_token)
+    {
+        return Some(masked);
+    }
+    if let Some(masked) = redact_expected_delimiter(token, state, has_following_token)
+        .or_else(|| redact_expected_secret(token, state, has_following_token))
     {
         return Some(masked);
     }
     if let Some(redaction) = redact_key_value(token) {
         return Some(match redaction {
-            KeyValueRedaction::Inline(masked) => masked,
+            KeyValueRedaction::Inline {
+                masked,
+                redact_line_tail,
+            } => {
+                if redact_line_tail {
+                    state.secret = SecretState::RedactLineTail;
+                }
+                masked
+            }
             KeyValueRedaction::NeedsValue(label) => {
-                state.secret = SecretState::AwaitValue;
+                state.secret = SecretState::AwaitAssignmentValue;
                 label
             }
+            KeyValueRedaction::ExplicitScheme(label) => {
+                state.secret = SecretState::AwaitValue;
+                state.value_fillers = 0;
+                label
+            }
+        });
+    }
+    if let Some(action) = redact_explicit_context(token) {
+        return Some(match action {
+            ExplicitContextAction::AwaitValue(label) => {
+                state.secret = SecretState::AwaitExplicitValue;
+                state.explicit_fillers = 0;
+                label
+            }
+            ExplicitContextAction::Inline(masked) => masked,
         });
     }
     if let Some(redaction) = redact_authorization_header(token) {
@@ -633,12 +823,13 @@ fn redact_direct_token(token: &str, state: &mut RedactionState) -> Option<String
         } else {
             SecretState::None
         };
+        state.value_fillers = 0;
         return Some(redaction.label);
     }
-    redact_file_url(token)
-        .or_else(|| redact_encoded_private_path(token))
-        .or_else(|| redact_url_userinfo(token))
-        .or_else(|| redact_uri_secrets(token))
+    if let Some(masked) = redact_file_url(token).or_else(|| redact_encoded_private_path(token)) {
+        return Some(masked);
+    }
+    redact_url_userinfo(token).or_else(|| redact_uri_secrets(token))
 }
 
 fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String>, usize)> {
@@ -665,25 +856,69 @@ fn redact_contextual_phrase(tokens: &[&str], index: usize) -> Option<(Vec<String
     Some((masked, candidate_index + 1))
 }
 
-fn redact_expected_delimiter(token: &str, state: &mut RedactionState) -> Option<String> {
-    if state.secret != SecretState::AwaitDelimiter {
+fn redact_expected_delimiter(
+    token: &str,
+    state: &mut RedactionState,
+    has_following_token: bool,
+) -> Option<String> {
+    if !matches!(
+        state.secret,
+        SecretState::AwaitDelimiter | SecretState::AwaitAssignmentDelimiter
+    ) {
         return None;
     }
+    let assignment = state.secret == SecretState::AwaitAssignmentDelimiter;
     let separator_length = leading_separator_length(token);
     if separator_length == 0 {
         state.secret = SecretState::None;
         return None;
     }
-    state.secret = SecretState::AwaitValue;
-    redact_expected_secret(token, state)
+    state.secret = if assignment {
+        SecretState::AwaitAssignmentValue
+    } else {
+        SecretState::AwaitValue
+    };
+    if !assignment {
+        state.value_fillers = 0;
+    }
+    redact_expected_secret(token, state, has_following_token)
 }
 
-fn redact_expected_secret(token: &str, state: &mut RedactionState) -> Option<String> {
-    if state.secret != SecretState::AwaitValue {
+fn redact_expected_secret(
+    token: &str,
+    state: &mut RedactionState,
+    has_following_token: bool,
+) -> Option<String> {
+    if !matches!(
+        state.secret,
+        SecretState::AwaitValue | SecretState::AwaitAssignmentValue
+    ) {
         return None;
     }
+    let assignment = state.secret == SecretState::AwaitAssignmentValue;
     let lower = token.to_ascii_lowercase();
-    if matches!(lower.as_str(), "=" | ":" | "bearer" | "basic" | "token") {
+    if matches!(lower.as_str(), "=" | ":") {
+        return Some(token.to_owned());
+    }
+    if matches!(lower.as_str(), "bearer" | "basic" | "token") {
+        if assignment {
+            state.secret = SecretState::AwaitValue;
+            state.value_fillers = 0;
+        }
+        return Some(token.to_owned());
+    }
+    if !assignment && has_following_token && is_value_filler(token) {
+        if state.value_fillers < MAX_VALUE_FILLERS {
+            state.value_fillers += 1;
+            return Some(token.to_owned());
+        }
+        state.secret = SecretState::RedactLineTail;
+        state.value_fillers = 0;
+        return Some(REDACTED_PLACEHOLDER.to_owned());
+    }
+    if token.contains(REDACTED_PLACEHOLDER) {
+        state.secret = SecretState::None;
+        state.value_fillers = 0;
         return Some(token.to_owned());
     }
     let separator_length = leading_separator_length(token);
@@ -695,27 +930,56 @@ fn redact_expected_secret(token: &str, state: &mut RedactionState) -> Option<Str
         {
             return Some(token.to_owned());
         }
-        state.secret = SecretState::None;
+        state.secret = if assignment && !looks_like_secret_candidate(remainder) {
+            SecretState::RedactLineTail
+        } else {
+            SecretState::None
+        };
+        state.value_fillers = 0;
         return Some(format!("{separators}{REDACTED_PLACEHOLDER}"));
     }
-    state.secret = SecretState::None;
+    state.secret = if assignment && !looks_like_secret_candidate(token) {
+        SecretState::RedactLineTail
+    } else {
+        SecretState::None
+    };
+    state.value_fillers = 0;
     Some(REDACTED_PLACEHOLDER.to_owned())
 }
 
 /// Masks the value half of a `key=value` or `key: value` token when the key names a
 /// known secret, keeping the key so the sentence remains readable.
 fn redact_key_value(token: &str) -> Option<KeyValueRedaction> {
+    let assignment_prefix = token
+        .find(['=', ':'])
+        .and_then(|position| token.get(..position))
+        .unwrap_or_default();
+    if !is_sensitive_assignment_key(assignment_prefix) && looks_like_non_file_uri(token) {
+        return None;
+    }
     for separator in ['=', ':'] {
         if let Some(position) = token.find(separator) {
             let key = token.get(..position)?;
             let separator_length = leading_separator_length(token.get(position..)?);
             let separators = token.get(position..position + separator_length)?;
             let value = token.get(position + separator_length..)?;
-            if is_sensitive_key(key) {
+            if is_sensitive_assignment_key(key) {
                 return Some(if value.is_empty() {
                     KeyValueRedaction::NeedsValue(token.to_owned())
+                } else if is_explicit_context_label(key)
+                    && matches!(
+                        security_token_core(value).to_ascii_lowercase().as_str(),
+                        "bearer" | "basic" | "token"
+                    )
+                {
+                    KeyValueRedaction::ExplicitScheme(token.to_owned())
                 } else {
-                    KeyValueRedaction::Inline(format!("{key}{separators}{REDACTED_PLACEHOLDER}"))
+                    KeyValueRedaction::Inline {
+                        masked: format!("{key}{separators}{REDACTED_PLACEHOLDER}"),
+                        redact_line_tail: !is_explicit_context_label(key)
+                            && !value.contains(REDACTED_PLACEHOLDER)
+                            && !looks_like_secret_candidate(value),
+                    }
                 });
             }
         }
@@ -724,8 +988,12 @@ fn redact_key_value(token: &str) -> Option<KeyValueRedaction> {
 }
 
 enum KeyValueRedaction {
-    Inline(String),
+    Inline {
+        masked: String,
+        redact_line_tail: bool,
+    },
     NeedsValue(String),
+    ExplicitScheme(String),
 }
 
 struct AuthorizationRedaction {
@@ -780,13 +1048,20 @@ fn redact_authorization_header(token: &str) -> Option<AuthorizationRedaction> {
 }
 
 fn is_sensitive_key(value: &str) -> bool {
-    let normalized = value
+    let normalized = security_classification_view(value)
         .to_ascii_lowercase()
         .trim_matches(|character: char| {
             !character.is_ascii_alphanumeric() && character != '_' && character != '-'
         })
         .to_owned();
     SENSITIVE_KEYS.contains(&normalized.as_str())
+}
+
+fn is_sensitive_assignment_key(value: &str) -> bool {
+    value
+        .split(['.', '[', ']'])
+        .filter(|segment| !segment.is_empty())
+        .any(is_sensitive_key)
 }
 
 fn split_leading_separator(token: &str) -> Option<(char, &str)> {
@@ -839,10 +1114,12 @@ fn redact_file_url(token: &str) -> Option<String> {
 }
 
 fn redact_encoded_private_path(token: &str) -> Option<String> {
-    if !token.contains('%') {
+    if !token.contains('%') || looks_like_non_file_uri(token) {
         return None;
     }
-    let classified = bounded_percent_decode(token)?;
+    let Some(classified) = bounded_percent_decode(token) else {
+        return Some(PATH_PLACEHOLDER.to_owned());
+    };
     (!looks_like_non_file_uri(&classified) && looks_like_private_path(&classified))
         .then(|| PATH_PLACEHOLDER.to_owned())
 }
@@ -1031,7 +1308,8 @@ fn looks_like_non_file_uri(token: &str) -> bool {
 }
 
 fn looks_like_credential_value(token: &str) -> bool {
-    let token = security_token_core(token);
+    let canonical = security_classification_view(token);
+    let token = security_token_core(&canonical);
     looks_like_known_credential(token) || looks_like_high_entropy_blob(token)
 }
 
@@ -1417,24 +1695,100 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn excerpts_redact_secrets_and_paths_but_keep_the_message() {
         // Secrets and private paths are masked in place so the agent message still
         // reaches the notification instead of vanishing entirely.
         for (message, expected) in [
             ("Use password=hunter2", "Use password=[redacted]"),
+            (
+                "password=\"correct horse battery staple\" after deploy",
+                "password=[redacted] after deploy",
+            ),
+            (
+                "password: 'correct horse battery staple'; deploy finished",
+                "password: [redacted]; deploy finished",
+            ),
+            (
+                "password=\"correct horse\nbattery staple\"\nfinished",
+                "password=[redacted]\nfinished",
+            ),
+            (
+                "password=\"correct horse\nbattery staple",
+                "password=[redacted]",
+            ),
+            (
+                "database.password=hunter2 after deploy",
+                "database.password=[redacted] after deploy",
+            ),
+            (
+                "credentials[password]=hunter2 after deploy",
+                "credentials[password]=[redacted] after deploy",
+            ),
+            (
+                "config={\"user\":{\"password\":\"hunter2\"}} after deploy",
+                "config={\"user\":{\"password\":[redacted]}} after deploy",
+            ),
+            (
+                "password=hunter2 deployment finished",
+                "password=[redacted] deployment finished",
+            ),
+            (
+                "pass\u{200B}word=hunter2 after deploy",
+                "password=[redacted] after deploy",
+            ),
             ("password := hunter2", "password := [redacted]"),
             ("password :: hunter2", "password :: [redacted]"),
             ("password:: secret", "password:: [redacted]"),
             ("Authorization := hunter2", "Authorization := [redacted]"),
             ("Authorization == hunter2", "Authorization == [redacted]"),
+            (
+                "Authorization: Bea\u{200B}rer abc123 after deploy",
+                "Authorization: Bearer [redacted] after deploy",
+            ),
             ("Read /Users/alice/private.txt", "Read [path]"),
-            ("token: Bearer abc123", "token: [redacted] abc123"),
+            (
+                "Open \"/Users/alice/Secret Project/.env\" after deploy",
+                "Open [path] after deploy",
+            ),
+            (
+                r#"Open "C:\Users\Alice\Secret Project\.env" after deploy"#,
+                "Open [path] after deploy",
+            ),
+            (
+                "Open \"/Users/alice/Secret\nProject/.env\" after deploy",
+                "Open [path] after deploy",
+            ),
+            (
+                r"Open /Users/alice/Secret\ Project/.env after deploy",
+                "Open [path] after deploy",
+            ),
+            (
+                "Open /Users/alice/Secret Project; after deploy",
+                "Open [path]; after deploy",
+            ),
+            (
+                "Open /Users/alice/Secret Project after deploy",
+                "Open [path]",
+            ),
+            (
+                "Open `/Users/alice/Secret Project` after deploy",
+                "Open [path] after deploy",
+            ),
+            (
+                "token: Bearer abc123 deployment finished",
+                "token: Bearer [redacted] deployment finished",
+            ),
             ("Read `/home/user/private.txt` next", "Read [path] next"),
             ("Open `/Users/alice/private.txt` next", "Open [path] next"),
             ("Inspect `/tmp/aizu-debug.log` next", "Inspect [path] next"),
             (
                 "Deploy uses ghp_exampletoken0000000000000000000000",
                 "Deploy uses [redacted]",
+            ),
+            (
+                "Deploy uses ghp_\u{200B}1234567890abcdefghijklmnopqrstuvwxyz after deploy",
+                "Deploy uses [redacted] after deploy",
             ),
         ] {
             let payload = json!({
@@ -1881,7 +2235,7 @@ mod tests {
             ),
             (
                 "Blob value surrounding message",
-                "Blob [redacted] surrounding message",
+                "Blob value [redacted] message",
             ),
             ("Blob value", "Blob [redacted]"),
             ("Token value", "Token [redacted]"),
@@ -2009,7 +2363,27 @@ mod tests {
             ),
             (
                 "Token value abcdefghijklmnopqrstuvwxyzabcdef is active",
-                "Token [redacted] abcdefghijklmnopqrstuvwxyzabcdef is active",
+                "Token value [redacted] is active",
+            ),
+            (
+                "Token is abcdefghijklmnopqrstuvwxyzabcdef",
+                "Token is [redacted]",
+            ),
+            (
+                "Token value is abcdefghijklmnopqrstuvwxyzabcdef",
+                "Token value is [redacted]",
+            ),
+            (
+                "Token value equals abcdefghijklmnopqrstuvwxyzabcdef",
+                "Token value equals [redacted]",
+            ),
+            (
+                "Token value is equals abcdefghijklmnopqrstuvwxyzabcdef after deploy",
+                "Token value is [redacted]",
+            ),
+            (
+                "Authorization: Bearer value abcdefghijklmnopqrstuvwxyzabcdef",
+                "Authorization: Bearer value [redacted]",
             ),
         ] {
             assert_eq!(
@@ -2026,6 +2400,15 @@ mod tests {
         assert_eq!(
             safe_agent_excerpt(&oversized_uri).as_deref(),
             Some("[redacted URI]")
+        );
+
+        let oversized_path = format!(
+            "%2FUsers%2Falice%2FSecret{}",
+            "x".repeat(MAX_CLASSIFICATION_BYTES)
+        );
+        assert_eq!(
+            safe_agent_excerpt(&oversized_path).as_deref(),
+            Some(PATH_PLACEHOLDER)
         );
     }
 
