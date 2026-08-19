@@ -2,6 +2,8 @@
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(any(test, feature = "desktop-e2e", target_os = "macos"))]
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
 
 #[cfg(not(target_os = "macos"))]
 use tauri::plugin::PermissionState as TauriPermissionState;
@@ -16,6 +18,8 @@ use user_notify_reborn::{NotifyManager, NotifyManagerExt, NotifyResponseAction};
 
 #[cfg(target_os = "macos")]
 const MAX_SYSTEM_ACTIVATIONS: usize = 64;
+#[cfg(target_os = "macos")]
+const RESPONSE_HANDLER_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Error)]
 pub enum NotifyError {
@@ -36,7 +40,7 @@ pub trait Notifier: Send + Sync {
 pub struct SystemNotifier {
     app: AppHandle<Wry>,
     #[cfg(target_os = "macos")]
-    response_handler: Option<SystemResponseHandler>,
+    response_state: Arc<Mutex<SystemResponseState>>,
 }
 
 impl SystemNotifier {
@@ -45,14 +49,46 @@ impl SystemNotifier {
         #[cfg(target_os = "macos")]
         {
             Self {
-                response_handler: optional_response_handler(|| {
-                    initialize_system_response_handler(&app)
-                }),
+                response_state: Arc::new(Mutex::new(SystemResponseState::new(
+                    optional_response_handler(|| initialize_system_response_handler(&app)),
+                ))),
                 app,
             }
         }
         #[cfg(not(target_os = "macos"))]
         Self { app }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn request_response_handler(&self) {
+        let now = Instant::now();
+        {
+            let mut state = self
+                .response_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !state.begin_retry(now) {
+                return;
+            }
+        }
+
+        let app = self.app.clone();
+        let response_state = Arc::clone(&self.response_state);
+        if let Err(error) = self.app.run_on_main_thread(move || {
+            let result = initialize_system_response_handler(&app);
+            response_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .finish_retry(result, Instant::now());
+        }) {
+            self.response_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .finish_retry(
+                    Err(NotifyError::ResponseHandler(error.to_string())),
+                    Instant::now(),
+                );
+        }
     }
 }
 
@@ -65,6 +101,63 @@ fn optional_response_handler<T>(initialize: impl FnOnce() -> Result<T, NotifyErr
 struct SystemResponseHandler {
     responses: Arc<Mutex<SystemActivationRegistry>>,
     _manager: NotifyManager,
+}
+
+#[cfg(target_os = "macos")]
+struct SystemResponseState {
+    handler: Option<SystemResponseHandler>,
+    retry_in_progress: bool,
+    retry_after: Instant,
+}
+
+#[cfg(target_os = "macos")]
+impl SystemResponseState {
+    fn new(handler: Option<SystemResponseHandler>) -> Self {
+        Self {
+            handler,
+            retry_in_progress: false,
+            retry_after: Instant::now(),
+        }
+    }
+
+    fn begin_retry(&mut self, now: Instant) -> bool {
+        if self.handler.is_some() || self.retry_in_progress || now < self.retry_after {
+            return false;
+        }
+        self.retry_in_progress = true;
+        true
+    }
+
+    fn finish_retry(&mut self, result: Result<SystemResponseHandler, NotifyError>, now: Instant) {
+        self.retry_in_progress = false;
+        match result {
+            Ok(handler) => self.handler = Some(handler),
+            Err(_) => self.retry_after = now + RESPONSE_HANDLER_RETRY_DELAY,
+        }
+    }
+
+    fn responses(&self) -> Option<Arc<Mutex<SystemActivationRegistry>>> {
+        self.handler
+            .as_ref()
+            .map(|handler| Arc::clone(&handler.responses))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn system_response_registry(
+    state: &Mutex<SystemResponseState>,
+    actionable: bool,
+) -> Result<Option<Arc<Mutex<SystemActivationRegistry>>>, NotifyError> {
+    let responses = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .responses();
+    if actionable && responses.is_none() {
+        return Err(NotifyError::ResponseHandler(
+            "native notification actions are temporarily unavailable".to_owned(),
+        ));
+    }
+    Ok(responses)
 }
 
 #[cfg(target_os = "macos")]
@@ -191,7 +284,10 @@ impl Notifier for SystemNotifier {
     }
 
     fn request_permission(&self) -> Result<PermissionStatus, NotifyError> {
-        request_system_permission(&self.app)
+        let permission = request_system_permission(&self.app)?;
+        #[cfg(target_os = "macos")]
+        self.request_response_handler();
+        Ok(permission)
     }
 
     fn notify(&self, notification: &Notification) -> Result<(), NotifyError> {
@@ -199,12 +295,12 @@ impl Notifier for SystemNotifier {
             return crate::banner::show(&self.app, notification);
         }
         #[cfg(target_os = "macos")]
-        return show_system_notification(
-            self.response_handler
-                .as_ref()
-                .map(|handler| handler.responses.as_ref()),
-            notification,
-        );
+        {
+            self.request_response_handler();
+            let responses =
+                system_response_registry(&self.response_state, notification.activation.is_some())?;
+            show_system_notification(responses.as_deref(), notification)
+        }
         #[cfg(not(target_os = "macos"))]
         show_system_notification(&self.app, notification)
     }
@@ -448,9 +544,10 @@ mod tests {
     };
 
     use super::{
-        MAX_SYSTEM_ACTIVATIONS, PermissionStatus, SystemActivationRegistry,
+        MAX_SYSTEM_ACTIVATIONS, PermissionStatus, SystemActivationRegistry, SystemResponseState,
         build_macos_notification, macos_notification_id, map_macos_permission, map_macos_settings,
-        native_sound_name, optional_response_handler, take_system_response,
+        native_sound_name, optional_response_handler, system_response_registry,
+        take_system_response,
     };
     use user_notify_reborn::NotifyResponseAction;
 
@@ -507,6 +604,34 @@ mod tests {
         });
 
         assert!(handler.is_none());
+    }
+
+    #[test]
+    fn actionable_system_notification_waits_for_response_handler_recovery() {
+        let state = std::sync::Mutex::new(SystemResponseState::new(None));
+
+        assert!(system_response_registry(&state, false).unwrap().is_none());
+        assert!(matches!(
+            system_response_registry(&state, true),
+            Err(super::NotifyError::ResponseHandler(_))
+        ));
+    }
+
+    #[test]
+    fn response_handler_retries_are_coalesced_and_time_gated() {
+        let mut state = SystemResponseState::new(None);
+        let now = std::time::Instant::now();
+
+        assert!(state.begin_retry(now));
+        assert!(!state.begin_retry(now));
+        state.finish_retry(
+            Err(super::NotifyError::ResponseHandler(
+                "unavailable".to_owned(),
+            )),
+            now,
+        );
+        assert!(!state.begin_retry(now));
+        assert!(state.begin_retry(now + super::RESPONSE_HANDLER_RETRY_DELAY));
     }
 
     #[test]

@@ -46,8 +46,10 @@ non-interactive SSH child. Opening a fresh SSH connection would not return to th
    a background task; dismiss and other actions only remove the entry. New entries evict the
    oldest target when the bound is reached, without affecting notification display. Response
    delegate setup is best-effort: an unavailable bundle identity or native handler disables only
-   click activation for System notifications and must not prevent Aizu Banner or the app worker
-   from starting.
+   System notification actions and must not prevent Aizu Banner or the app worker from starting.
+   A later System delivery schedules a coalesced, time-gated main-thread retry. An actionable
+   notification is not displayed without its response registry; it remains in the durable outbox
+   and follows the existing bounded delivery backoff until the handler recovers.
 8. Notification activation never opens the Aizu main window. Explicit tray Open and launching a
    second app instance remain the supported ways to show the main window.
 
