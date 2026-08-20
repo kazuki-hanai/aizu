@@ -152,10 +152,12 @@ events remain in the source SQLite spool while the Mac is disconnected.
   **Settings > Notification sound**.
 - **Approve commands in Aizu** is on by default for local Codex and Claude Code
   shell requests. Aizu Banner shows the complete command with **Deny** and
-  **Allow once**. Closing or swiping the banner, waiting 45 seconds, disabling
-  the setting, or stopping Aizu returns control to the agent's normal terminal
-  prompt. Aizu never runs the command itself. Remote SSH approvals continue in
-  the source terminal.
+  **Allow once**. Use **Choose in terminal** to end Aizu's wait immediately and
+  continue in the agent's normal approval prompt. Closing or swiping the banner,
+  waiting 45 seconds, disabling the setting, or stopping Aizu does the same.
+  The hook protocol makes these sequential alternatives rather than two active
+  prompts at once. Aizu never runs the command itself. Remote SSH approvals
+  continue in the source terminal.
 - **Show agent details** is on by default and adds a short filtered completion
   or permission excerpt. Outside the temporary local approval banner, Aizu
   still excludes raw commands, full prompts, transcripts, secrets, and absolute

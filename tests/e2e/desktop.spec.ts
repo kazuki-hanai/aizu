@@ -341,6 +341,14 @@ describe("Aizu desktop MVP", () => {
     expect(JSON.parse(hookResult.stdout)).toMatchObject({
       hookSpecificOutput: { decision: { behavior: "allow" } },
     });
+    const terminalPermissionHook = runPermissionHook(stateRoot as string);
+    await expect($("strong=Codex requests permission")).toBeDisplayed();
+    await $("button=Choose in terminal").click();
+    const terminalHookResult = await terminalPermissionHook;
+    expect(terminalHookResult.code).toBe(0);
+    expect(terminalHookResult.stderr).toBe("");
+    expect(terminalHookResult.stdout).toBe("");
+    await expect($("strong=Codex requests permission")).not.toBeExisting();
     await browser.waitUntil(async () => {
       const view = await invokeView("get_app_view");
       return view.history.some((event) =>

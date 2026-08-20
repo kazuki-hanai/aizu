@@ -401,9 +401,9 @@ fn approval_notification(
             format!("{agent_label} requests permission")
         },
         body: if japanese {
-            "内容を確認して選択してください。"
+            "ここで選ぶか、Terminalで標準の許可画面を開いてください。"
         } else {
-            "Review the exact command before choosing."
+            "Choose here, or continue in the terminal with the standard approval prompt."
         }
         .to_owned(),
         sound: preferences

@@ -72,7 +72,8 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
       setUnavailable(false);
       return true;
     } catch {
-      setUnavailable(true);
+      // A stale render acknowledgement can race an explicit terminal fallback.
+      // Decision controls remain disabled, while terminal fallback stays available.
       return false;
     }
   }, [client]);

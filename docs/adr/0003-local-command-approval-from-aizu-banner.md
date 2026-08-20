@@ -31,10 +31,13 @@ event stream would violate the existing privacy boundary.
    `PermissionRequest` hook has a 50-second outer timeout. Broker absence, disabled preferences,
    invalid/oversized input, another pending request, banner dismissal, timeout, or app shutdown
    returns no decision so the agent's normal approval UI remains authoritative.
-5. Aizu Banner shows the complete command in a selectable, scrollable code region with `Deny` and
-   `Allow once`. A request becomes actionable only after the native banner window reports a
+5. Aizu Banner shows the complete command in a selectable, scrollable code region with `Deny`,
+   `Allow once`, and `Choose in terminal`. The terminal action returns no decision immediately,
+   ending Aizu's synchronous hook so the agent can show its standard approval prompt. A request
+   becomes actionable only after the native banner window reports a
    successful show and the banner WebView acknowledges that the exact command and controls were
-   rendered. A decision is atomically consumed once. A close or swipe means fallback, not deny.
+   rendered; terminal fallback remains available if that acknowledgement fails. A decision is
+   atomically consumed once. A close or swipe also means fallback, not deny.
 6. The CLI prints only the agent's structured `allow` or `deny` hook response. Aizu never executes
    the command and does not support “always allow”, permission mutation, or free-form answers.
 7. The feature is enabled by default and can be disabled immediately in Settings. Approval requests
@@ -51,7 +54,9 @@ event stream would violate the existing privacy boundary.
 ## Consequences
 
 - Users can approve common local shell commands without locating the terminal while retaining the
-  agent's built-in prompt as a fail-safe.
+  agent's built-in prompt as an explicit fallback. The synchronous hook contract does not expose
+  both decision surfaces at once: choosing the terminal path ends the notification-side request
+  before the agent renders its prompt.
 - Raw commands exist briefly in the hook process, local socket buffers, desktop memory, and the
   banner WebView. They do not become durable notification content.
 - Unsupported permission tools continue unchanged. This avoids fabricating an incomplete approval
