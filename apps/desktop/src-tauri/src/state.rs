@@ -754,7 +754,6 @@ impl AppService {
             language: self.settings.preferences.language,
             text_size: self.settings.preferences.text_size,
             can_activate_terminal: false,
-            approval: None,
             activation: None,
         })?;
         Ok(self.view())
@@ -974,7 +973,6 @@ impl aizu_core::Notifier for PipelineNotifier<'_> {
                 language: self.language,
                 text_size: self.text_size,
                 can_activate_terminal: activation.is_some(),
-                approval: None,
                 activation,
             })
             .map_err(|_| aizu_core::NotifyError::Retryable)

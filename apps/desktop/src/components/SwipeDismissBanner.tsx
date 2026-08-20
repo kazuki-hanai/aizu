@@ -1,4 +1,4 @@
-import { Terminal, X } from "lucide-react";
+import { X } from "lucide-react";
 import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
@@ -31,15 +31,11 @@ const EXIT_DURATION = 160;
 
 export function SwipeDismissBanner({
   banner,
-  onAcknowledgeApproval,
   onActivate,
-  onDecideApproval,
   onDismiss,
 }: {
   banner: BannerNotification;
-  onAcknowledgeApproval: (id: number) => Promise<boolean>;
   onActivate: (id: number) => Promise<boolean>;
-  onDecideApproval: (id: number, decision: "allowOnce" | "deny") => Promise<boolean>;
   onDismiss: (id: number) => Promise<boolean>;
 }) {
   const bannerRef = useRef<HTMLElement>(null);
@@ -48,28 +44,11 @@ export function SwipeDismissBanner({
   const dismissTimer = useRef<number | null>(null);
   const dismissStarted = useRef(false);
   const activationStarted = useRef(false);
-  const approvalStarted = useRef(false);
   const suppressActivation = useRef(false);
   const suppressionTimer = useRef<number | null>(null);
   const [renderedOffset, setRenderedOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [exitDirection, setExitDirection] = useState<-1 | 1 | null>(null);
-  const [approvalPending, setApprovalPending] = useState(false);
-  const requiresApproval = banner.approval !== null;
-  const [acknowledgedApprovalId, setAcknowledgedApprovalId] = useState<number | null>(null);
-  const approvalReady = !requiresApproval || acknowledgedApprovalId === banner.id;
-
-  useEffect(() => {
-    if (!requiresApproval) return;
-    let active = true;
-    void onAcknowledgeApproval(banner.id).then((acknowledged) => {
-      if (active && acknowledged) setAcknowledgedApprovalId(banner.id);
-    });
-    return () => {
-      active = false;
-    };
-  }, [banner.id, onAcknowledgeApproval, requiresApproval]);
-
   const reset = useCallback(() => {
     swipe.current = null;
     offset.current = 0;
@@ -78,8 +57,6 @@ export function SwipeDismissBanner({
     setExitDirection(null);
     dismissStarted.current = false;
     activationStarted.current = false;
-    approvalStarted.current = false;
-    setApprovalPending(false);
   }, []);
 
   useEffect(() => () => {
@@ -135,7 +112,6 @@ export function SwipeDismissBanner({
       swipe.current ||
       dismissStarted.current ||
       activationStarted.current ||
-      approvalStarted.current ||
       exitDirection !== null
     ) return false;
     if (target instanceof Element && target.closest("button")) return false;
@@ -207,7 +183,7 @@ export function SwipeDismissBanner({
     exitDirection === 1 ? "aizu-banner--dismiss-right" : "",
   ].filter(Boolean).join(" ");
   const dismissImmediately = () => {
-    if (dismissStarted.current || activationStarted.current || approvalStarted.current) return;
+    if (dismissStarted.current || activationStarted.current) return;
     dismissStarted.current = true;
     void onDismiss(banner.id).then((dismissed) => {
       if (!dismissed) reset();
@@ -230,39 +206,12 @@ export function SwipeDismissBanner({
       if (!activated) reset();
     });
   };
-  const decideApproval = (decision: "allowOnce" | "deny") => {
-    if (
-      !banner.approval ||
-      !approvalReady ||
-      approvalStarted.current ||
-      dismissStarted.current
-    ) return;
-    approvalStarted.current = true;
-    setApprovalPending(true);
-    void onDecideApproval(banner.id, decision).then((decided) => {
-      if (!decided) reset();
-    });
-  };
-  const chooseInTerminal = () => {
-    if (
-      !banner.approval ||
-      approvalStarted.current ||
-      dismissStarted.current
-    ) return;
-    approvalStarted.current = true;
-    setApprovalPending(true);
-    void onDismiss(banner.id).then((dismissed) => {
-      if (!dismissed) reset();
-    });
-  };
-
   return (
     <article
       className={classes}
       data-banner-id={banner.id}
       data-text-size={banner.textSize}
       data-terminal-activation={banner.canActivateTerminal ? "available" : "unavailable"}
-      data-command-approval={banner.approval ? "available" : "unavailable"}
       lang={banner.language === "system" ? undefined : banner.language}
       onMouseDown={(event) => {
         if (event.button === 0) begin("mouse", 0, event.clientX, event.clientY, event.target);
@@ -306,39 +255,6 @@ export function SwipeDismissBanner({
         <div className="aizu-banner__copy">
           <strong>{banner.title}</strong>
           {banner.body ? <SafeMarkdown>{banner.body}</SafeMarkdown> : null}
-          {banner.approval ? (
-            <>
-              <span className="aizu-banner__approval-tool">{banner.approval.toolName}</span>
-              <pre className="aizu-banner__command"><code>{banner.approval.command}</code></pre>
-              <div className="aizu-banner__actions">
-                <button
-                  className="aizu-banner__action aizu-banner__action--terminal"
-                  disabled={approvalPending}
-                  onClick={chooseInTerminal}
-                  type="button"
-                >
-                  <Terminal aria-hidden="true" size={15} />
-                  {messages(banner.language).chooseInTerminal}
-                </button>
-                <button
-                  className="aizu-banner__action aizu-banner__action--deny"
-                  disabled={!approvalReady || approvalPending}
-                  onClick={() => decideApproval("deny")}
-                  type="button"
-                >
-                  {messages(banner.language).deny}
-                </button>
-                <button
-                  className="aizu-banner__action aizu-banner__action--allow"
-                  disabled={!approvalReady || approvalPending}
-                  onClick={() => decideApproval("allowOnce")}
-                  type="button"
-                >
-                  {messages(banner.language).allowOnce}
-                </button>
-              </div>
-            </>
-          ) : null}
         </div>
       </div>
       <button

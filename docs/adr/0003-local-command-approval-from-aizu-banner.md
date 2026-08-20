@@ -1,6 +1,6 @@
 # ADR 0003: Local command approvals use an ephemeral one-shot broker
 
-- Status: Accepted
+- Status: Superseded by [ADR 0004](0004-terminal-owned-command-approval.md)
 - Date: 2026-08-20
 - Deciders: repository owner
 - Related: `docs/mvp-design.md` §4, §13.5, architectural invariants #11, #12

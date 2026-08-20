@@ -104,11 +104,6 @@ export const bannerNotificationSchema = z.object({
   language: z.enum(["system", "ja", "en"]),
   textSize: z.enum(["small", "standard", "large"]),
   canActivateTerminal: z.boolean(),
-  approval: z.object({
-    agent: z.enum(["codex", "claudeCode"]),
-    toolName: z.string(),
-    command: z.string(),
-  }).nullable(),
 });
 
 export const appViewSchema = z.object({

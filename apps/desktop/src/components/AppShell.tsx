@@ -548,7 +548,7 @@ type SettingsViewProps = {
 };
 
 function SettingsView({ busy, muted, onChange, onMuteChange, preferences, onSendTest, t }: SettingsViewProps) {
-  const toggle = (key: "completionEnabled" | "questionEnabled" | "agentDetailsEnabled" | "commandApprovalsEnabled" | "launchAtLogin") => {
+  const toggle = (key: "completionEnabled" | "questionEnabled" | "agentDetailsEnabled" | "launchAtLogin") => {
     void onChange({ ...preferences, [key]: !preferences[key] });
   };
   const sounds: readonly { label: string; value: Preferences["notificationSound"] | "off" }[] = [
@@ -604,7 +604,6 @@ function SettingsView({ busy, muted, onChange, onMuteChange, preferences, onSend
         <SettingToggle checked={muted} disabled={busy} icon={BellOff} label={t.muteNotifications} onChange={() => void onMuteChange(!muted)} />
         <SettingToggle checked={preferences.completionEnabled} disabled={busy} icon={ListChecks} label={t.taskCompletion} onChange={() => toggle("completionEnabled")} />
         <SettingToggle checked={preferences.questionEnabled} disabled={busy} icon={CircleHelp} label={t.agentQuestions} onChange={() => toggle("questionEnabled")} />
-        <SettingToggle checked={preferences.commandApprovalsEnabled} disabled={busy} icon={ShieldCheck} label={t.commandApprovals} onChange={() => toggle("commandApprovalsEnabled")} />
         <label className="setting-row setting-row--select">
           <Bell aria-hidden="true" size={17} />
           <span>{t.notificationStyle}</span>
