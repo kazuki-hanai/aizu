@@ -11,6 +11,7 @@ import {
 import type { BannerNotification } from "../lib/contracts";
 import { messages } from "../lib/i18n";
 import { BrandMark } from "./BrandMark";
+import { SafeMarkdown } from "./SafeMarkdown";
 
 type SwipeState = {
   axis: "pending" | "horizontal";
@@ -292,11 +293,11 @@ export function SwipeDismissBanner({
         <span className="aizu-banner__mark"><BrandMark small /></span>
         <div className="aizu-banner__copy">
           <strong>{banner.title}</strong>
-          {banner.body ? <span className="aizu-banner__body">{banner.body}</span> : null}
+          {banner.body ? <SafeMarkdown>{banner.body}</SafeMarkdown> : null}
           {banner.approval ? (
             <>
               <span className="aizu-banner__approval-tool">{banner.approval.toolName}</span>
-              <pre className="aizu-banner__command">{banner.approval.command}</pre>
+              <pre className="aizu-banner__command"><code>{banner.approval.command}</code></pre>
               <div className="aizu-banner__actions">
                 <button
                   className="aizu-banner__action aizu-banner__action--deny"

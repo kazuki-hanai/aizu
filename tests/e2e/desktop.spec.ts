@@ -189,7 +189,9 @@ describe("Aizu desktop MVP", () => {
       body: "Aizu Banner is ready.",
     }));
     await expect($("strong=Aizu test notification")).toBeDisplayed();
-    await expect($("span=Aizu Banner is ready.")).toBeDisplayed();
+    const testBody = $(".aizu-banner__body");
+    await expect(testBody).toBeDisplayed();
+    await expect(testBody).toHaveText("Aizu Banner is ready.");
     const banner = $(".aizu-banner");
     expect(await banner.getAttribute("data-text-size")).toBe("standard");
     await browser.switchToWindow("main");
@@ -461,6 +463,11 @@ describe("Aizu desktop MVP", () => {
     await browser.switchToWindow("banner");
     const actionable = $('[data-banner-id="8675309"]');
     await expect(actionable).toHaveAttribute("data-terminal-activation", "available");
+    await expect(actionable.$("h2=Completed")).toBeDisplayed();
+    await expect(actionable.$("li=All tests passed")).toBeDisplayed();
+    const commandBlock = actionable.$("pre code.language-sh");
+    await expect(commandBlock).toBeDisplayed();
+    await expect(commandBlock).toHaveText("mise run check");
     await actionable.$(".aizu-banner__content").click();
     await browser.waitUntil(async () => {
       const count = await browser.tauri.execute(({ core }) =>

@@ -171,7 +171,8 @@ pub fn show_e2e_terminal_banner(app: AppHandle<Wry>) -> Result<(), DesktopError>
         &Notification {
             id: 8_675_309,
             title: "Codex task completed".to_owned(),
-            body: "Return to the originating terminal.".to_owned(),
+            body: "## Completed\n\n- All tests passed\n- Run next:\n\n```sh\nmise run check\n```"
+                .to_owned(),
             sound: None,
             delivery: NotificationDelivery::AizuBanner,
             language: crate::model::LanguagePreference::English,

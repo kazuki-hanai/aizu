@@ -109,9 +109,11 @@ describe("Aizu Banner", () => {
     expect(await screen.findByText("Codex task completed")).toBeVisible();
     const formattedBody = container.querySelector(".aizu-banner__body");
     expect(formattedBody).not.toBeNull();
-    expect(formattedBody).toHaveTextContent(notices[0].body, { normalizeWhitespace: false });
+    expect(formattedBody?.querySelectorAll("p")).toHaveLength(2);
+    expect(formattedBody).toHaveTextContent("This complete safe notification body");
+    expect(formattedBody).toHaveTextContent("remains visible until it is dismissed.");
     if (formattedBody) {
-      expect(window.getComputedStyle(formattedBody).whiteSpace).toBe("pre-wrap");
+      expect(window.getComputedStyle(formattedBody).userSelect).toBe("text");
     }
     expect(screen.getByText(notices[1].body)).toBeVisible();
     expect(container.querySelectorAll(".aizu-banner")).toHaveLength(2);
