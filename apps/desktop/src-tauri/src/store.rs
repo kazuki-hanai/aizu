@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::model::Preferences;
 
-const CURRENT_SETTINGS_VERSION: u32 = 1;
+const CURRENT_SETTINGS_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,11 +94,16 @@ impl SettingsStore {
                 }
                 let mut settings: StoredSettings =
                     serde_json::from_value(value).map_err(StoreError::Decode)?;
-                if settings.settings_version == 0 {
+                if settings.settings_version < CURRENT_SETTINGS_VERSION {
                     // Pre-versioned settings cannot distinguish the old `false`
                     // default from an intentional privacy opt-out. Preserve the
                     // stored value; only a missing field receives the new `true`
                     // serde default.
+                    //
+                    // Command approvals were briefly persisted as default-on in
+                    // version 1 but never formed part of the terminal-default
+                    // product contract. Require an explicit opt-in after upgrade.
+                    settings.preferences.command_approvals_enabled = false;
                     settings.settings_version = CURRENT_SETTINGS_VERSION;
                     self.save(&settings)?;
                 }
@@ -251,7 +256,7 @@ mod tests {
         let migrated = store.load().expect("old settings migrate");
         assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
         assert!(!migrated.preferences.agent_details_enabled);
-        assert!(migrated.preferences.command_approvals_enabled);
+        assert!(!migrated.preferences.command_approvals_enabled);
 
         let persisted: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).expect("read migrated settings"))
@@ -265,6 +270,12 @@ mod tests {
         assert_eq!(
             persisted
                 .pointer("/preferences/agentDetailsEnabled")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            persisted
+                .pointer("/preferences/commandApprovalsEnabled")
                 .and_then(serde_json::Value::as_bool),
             Some(false)
         );
@@ -304,6 +315,50 @@ mod tests {
 
         assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
         assert!(migrated.preferences.agent_details_enabled);
+        assert!(!migrated.preferences.command_approvals_enabled);
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn version_one_command_approvals_require_a_fresh_opt_in() {
+        let (directory, path) = temporary_settings_path("migrate-command-approvals");
+        let settings = StoredSettings {
+            settings_version: 1,
+            preferences: crate::model::Preferences {
+                command_approvals_enabled: true,
+                ..crate::model::Preferences::default()
+            },
+            ..StoredSettings::default()
+        };
+        fs::write(
+            &path,
+            serde_json::to_vec(&settings).expect("encode v1 settings"),
+        )
+        .expect("write v1 settings");
+
+        let store = SettingsStore::new(path.clone());
+        let migrated = store.load().expect("v1 settings migrate");
+
+        assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
+        assert!(!migrated.preferences.command_approvals_enabled);
+        let persisted: StoredSettings =
+            serde_json::from_slice(&fs::read(&path).expect("read migrated settings"))
+                .expect("decode migrated settings");
+        assert!(!persisted.preferences.command_approvals_enabled);
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn current_version_preserves_command_approval_opt_in() {
+        let (directory, path) = temporary_settings_path("preserve-command-approvals");
+        let mut settings = StoredSettings::default();
+        settings.preferences.command_approvals_enabled = true;
+        let store = SettingsStore::new(path);
+        store.save(&settings).expect("save current settings");
+
+        let loaded = store.load().expect("load current settings");
+        assert_eq!(loaded.settings_version, CURRENT_SETTINGS_VERSION);
+        assert!(loaded.preferences.command_approvals_enabled);
         fs::remove_dir_all(directory).expect("temporary directory should be removable");
     }
 
@@ -324,7 +379,7 @@ mod tests {
     #[test]
     fn rejects_a_future_settings_version_before_decoding_its_shape() {
         let (directory, path) = temporary_settings_path("future-version");
-        fs::write(&path, r#"{"settingsVersion":2,"futureShape":true}"#)
+        fs::write(&path, r#"{"settingsVersion":3,"futureShape":true}"#)
             .expect("write future settings");
         let store = SettingsStore::new(path);
 
@@ -332,7 +387,7 @@ mod tests {
         assert!(matches!(
             error,
             super::StoreError::UnsupportedVersion {
-                found: 2,
+                found: 3,
                 supported: CURRENT_SETTINGS_VERSION
             }
         ));

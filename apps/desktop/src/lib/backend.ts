@@ -17,6 +17,8 @@ export type BannerClient = {
   getBanners: () => Promise<BannerNotification[]>;
   dismiss: (id: number) => Promise<void>;
   activate: (id: number) => Promise<void>;
+  acknowledgeApproval: (id: number) => Promise<void>;
+  decideApproval: (id: number, decision: "allowOnce" | "deny") => Promise<void>;
   resize: (height: number) => Promise<void>;
   subscribe: (onChange: (banners: BannerNotification[]) => void) => Promise<UnlistenFn>;
 };
@@ -121,6 +123,12 @@ export const bannerBackend: BannerClient = {
   activate: async (id) => {
     await invokeBackend("activate_banner", { id });
   },
+  acknowledgeApproval: async (id) => {
+    await invokeBackend("acknowledge_banner_approval", { id });
+  },
+  decideApproval: async (id, decision) => {
+    await invokeBackend("decide_banner_approval", { id, decision });
+  },
   resize: async (height) => {
     await invokeBackend("resize_banner", { height });
   },
@@ -136,7 +144,7 @@ const defaultPreferences: Preferences = {
   completionEnabled: true,
   questionEnabled: true,
   agentDetailsEnabled: true,
-  commandApprovalsEnabled: true,
+  commandApprovalsEnabled: false,
   soundEnabled: true,
   notificationDelivery: "aizuBanner",
   notificationSound: "default",

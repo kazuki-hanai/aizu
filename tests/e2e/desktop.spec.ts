@@ -115,6 +115,7 @@ describe("Aizu desktop MVP", () => {
   it("runs the isolated backend pipeline, settings, tray, SSH validation, and single instance", async () => {
     await expect($("h1=Keep agent events within reach.")).toBeDisplayed();
     const initial = await invokeView("get_app_view");
+    expect(initial.preferences.commandApprovalsEnabled).toBe(false);
     await invokeView("update_preferences", {
       request: { ...initial.preferences, notificationDelivery: "system" },
     });
@@ -341,6 +342,31 @@ describe("Aizu desktop MVP", () => {
       return remaining.length === 0;
     }, { timeout: 2_000, timeoutMsg: "permission banner remained queued" });
     await browser.switchToWindow("main");
+    const terminalDefaultPreferences = (await invokeView("get_app_view")).preferences;
+    const approvalPreferences = await invokeView("update_preferences", {
+      request: { ...terminalDefaultPreferences, commandApprovalsEnabled: true },
+    });
+    expect(approvalPreferences.preferences.commandApprovalsEnabled).toBe(true);
+    const approvalHook = runPermissionHook(stateRoot as string);
+    await browser.switchToWindow("banner");
+    await expect($("strong=Codex requests permission")).toBeDisplayed();
+    await expect($("pre=printf 'Aizu approval E2E'")).toBeDisplayed();
+    await expect($("button=Choose in terminal")).not.toBeExisting();
+    await expect($("button=Deny")).toBeDisplayed();
+    const allowOnce = $("button=Allow once");
+    await expect(allowOnce).toBeEnabled();
+    await allowOnce.click();
+    const approved = await approvalHook;
+    expect(approved.code).toBe(0);
+    expect(approved.stderr).toBe("");
+    expect(JSON.parse(approved.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: { behavior: "allow" },
+      },
+    });
+    await expect($("strong=Codex requests permission")).not.toBeExisting();
+    await browser.switchToWindow("main");
     const paused = await invokeView("set_notifications_paused", { paused: true });
     expect(paused.trayState).toBe("paused");
     const resumed = await invokeView("set_notifications_paused", { paused: false });
@@ -369,9 +395,10 @@ describe("Aizu desktop MVP", () => {
     expect(await browser.execute(() => document.documentElement.dataset.textSize)).toBe("large");
     expect((await invokeView("get_app_view")).preferences.quietHours.enabled).toBe(true);
     const persisted = JSON.parse(await readFile(path.join(stateRoot as string, "settings.json"), "utf8")) as {
-      preferences: { agentDetailsEnabled: boolean; language: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
+      preferences: { agentDetailsEnabled: boolean; commandApprovalsEnabled: boolean; language: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
     };
     expect(persisted.preferences.agentDetailsEnabled).toBe(true);
+    expect(persisted.preferences.commandApprovalsEnabled).toBe(true);
     expect(persisted.preferences.notificationSound).toBe("bloom");
     expect(persisted.preferences.language).toBe("ja");
     expect(persisted.preferences.textSize).toBe("large");

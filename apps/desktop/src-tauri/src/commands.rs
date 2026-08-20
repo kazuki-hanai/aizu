@@ -3,7 +3,7 @@ use tauri_plugin_autostart::ManagerExt;
 
 use crate::{
     model::{
-        AddRemoteSourceRequest, AppView, CompleteOnboardingRequest, Notification,
+        AddRemoteSourceRequest, AppView, ApprovalAction, CompleteOnboardingRequest, Notification,
         NotificationDelivery, Preferences, SshConnectionTestResult,
     },
     state::{DesktopError, DesktopState},
@@ -28,7 +28,61 @@ pub fn dismiss_banner(
     id: i32,
 ) -> Result<(), DesktopError> {
     ensure_banner_caller(window.label())?;
+    if let Some(broker) = app.try_state::<crate::approval_broker::ApprovalBroker>() {
+        let cancelled = broker
+            .cancel(id)
+            .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?;
+        if cancelled {
+            cleanup_after_committed_approval(|| crate::banner::dismiss(&app, id));
+            return Ok(());
+        }
+    }
     crate::banner::dismiss(&app, id).map_err(DesktopError::from)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn acknowledge_banner_approval(
+    app: AppHandle<Wry>,
+    window: WebviewWindow<Wry>,
+    id: i32,
+) -> Result<(), DesktopError> {
+    ensure_banner_caller(window.label())?;
+    if !crate::banner::has_approval(&app, id)? {
+        return Err(approval_unavailable());
+    }
+    let broker = app.state::<crate::approval_broker::ApprovalBroker>();
+    if !broker
+        .mark_frontend_rendered(id)
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?
+    {
+        return Err(approval_unavailable());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn decide_banner_approval(
+    app: AppHandle<Wry>,
+    window: WebviewWindow<Wry>,
+    id: i32,
+    decision: ApprovalAction,
+) -> Result<(), DesktopError> {
+    ensure_banner_caller(window.label())?;
+    let decision = match decision {
+        ApprovalAction::AllowOnce => aizu_core::ApprovalDecision::AllowOnce,
+        ApprovalAction::Deny => aizu_core::ApprovalDecision::Deny,
+    };
+    let broker = app.state::<crate::approval_broker::ApprovalBroker>();
+    if !broker
+        .decide(id, decision)
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?
+    {
+        return Err(approval_unavailable());
+    }
+    cleanup_after_committed_approval(|| crate::banner::dismiss(&app, id));
+    Ok(())
 }
 
 #[tauri::command]
@@ -79,6 +133,19 @@ fn ensure_banner_caller(window_label: &str) -> Result<(), DesktopError> {
     .into())
 }
 
+fn approval_unavailable() -> DesktopError {
+    crate::notifier::NotifyError::Scheduling(
+        "this command approval is no longer available".to_owned(),
+    )
+    .into()
+}
+
+fn cleanup_after_committed_approval(
+    cleanup: impl FnOnce() -> Result<(), crate::notifier::NotifyError>,
+) {
+    let _ = cleanup();
+}
+
 #[cfg(feature = "desktop-e2e")]
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -111,6 +178,7 @@ pub fn show_e2e_terminal_banner(app: AppHandle<Wry>) -> Result<(), DesktopError>
             language: crate::model::LanguagePreference::English,
             text_size: crate::model::TextSize::Standard,
             can_activate_terminal: true,
+            approval: None,
             activation: Some(aizu_core::TerminalActivation {
                 application: aizu_core::TerminalApplication::Iterm2,
                 application_session: Some("w0t0p0:E2E".to_owned()),
@@ -252,7 +320,15 @@ pub fn update_preferences(
         set_autostart(&app, request.launch_at_login)?;
     }
     let delivery = request.notification_delivery;
+    let approvals_enabled = request.command_approvals_enabled;
     let view = state.lock()?.update_preferences(request)?;
+    if !approvals_enabled
+        && let Some(broker) = app.try_state::<crate::approval_broker::ApprovalBroker>()
+    {
+        for id in broker.cancel_all() {
+            let _ = crate::banner::dismiss(&app, id);
+        }
+    }
     if delivery == NotificationDelivery::System {
         let _ = crate::banner::clear_passive(&app);
     } else {
@@ -407,6 +483,8 @@ fn sync_tray(app: &AppHandle<Wry>) {
 
 #[cfg(test)]
 mod tests {
+    use crate::notifier::NotifyError;
+
     #[test]
     fn agent_setup_task_runs_off_the_calling_thread() {
         let calling_thread = std::thread::current().id();
@@ -422,5 +500,16 @@ mod tests {
     fn banner_data_and_actions_reject_non_banner_callers() {
         assert!(super::ensure_banner_caller(crate::banner::BANNER_WINDOW).is_ok());
         assert!(super::ensure_banner_caller("main").is_err());
+    }
+
+    #[test]
+    fn a_committed_approval_decision_or_cancellation_ignores_cleanup_failure() {
+        let cleanup_ran = std::cell::Cell::new(false);
+        super::cleanup_after_committed_approval(|| {
+            cleanup_ran.set(true);
+            Err(NotifyError::Scheduling("forced cleanup failure".to_owned()))
+        });
+
+        assert!(cleanup_ran.get());
     }
 }

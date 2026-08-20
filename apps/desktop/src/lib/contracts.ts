@@ -86,7 +86,7 @@ export const preferencesSchema = z.object({
   completionEnabled: z.boolean(),
   questionEnabled: z.boolean(),
   agentDetailsEnabled: z.boolean().default(true),
-  commandApprovalsEnabled: z.boolean().default(true),
+  commandApprovalsEnabled: z.boolean().default(false),
   soundEnabled: z.boolean(),
   notificationDelivery: z.enum(["aizuBanner", "system"]).default("aizuBanner"),
   notificationSound: z.enum(["default", "chime", "pulse", "bloom"]),
@@ -104,6 +104,11 @@ export const bannerNotificationSchema = z.object({
   language: z.enum(["system", "ja", "en"]),
   textSize: z.enum(["small", "standard", "large"]),
   canActivateTerminal: z.boolean(),
+  approval: z.object({
+    agent: z.enum(["codex", "claudeCode"]),
+    toolName: z.string(),
+    command: z.string(),
+  }).nullable(),
 });
 
 export const appViewSchema = z.object({
