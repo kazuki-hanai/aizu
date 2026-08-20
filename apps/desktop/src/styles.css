@@ -185,9 +185,117 @@ html[data-window="banner"] body {
 .aizu-banner__body {
   overflow-wrap: anywhere;
   color: #c9cecb;
-  white-space: pre-wrap;
   user-select: text;
   -webkit-user-select: text;
+}
+
+.aizu-markdown > :first-child { margin-top: 0; }
+.aizu-markdown > :last-child { margin-bottom: 0; }
+
+.aizu-markdown p,
+.aizu-markdown blockquote,
+.aizu-markdown ul,
+.aizu-markdown ol,
+.aizu-markdown pre,
+.aizu-markdown table,
+.aizu-markdown h1,
+.aizu-markdown h2,
+.aizu-markdown h3,
+.aizu-markdown h4,
+.aizu-markdown h5,
+.aizu-markdown h6 {
+  margin: 0 0 7px;
+}
+
+.aizu-markdown h1,
+.aizu-markdown h2,
+.aizu-markdown h3,
+.aizu-markdown h4,
+.aizu-markdown h5,
+.aizu-markdown h6 {
+  color: #f4f6f5;
+  font-size: var(--font-size-md);
+  line-height: 1.35;
+}
+
+.aizu-markdown ul,
+.aizu-markdown ol {
+  padding-left: 20px;
+}
+
+.aizu-markdown li + li { margin-top: 2px; }
+.aizu-markdown li > p { margin: 0; }
+
+.aizu-markdown blockquote {
+  padding-left: 9px;
+  border-left: 2px solid #65706a;
+  color: #abb3af;
+}
+
+.aizu-markdown code,
+.aizu-banner__command code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.aizu-markdown :not(pre) > code {
+  padding: 1px 4px;
+  color: #e5f5ed;
+  background: #343b38;
+  border-radius: 3px;
+  font-size: 0.94em;
+}
+
+.aizu-markdown pre {
+  max-height: 180px;
+  padding: 9px 10px;
+  overflow: auto;
+  color: #f4f6f5;
+  border: 1px solid #4b544f;
+  border-radius: 5px;
+  background: #151918;
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.aizu-markdown__link {
+  color: #9edcc4;
+}
+
+.aizu-markdown__image-alt {
+  color: #abb3af;
+  font-style: italic;
+}
+
+.aizu-markdown__table-wrap {
+  max-width: 100%;
+  margin: 0 0 7px;
+  overflow: auto;
+}
+
+.aizu-markdown table {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  font-size: var(--font-size-xs);
+}
+
+.aizu-markdown th,
+.aizu-markdown td {
+  padding: 4px 6px;
+  border: 1px solid #4b544f;
+  text-align: left;
+}
+
+.aizu-markdown th {
+  color: #f4f6f5;
+  background: #303633;
+}
+
+.aizu-markdown input[type="checkbox"] {
+  margin: 0 5px 0 0;
+  accent-color: #72c8a7;
 }
 
 .aizu-banner__approval-tool {
@@ -205,13 +313,16 @@ html[data-window="banner"] body {
   border: 1px solid #4b544f;
   border-radius: 5px;
   background: #151918;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: var(--font-size-xs);
   line-height: 1.45;
   overflow-wrap: anywhere;
   user-select: text;
   white-space: pre-wrap;
   -webkit-user-select: text;
+}
+
+.aizu-banner__command code {
+  font: inherit;
 }
 
 .aizu-banner__actions {
