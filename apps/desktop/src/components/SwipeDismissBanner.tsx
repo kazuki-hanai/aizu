@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { Terminal, X } from "lucide-react";
 import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
@@ -243,6 +243,18 @@ export function SwipeDismissBanner({
       if (!decided) reset();
     });
   };
+  const chooseInTerminal = () => {
+    if (
+      !banner.approval ||
+      approvalStarted.current ||
+      dismissStarted.current
+    ) return;
+    approvalStarted.current = true;
+    setApprovalPending(true);
+    void onDismiss(banner.id).then((dismissed) => {
+      if (!dismissed) reset();
+    });
+  };
 
   return (
     <article
@@ -299,6 +311,15 @@ export function SwipeDismissBanner({
               <span className="aizu-banner__approval-tool">{banner.approval.toolName}</span>
               <pre className="aizu-banner__command"><code>{banner.approval.command}</code></pre>
               <div className="aizu-banner__actions">
+                <button
+                  className="aizu-banner__action aizu-banner__action--terminal"
+                  disabled={approvalPending}
+                  onClick={chooseInTerminal}
+                  type="button"
+                >
+                  <Terminal aria-hidden="true" size={15} />
+                  {messages(banner.language).chooseInTerminal}
+                </button>
                 <button
                   className="aizu-banner__action aizu-banner__action--deny"
                   disabled={!approvalReady || approvalPending}

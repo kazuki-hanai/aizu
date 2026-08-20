@@ -326,13 +326,16 @@ html[data-window="banner"] body {
 }
 
 .aizu-banner__actions {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
   padding-top: 3px;
 }
 
 .aizu-banner__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 30px;
   padding: 5px 11px;
   color: #f4f6f5;
@@ -342,17 +345,28 @@ html[data-window="banner"] body {
   cursor: pointer;
   font-size: var(--font-size-sm);
   font-weight: 650;
+  gap: 6px;
 }
 
 .aizu-banner__action:hover { background: #3b433f; }
 
 .aizu-banner__action--allow {
+  grid-column: 3;
   color: #10271f;
   border-color: #72c8a7;
   background: #72c8a7;
 }
 
 .aizu-banner__action--allow:hover { background: #8bd8ba; }
+
+.aizu-banner__action--terminal {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.aizu-banner__action--deny {
+  grid-column: 2;
+}
 
 .aizu-banner__action:disabled {
   cursor: default;
