@@ -1,27 +1,172 @@
 use std::{
+    collections::BTreeMap,
     fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
+        mpsc::{self, SyncSender},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use aizu_core::{
-    LocalApprovalRequest, LocalApprovalResponse, MAX_LOCAL_APPROVAL_FRAME_BYTES,
+    ApprovalDecision, LocalApprovalRequest, LocalApprovalResponse, MAX_LOCAL_APPROVAL_FRAME_BYTES,
     parse_strict_json_value,
 };
+use tauri::{AppHandle, Manager, Wry};
 use thiserror::Error;
 
+use crate::{
+    model::{AgentKind, ApprovalPresentation, Notification, NotificationDelivery, Preferences},
+    state::DesktopState,
+};
+
+const MAX_PENDING_APPROVALS: usize = 1;
 const MAX_CONNECTION_HANDLERS: usize = 4;
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(2);
+const DECISION_TIMEOUT: Duration = Duration::from_secs(45);
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Releases requests from older blocking Aizu CLIs back to the agent's
-/// terminal-owned approval flow. Current CLIs never connect to this socket.
+struct PendingApproval {
+    request_id: uuid::Uuid,
+    sender: SyncSender<LocalApprovalResponse>,
+    frontend_rendered: bool,
+    window_shown: bool,
+}
+
+impl PendingApproval {
+    fn presented(&self) -> bool {
+        self.frontend_rendered && self.window_shown
+    }
+}
+
+#[derive(Default)]
+struct ApprovalRegistry {
+    pending: Mutex<BTreeMap<i32, PendingApproval>>,
+    next_banner_id: AtomicI32,
+}
+
+impl ApprovalRegistry {
+    fn register(
+        &self,
+        request_id: uuid::Uuid,
+        sender: SyncSender<LocalApprovalResponse>,
+    ) -> Result<i32, BrokerError> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| BrokerError::StateUnavailable)?;
+        if pending.len() >= MAX_PENDING_APPROVALS {
+            return Err(BrokerError::Busy);
+        }
+        let id = self
+            .next_banner_id
+            .fetch_sub(1, Ordering::AcqRel)
+            .saturating_sub(1);
+        pending.insert(
+            id,
+            PendingApproval {
+                request_id,
+                sender,
+                frontend_rendered: false,
+                window_shown: false,
+            },
+        );
+        Ok(id)
+    }
+
+    fn mark_frontend_rendered(&self, id: i32) -> Result<bool, BrokerError> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| BrokerError::StateUnavailable)?;
+        let Some(pending) = pending.get_mut(&id) else {
+            return Ok(false);
+        };
+        pending.frontend_rendered = true;
+        Ok(true)
+    }
+
+    fn mark_window_shown(&self, id: i32) -> Result<bool, BrokerError> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| BrokerError::StateUnavailable)?;
+        let Some(pending) = pending.get_mut(&id) else {
+            return Ok(false);
+        };
+        pending.window_shown = true;
+        Ok(true)
+    }
+
+    fn complete(&self, id: i32, decision: ApprovalDecision) -> Result<bool, BrokerError> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| BrokerError::StateUnavailable)?;
+        if !pending.get(&id).is_some_and(PendingApproval::presented) {
+            return Ok(false);
+        }
+        let pending = pending.remove(&id);
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        let _ = pending.sender.send(LocalApprovalResponse::Decision {
+            request_id: pending.request_id,
+            decision,
+        });
+        Ok(true)
+    }
+
+    fn cancel(&self, id: i32) -> Result<bool, BrokerError> {
+        let pending = self
+            .pending
+            .lock()
+            .map_err(|_| BrokerError::StateUnavailable)?
+            .remove(&id);
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        let _ = pending.sender.send(LocalApprovalResponse::Unavailable {
+            request_id: pending.request_id,
+            presented: pending.presented(),
+        });
+        Ok(true)
+    }
+
+    fn expire(&self, id: i32, request_id: uuid::Uuid) -> Result<Option<bool>, BrokerError> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| BrokerError::StateUnavailable)?;
+        if pending.get(&id).map(|entry| entry.request_id) != Some(request_id) {
+            return Ok(None);
+        }
+        Ok(pending.remove(&id).map(|pending| pending.presented()))
+    }
+
+    fn cancel_all(&self) -> Vec<i32> {
+        let pending = self
+            .pending
+            .lock()
+            .map(|mut pending| std::mem::take(&mut *pending))
+            .unwrap_or_default();
+        let ids = pending.keys().copied().collect();
+        for (_, pending) in pending {
+            let _ = pending.sender.send(LocalApprovalResponse::Unavailable {
+                request_id: pending.request_id,
+                presented: pending.presented(),
+            });
+        }
+        ids
+    }
+}
+
 pub struct ApprovalBroker {
+    registry: Arc<ApprovalRegistry>,
     stop: Arc<AtomicBool>,
     listener: Mutex<Option<JoinHandle<()>>>,
     handlers: Arc<Mutex<Vec<JoinHandle<()>>>>,
@@ -29,14 +174,16 @@ pub struct ApprovalBroker {
 }
 
 impl ApprovalBroker {
-    pub fn start(socket_path: &Path) -> Self {
+    pub fn start(app: AppHandle<Wry>, socket_path: &Path) -> Self {
         let socket_path = socket_path.to_path_buf();
+        let registry = Arc::new(ApprovalRegistry::default());
         let stop = Arc::new(AtomicBool::new(false));
         let handlers = Arc::new(Mutex::new(Vec::new()));
         let active_handlers = Arc::new(AtomicUsize::new(0));
         let listener = bind_listener(&socket_path).ok();
         let bound_path = listener.as_ref().map(|_| socket_path.clone());
         let listener_thread = listener.and_then(|listener| {
+            let registry = Arc::clone(&registry);
             let stop = Arc::clone(&stop);
             let handlers_for_thread = Arc::clone(&handlers);
             thread::Builder::new()
@@ -53,11 +200,14 @@ impl ApprovalBroker {
                                 }
                                 active_handlers.fetch_add(1, Ordering::AcqRel);
                                 let guard = ActiveHandlerGuard(Arc::clone(&active_handlers));
+                                let app = app.clone();
+                                let registry = Arc::clone(&registry);
+                                let stop = Arc::clone(&stop);
                                 let handle = thread::Builder::new()
                                     .name("aizu-approval-request".to_owned())
                                     .spawn(move || {
                                         let _guard = guard;
-                                        handle_connection(stream);
+                                        handle_connection(&app, &registry, &stop, stream);
                                     });
                                 if let Ok(handle) = handle
                                     && let Ok(mut handlers) = handlers_for_thread.lock()
@@ -76,6 +226,7 @@ impl ApprovalBroker {
                 .ok()
         });
         Self {
+            registry,
             stop,
             listener: Mutex::new(listener_thread),
             handlers,
@@ -83,8 +234,29 @@ impl ApprovalBroker {
         }
     }
 
+    pub fn decide(&self, id: i32, decision: ApprovalDecision) -> Result<bool, BrokerError> {
+        self.registry.complete(id, decision)
+    }
+
+    pub fn mark_frontend_rendered(&self, id: i32) -> Result<bool, BrokerError> {
+        self.registry.mark_frontend_rendered(id)
+    }
+
+    pub fn mark_window_shown(&self, id: i32) -> Result<bool, BrokerError> {
+        self.registry.mark_window_shown(id)
+    }
+
+    pub fn cancel(&self, id: i32) -> Result<bool, BrokerError> {
+        self.registry.cancel(id)
+    }
+
+    pub fn cancel_all(&self) -> Vec<i32> {
+        self.registry.cancel_all()
+    }
+
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::Release);
+        let _ = self.registry.cancel_all();
         if let Ok(mut listener) = self.listener.lock()
             && let Some(listener) = listener.take()
         {
@@ -115,17 +287,139 @@ impl Drop for ActiveHandlerGuard {
     }
 }
 
-fn handle_connection(mut stream: std::os::unix::net::UnixStream) {
+fn handle_connection(
+    app: &AppHandle<Wry>,
+    registry: &ApprovalRegistry,
+    stop: &AtomicBool,
+    mut stream: std::os::unix::net::UnixStream,
+) {
     let Ok(request) = read_request(&mut stream) else {
         return;
     };
-    let _ = write_response(
-        &mut stream,
-        LocalApprovalResponse::Unavailable {
-            request_id: request.request_id,
-            presented: false,
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let Ok(id) = registry.register(request.request_id, sender) else {
+        let _ = write_response(
+            &mut stream,
+            LocalApprovalResponse::Unavailable {
+                request_id: request.request_id,
+                presented: false,
+            },
+        );
+        return;
+    };
+    let preferences = if let Ok(state) = app.state::<DesktopState>().lock() {
+        state.view().preferences
+    } else {
+        let _ = registry.expire(id, request.request_id);
+        let _ = write_response(
+            &mut stream,
+            LocalApprovalResponse::Unavailable {
+                request_id: request.request_id,
+                presented: false,
+            },
+        );
+        return;
+    };
+    if !preferences.command_approvals_enabled {
+        let _ = registry.expire(id, request.request_id);
+        let _ = write_response(
+            &mut stream,
+            LocalApprovalResponse::Unavailable {
+                request_id: request.request_id,
+                presented: false,
+            },
+        );
+        return;
+    }
+    let notification = approval_notification(&request, &preferences, id);
+    if crate::banner::show(app, &notification).is_err() {
+        let _ = crate::banner::dismiss(app, id);
+        let _ = registry.expire(id, request.request_id);
+        let _ = write_response(
+            &mut stream,
+            LocalApprovalResponse::Unavailable {
+                request_id: request.request_id,
+                presented: false,
+            },
+        );
+        return;
+    }
+    let deadline = Instant::now() + DECISION_TIMEOUT;
+    let response = loop {
+        if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
+            break None;
+        }
+        match receiver.recv_timeout(STOP_POLL_INTERVAL) {
+            Ok(response) => break Some(response),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break None,
+        }
+    };
+    let response = response.unwrap_or_else(|| expiry_response(registry, id, request.request_id));
+    let _ = registry.expire(id, request.request_id);
+    // The handler also owns cleanup so a cancellation that races banner
+    // presentation cannot leave an orphaned approval visible.
+    let _ = crate::banner::dismiss(app, id);
+    let _ = write_response(&mut stream, response);
+}
+
+fn expiry_response(
+    registry: &ApprovalRegistry,
+    id: i32,
+    request_id: uuid::Uuid,
+) -> LocalApprovalResponse {
+    let presented = registry
+        .expire(id, request_id)
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+    LocalApprovalResponse::Unavailable {
+        request_id,
+        presented,
+    }
+}
+
+fn approval_notification(
+    request: &LocalApprovalRequest,
+    preferences: &Preferences,
+    id: i32,
+) -> Notification {
+    let japanese = preferences.language.prefers_japanese();
+    let agent = match request.agent {
+        aizu_core::AgentKind::Codex => AgentKind::Codex,
+        aizu_core::AgentKind::ClaudeCode => AgentKind::ClaudeCode,
+    };
+    let agent_label = match agent {
+        AgentKind::Codex => "Codex",
+        AgentKind::ClaudeCode => "Claude Code",
+    };
+    Notification {
+        id,
+        title: if japanese {
+            format!("{agent_label} が実行許可を求めています")
+        } else {
+            format!("{agent_label} requests permission")
         },
-    );
+        body: if japanese {
+            "コマンドを確認して選択してください。"
+        } else {
+            "Review the command before choosing."
+        }
+        .to_owned(),
+        sound: preferences
+            .sound_enabled
+            .then_some(preferences.notification_sound),
+        delivery: NotificationDelivery::AizuBanner,
+        language: preferences.language,
+        text_size: preferences.text_size,
+        can_activate_terminal: false,
+        approval: Some(ApprovalPresentation {
+            agent,
+            tool_name: request.tool_name.clone(),
+            command: request.command.clone(),
+        }),
+        activation: None,
+    }
 }
 
 fn read_request(
@@ -222,6 +516,10 @@ fn reap_handlers(handlers: &Mutex<Vec<JoinHandle<()>>>) {
 
 #[derive(Debug, Error)]
 pub enum BrokerError {
+    #[error("local approval state is unavailable")]
+    StateUnavailable,
+    #[error("another local approval is already pending")]
+    Busy,
     #[error("the local approval frame is invalid")]
     InvalidFrame,
     #[error("local approval transport failed: {0}")]
@@ -230,46 +528,109 @@ pub enum BrokerError {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::mpsc};
 
-    use aizu_core::{
-        AgentKind, LOCAL_APPROVAL_PROTOCOL_VERSION, LocalApprovalRequest, LocalApprovalResponse,
-    };
+    use aizu_core::{ApprovalDecision, LocalApprovalResponse};
 
-    use super::{bind_listener, handle_connection};
+    use super::{ApprovalRegistry, bind_listener, expiry_response};
 
-    #[cfg(unix)]
     #[test]
-    fn legacy_clients_are_released_to_the_terminal_without_a_decision() {
-        use std::{
-            io::{Read, Write},
-            os::unix::net::UnixStream,
-        };
+    fn decisions_are_one_shot_and_preserve_the_request_identifier() {
+        let registry = ApprovalRegistry::default();
+        let request_id = uuid::Uuid::new_v4();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let id = registry.register(request_id, sender).unwrap();
 
-        let request = LocalApprovalRequest::new(
-            uuid::Uuid::new_v4(),
-            AgentKind::Codex,
-            "Bash".to_owned(),
-            "printf 'terminal owns approval'".to_owned(),
-        )
-        .unwrap();
-        assert_eq!(request.version, LOCAL_APPROVAL_PROTOCOL_VERSION);
-        let (mut client, server) = UnixStream::pair().unwrap();
-        let handler = std::thread::spawn(move || handle_connection(server));
-        serde_json::to_writer(&mut client, &request).unwrap();
-        client.write_all(b"\n").unwrap();
-        client.shutdown(std::net::Shutdown::Write).unwrap();
-        let mut response = String::new();
-        client.read_to_string(&mut response).unwrap();
-        handler.join().unwrap();
-
+        assert!(registry.mark_window_shown(id).unwrap());
+        assert!(registry.mark_frontend_rendered(id).unwrap());
+        assert!(registry.complete(id, ApprovalDecision::AllowOnce).unwrap());
+        assert!(!registry.complete(id, ApprovalDecision::Deny).unwrap());
         assert_eq!(
-            serde_json::from_str::<LocalApprovalResponse>(response.trim()).unwrap(),
+            receiver.recv().unwrap(),
+            LocalApprovalResponse::Decision {
+                request_id,
+                decision: ApprovalDecision::AllowOnce,
+            }
+        );
+    }
+
+    #[test]
+    fn only_one_command_approval_can_wait_at_a_time() {
+        let registry = ApprovalRegistry::default();
+        let (first_sender, _first_receiver) = mpsc::sync_channel(1);
+        registry
+            .register(uuid::Uuid::new_v4(), first_sender)
+            .unwrap();
+        let (second_sender, _second_receiver) = mpsc::sync_channel(1);
+
+        assert!(
+            registry
+                .register(uuid::Uuid::new_v4(), second_sender)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cancellation_reports_presentation_without_fabricating_a_denial() {
+        let registry = ApprovalRegistry::default();
+        let request_id = uuid::Uuid::new_v4();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let id = registry.register(request_id, sender).unwrap();
+
+        assert!(registry.cancel(id).unwrap());
+        assert!(!registry.cancel(id).unwrap());
+        assert_eq!(
+            receiver.recv().unwrap(),
             LocalApprovalResponse::Unavailable {
-                request_id: request.request_id,
+                request_id,
                 presented: false,
             }
         );
+
+        let presented_request_id = uuid::Uuid::new_v4();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let id = registry.register(presented_request_id, sender).unwrap();
+        assert!(registry.mark_window_shown(id).unwrap());
+        assert!(registry.mark_frontend_rendered(id).unwrap());
+        assert!(registry.cancel(id).unwrap());
+        assert_eq!(
+            receiver.recv().unwrap(),
+            LocalApprovalResponse::Unavailable {
+                request_id: presented_request_id,
+                presented: true,
+            }
+        );
+    }
+
+    #[test]
+    fn only_a_presented_request_can_be_approved() {
+        let registry = ApprovalRegistry::default();
+        let request_id = uuid::Uuid::new_v4();
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let id = registry.register(request_id, sender).unwrap();
+
+        assert!(registry.mark_frontend_rendered(id).unwrap());
+        assert!(!registry.complete(id, ApprovalDecision::AllowOnce).unwrap());
+        assert!(registry.mark_window_shown(id).unwrap());
+        assert!(registry.complete(id, ApprovalDecision::AllowOnce).unwrap());
+    }
+
+    #[test]
+    fn a_frontend_ack_without_a_successful_window_show_is_not_presented() {
+        let registry = ApprovalRegistry::default();
+        let request_id = uuid::Uuid::new_v4();
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let id = registry.register(request_id, sender).unwrap();
+        assert!(registry.mark_frontend_rendered(id).unwrap());
+
+        assert_eq!(
+            expiry_response(&registry, id, request_id),
+            LocalApprovalResponse::Unavailable {
+                request_id,
+                presented: false,
+            }
+        );
+        assert!(!registry.complete(id, ApprovalDecision::AllowOnce).unwrap());
     }
 
     #[cfg(unix)]

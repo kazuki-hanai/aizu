@@ -72,7 +72,7 @@ GitHub Releases はアプリの配布・更新ファイルの静的ホスティ�
 - iPhone / Apple Watch アプリ、APNs 配信
 - Slack / Discord / Teams 連携
 - Windows/Linux 向けデスクトップアプリの正式配布
-- 通知から許可、拒否、自由形式の回答を返す操作、永続的な許可、または Aizu 自身による tool 実行
+- 通知から自由形式の回答を返す操作、永続的な許可、permission rule変更、または Aizu 自身による tool 実行。local exact shell commandに対する設定オプトイン式の一回限り許可・拒否だけは §13.5 の例外とする
 - ターミナル画面や標準出力を常時スクレイピングして状態を推測する機能
 - エージェントの会話全文や生成結果の同期・保存
 - パスワードや SSH 秘密鍵の独自管理
@@ -740,16 +740,18 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 - install 先が symlink、user 所有でない file、または user が配置した異なる binary の場合は無断で上書きしない
 - unmanaged/incompatible CLI が hook path に残る場合、共有 local spool を新 schema へ migrate せず local source を warning/read-only にし、CLI path の解決または明示的 install を要求する
 - hook 設定には絶対パスの利用を推奨
-- `aizu integration-config` は絶対 CLI path を検証し、Codex の `Stop` と Claude Code の `Stop` / `StopFailure` は 5 秒上限の同期 hook、両 agent の `PermissionRequest` は5秒上限の background hookとして出力する。background hookは通知イベントだけを保存し、agentの標準許可画面を待たせず、decisionを返さない。既存 user hook は structured JSON merge で保持し、過去のAizu生成50秒同期hookはbackground形へ置換する。Codex の hook trust review は省略しない
+- `aizu integration-config` は絶対 CLI path を検証し、Codex の `Stop` と Claude Code の `Stop` / `StopFailure` は5秒上限の同期hook、両agentの `PermissionRequest` は50秒上限の同期hookとして出力する。設定がオフならlocal brokerは即時 `unavailable` を返すためagentの標準許可画面を実質的に待たせない。既存user hookはstructured JSON mergeで保持し、過去のAizu生成5秒background PermissionRequest hookは同期形へ置換する。Codexのhook trust reviewは省略しない
 - `aizu integration-install` は引数なしで Codex と Claude Code の両方、`--agent` 指定時は一方だけを current user に設定する。両方の既存 JSON と保存先 directory を書込前に検証し、無関係な key/handler を保持し、128 KiB 上限、home 外への symlink、dangling symlink、unsafe directory、invalid JSON、incompatible hook shape を拒否する。Aizu installer 同士は `~/.aizu/hooks.lock` で直列化し、lock 取得後に全入力を再読込する。agent や editor はこの lock に参加しないため同時編集を禁止し、各 rename 直前の byte 比較で検出可能な競合を拒否する。変更時は同一 directory の `0600` temporary file を fsync して atomic rename し、新規 directory は `0700`、最終 file は `0600` とする。Claude Code の `disableAllHooks` は無断で解除せず、Codex の hook trust review も省略しない。machine-readable result は agent、更新状態、承認要否だけを返し、path や既存設定内容を出さない
 
 ### 13.5 Local command approval
 
-- first-party `PermissionRequest` は5秒上限のbackground command hookで受ける。CLIはprivacy-safeな `agent.question` eventをspoolへ保存するだけで、stdoutへdecisionを返さず、agentの標準許可画面を待たせない
-- Aizu BannerとNotification Centerはfiltered excerptだけを表示する。raw commandはspool、desktop DB、history、settings、log、notification、SSH frameへ保存・転送しない。verified local terminal descriptorがある場合のクリックは対象terminalへ戻すだけで、allow/denyを実行しない
-- Aizuはallow、deny、常時許可、permission rule変更、free-form回答、command実行、terminalへの入力注入を提供しない。local/remoteとも許可判断はagentの標準terminal UIだけで行う
-- 旧CLI互換のprivate socketはrequestへ即座に `unavailable` / `presented: false` を返し、legacy approval bannerを出さない。既知のAizu生成50秒同期hookはstructured mergeで5秒background形へ置換し、無関係なhookは保持する
-- persisted settingsの `command_approvals_enabled` は旧schema読込互換のため保持するがUIには出さず、notification policyやbrokerの動作に使わない
+- first-party local `PermissionRequest` は50秒上限の同期command hookで受ける。`command_approvals_enabled` は既定オフで、オフならprivate local brokerが即時 `unavailable` / `presented: false` を返し、CLIはdecisionをstdoutへ返さずagentの標準terminal UIを続行させる
+- 設定オン時だけ、canonical `Bash` toolのbounded exact commandをprivate Unix-domain socket経由でAizu Bannerへ一時表示する。bannerは `Deny` / `Allow once` だけを提供し、native window showとfrontend render ackの両方が確認できたrequestだけを一回限り消費する
+- close、swipe、timeout、app停止、設定オフへの変更、broker不在、別request待機中、表示失敗はdenyを捏造せずno decisionで終了し、その後agentの標準terminal UIへ戻す。`Choose in terminal` の中間buttonは設けない。同期hook契約上、Aizu Bannerとterminalを同時にactionableにはしない
+- raw commandはhook process、private socket buffer、desktop memory、banner WebViewにだけ一時保持し、spool、desktop DB、history、notification outbox、settings、log、SSH bridge、macOS Notification Centerへ保存・転送しない。banner以外のWebViewからraw command取得・ack・decision・dismissを拒否し、frontend event emit権限も与えない
+- CLIはagentの構造化allow/deny responseだけを返す。Aizuはcommandを実行せず、常時許可、permission rule変更、free-form回答、terminal入力注入を提供しない
+- settings schema v2は旧default-on値をfalseへ移行し、upgrade後に明示的な再オプトインを要求する。v2以降の明示選択は保持する
+- macOS Notification Centerとremote SSH PermissionRequestはpassiveのままにし、remoteの許可判断はsource terminalだけで行う
 
 ### 13.6 App icon, tray icon, and branding assets
 

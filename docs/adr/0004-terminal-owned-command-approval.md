@@ -1,6 +1,6 @@
 # ADR 0004: Agent terminals own command approval
 
-- Status: Accepted
+- Status: Superseded by [ADR 0005](0005-optional-notification-command-approval.md)
 - Date: 2026-08-21
 - Deciders: repository owner
 - Supersedes: [ADR 0003](0003-local-command-approval-from-aizu-banner.md)

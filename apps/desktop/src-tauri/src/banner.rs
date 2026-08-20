@@ -81,10 +81,16 @@ impl BannerState {
             self.dirty.store(true, Ordering::Release);
             return Ok(());
         }
-        if banners.len() == MAX_VISIBLE_BANNERS
-            && let Some(evicted) = banners.pop_front()
-        {
-            activation_claims.remove(&evicted.id);
+        if banners.len() == MAX_VISIBLE_BANNERS {
+            let eviction = banners.iter().position(|banner| banner.approval.is_none());
+            let Some(eviction) = eviction else {
+                return Err(NotifyError::Scheduling(
+                    "all Aizu banner slots are waiting for approval".to_owned(),
+                ));
+            };
+            if let Some(evicted) = banners.remove(eviction) {
+                activation_claims.remove(&evicted.id);
+            }
         }
         banners.push_back(notification);
         self.dirty.store(true, Ordering::Release);
@@ -232,6 +238,7 @@ impl BannerState {
         let ids = self
             .snapshot()?
             .into_iter()
+            .filter(|banner| banner.approval.is_none())
             .map(|banner| banner.id)
             .collect::<Vec<_>>();
         for id in ids {
@@ -422,6 +429,11 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     window
         .show()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
+    if let Some(broker) = app.try_state::<crate::approval_broker::ApprovalBroker>() {
+        for banner in snapshot.iter().filter(|banner| banner.approval.is_some()) {
+            let _ = broker.mark_window_shown(banner.id);
+        }
+    }
     app.emit_to(BANNER_WINDOW, "aizu://banners-changed", &snapshot)
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
     if let Some(sound) = app.state::<BannerState>().take_pending_sound(generation)? {
@@ -432,6 +444,14 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
 
 pub fn banners(app: &AppHandle<Wry>) -> Result<Vec<Notification>, NotifyError> {
     app.state::<BannerState>().snapshot()
+}
+
+pub fn has_approval(app: &AppHandle<Wry>, id: i32) -> Result<bool, NotifyError> {
+    Ok(app
+        .state::<BannerState>()
+        .snapshot()?
+        .iter()
+        .any(|banner| banner.id == id && banner.approval.is_some()))
 }
 
 pub fn update_text_size(app: &AppHandle<Wry>, text_size: TextSize) -> Result<(), NotifyError> {
@@ -562,6 +582,7 @@ mod tests {
             language: crate::model::LanguagePreference::English,
             text_size: crate::model::TextSize::Standard,
             can_activate_terminal: false,
+            approval: None,
             activation: None,
         }
     }
@@ -585,14 +606,43 @@ mod tests {
     }
 
     #[test]
-    fn clearing_passive_notifications_removes_every_banner() {
+    fn ordinary_notifications_do_not_evict_a_pending_command_approval() {
+        let state = BannerState::default();
+        state.push(notification(1, "first")).unwrap();
+        let mut approval = notification(-1, "review command");
+        approval.approval = Some(crate::model::ApprovalPresentation {
+            agent: crate::model::AgentKind::Codex,
+            tool_name: "Bash".to_owned(),
+            command: "printf approved".to_owned(),
+        });
+        state.push(approval).unwrap();
+        state.push(notification(2, "second")).unwrap();
+        state.push(notification(3, "third")).unwrap();
+
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(snapshot.len(), MAX_VISIBLE_BANNERS);
+        assert!(snapshot.iter().any(|banner| banner.id == -1));
+        assert!(!snapshot.iter().any(|banner| banner.id == 1));
+    }
+
+    #[test]
+    fn clearing_passive_notifications_preserves_command_approvals() {
         let state = BannerState::default();
         state.push(notification(1, "ordinary")).unwrap();
-        state.push(notification(2, "question")).unwrap();
+        let mut approval = notification(-1, "review command");
+        approval.approval = Some(crate::model::ApprovalPresentation {
+            agent: crate::model::AgentKind::Codex,
+            tool_name: "Bash".to_owned(),
+            command: "printf approved".to_owned(),
+        });
+        state.push(approval).unwrap();
 
         state.clear_passive().unwrap();
 
-        assert!(state.snapshot().unwrap().is_empty());
+        let snapshot = state.snapshot().unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].id, -1);
+        assert!(snapshot[0].approval.is_some());
     }
 
     #[test]

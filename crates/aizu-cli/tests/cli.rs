@@ -469,10 +469,35 @@ fn hook_is_best_effort_unless_strict() {
         .failure();
 }
 
+#[cfg(unix)]
 #[test]
-fn permission_hook_returns_no_decision_and_persists_a_passive_event() {
+fn permission_hook_returns_a_one_shot_local_broker_decision() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+
     let directory = TempDir::new().unwrap();
     fs::create_dir_all(directory.path()).unwrap();
+    let socket = directory.path().join("approval.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let broker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0_u8; 1];
+        while stream.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {
+            request.push(byte[0]);
+        }
+        let request: aizu_core::LocalApprovalRequest = serde_json::from_slice(&request).unwrap();
+        assert_eq!(request.agent, aizu_core::AgentKind::Codex);
+        assert_eq!(request.tool_name, "Bash");
+        assert_eq!(request.command, "printf 'approved'");
+        let response = aizu_core::LocalApprovalResponse::Decision {
+            request_id: request.request_id,
+            decision: aizu_core::ApprovalDecision::AllowOnce,
+        };
+        serde_json::to_writer(&mut stream, &response).unwrap();
+        stream.write_all(b"\n").unwrap();
+    });
+
     let output = aizu()
         .args([
             "--state-dir",
@@ -490,20 +515,57 @@ fn permission_hook_returns_no_decision_and_persists_a_passive_event() {
         .output()
         .unwrap();
 
+    broker.join().unwrap();
     assert!(output.status.success(), "{output:?}");
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        response["hookSpecificOutput"]["decision"]["behavior"],
+        "allow"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("printf"));
+    let fallback = aizu()
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "hook",
+            "--agent",
+            "codex",
+            "--event",
+            "PermissionRequest",
+            "--strict",
+        ])
+        .write_stdin(
+            r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"printf 'terminal fallback'","description":"Run it?"}}"#,
+        )
+        .output()
+        .unwrap();
+    assert!(fallback.status.success(), "{fallback:?}");
+    assert!(fallback.stdout.is_empty());
+    assert!(fallback.stderr.is_empty());
 
     let spool = Spool::open(StatePaths::new(directory.path())).unwrap();
     let events = spool.events_after(0, Some(10)).unwrap();
-    assert_eq!(events.len(), 1);
-    let event = &events[0].event;
-    assert_eq!(event.kind.as_str(), "agent.question");
-    assert!(event.metadata.as_ref().is_none_or(|metadata| {
+    assert_eq!(events.len(), 2);
+    let presented = &events[0].event;
+    assert_eq!(presented.kind.as_str(), "agent.question");
+    assert_eq!(
+        presented
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get(aizu_core::LOCAL_APPROVAL_PRESENTED_METADATA_KEY))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    let fallback = &events[1].event;
+    assert_eq!(fallback.kind.as_str(), "agent.question");
+    assert!(fallback.metadata.as_ref().is_none_or(|metadata| {
         !metadata.contains_key(aizu_core::LOCAL_APPROVAL_PRESENTED_METADATA_KEY)
     }));
-    let serialized = serde_json::to_string(event).unwrap();
-    assert!(!serialized.contains("printf 'approved'"));
+    for event in &events {
+        let serialized = serde_json::to_string(&event.event).unwrap();
+        assert!(!serialized.contains("printf 'approved'"));
+        assert!(!serialized.contains("printf 'terminal fallback'"));
+    }
 }
 
 #[test]
@@ -1118,14 +1180,6 @@ fn integration_config_prints_both_first_party_agent_hook_shapes() {
             .unwrap()
             .contains("--agent codex --event PermissionRequest")
     );
-    assert_eq!(
-        codex["hooks"]["PermissionRequest"][0]["hooks"][0]["async"],
-        true
-    );
-    assert_eq!(
-        codex["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
-        5
-    );
 
     let claude = aizu()
         .args([
@@ -1147,10 +1201,6 @@ fn integration_config_prints_both_first_party_agent_hook_shapes() {
         claude["hooks"]["StopFailure"][0]["hooks"][0]
             .get("args")
             .is_none()
-    );
-    assert_eq!(
-        claude["hooks"]["PermissionRequest"][0]["hooks"][0]["async"],
-        true
     );
 }
 
