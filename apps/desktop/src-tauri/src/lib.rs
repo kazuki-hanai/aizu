@@ -32,12 +32,11 @@ use crate::commands::{
 };
 use crate::{
     commands::{
-        acknowledge_banner_approval, activate_banner, add_remote_source, clear_history,
-        complete_onboarding, configure_agents, confirm_codex_hook_trust, confirm_remote_identity,
-        decide_banner_approval, dismiss_banner, get_app_view, get_banners, install_cli,
-        reconnect_remote_source, remove_remote_source, request_notification_permission,
-        resize_banner, send_test_notification, set_notifications_paused, test_ssh_connection,
-        update_preferences,
+        activate_banner, add_remote_source, clear_history, complete_onboarding, configure_agents,
+        confirm_codex_hook_trust, confirm_remote_identity, dismiss_banner, get_app_view,
+        get_banners, install_cli, reconnect_remote_source, remove_remote_source,
+        request_notification_permission, resize_banner, send_test_notification,
+        set_notifications_paused, test_ssh_connection, update_preferences,
     },
     state::{AppService, DesktopState},
     store::SettingsStore,
@@ -135,7 +134,6 @@ pub fn run() {
             let initial_view = service.view();
             app.manage(DesktopState::new(service));
             app.manage(approval_broker::ApprovalBroker::start(
-                app.handle().clone(),
                 &state_paths.approval_socket(),
             ));
             #[cfg(feature = "desktop-e2e")]
@@ -158,9 +156,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_banners,
             dismiss_banner,
-            acknowledge_banner_approval,
             activate_banner,
-            decide_banner_approval,
             resize_banner,
             get_app_view,
             complete_onboarding,

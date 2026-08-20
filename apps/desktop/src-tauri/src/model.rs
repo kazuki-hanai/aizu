@@ -370,24 +370,8 @@ pub struct Notification {
     pub language: LanguagePreference,
     pub text_size: TextSize,
     pub can_activate_terminal: bool,
-    pub approval: Option<ApprovalPresentation>,
     #[serde(skip_serializing)]
     pub activation: Option<aizu_core::TerminalActivation>,
-}
-
-#[derive(Clone, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApprovalPresentation {
-    pub agent: AgentKind,
-    pub tool_name: String,
-    pub command: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ApprovalAction {
-    AllowOnce,
-    Deny,
 }
 
 #[cfg(test)]

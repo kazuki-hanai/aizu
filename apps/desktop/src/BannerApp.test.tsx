@@ -64,7 +64,6 @@ const notices: BannerNotification[] = [
     language: "en",
     textSize: "standard",
     canActivateTerminal: true,
-    approval: null,
   },
   {
     id: 2,
@@ -75,7 +74,6 @@ const notices: BannerNotification[] = [
     language: "en",
     textSize: "standard",
     canActivateTerminal: false,
-    approval: null,
   },
 ];
 
@@ -88,11 +86,6 @@ function client(): BannerClient {
       return Promise.resolve();
     }),
     activate: vi.fn((id: number) => {
-      queued = queued.filter((notice) => notice.id !== id);
-      return Promise.resolve();
-    }),
-    acknowledgeApproval: vi.fn().mockResolvedValue(undefined),
-    decideApproval: vi.fn((id: number) => {
       queued = queued.filter((notice) => notice.id !== id);
       return Promise.resolve();
     }),
@@ -454,91 +447,4 @@ describe("Aizu Banner", () => {
     expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument();
   });
 
-  it("shows the exact command and returns a one-shot approval decision", async () => {
-    const backend = client();
-    const pendingAcknowledgement = deferred<undefined>();
-    const pendingDecision = deferred<undefined>();
-    const approval: BannerNotification = {
-      ...notices[1],
-      id: -1,
-      title: "Codex requests permission",
-      body: "Review the exact command before choosing.",
-      approval: {
-        agent: "codex",
-        toolName: "Bash",
-        command: "printf 'first line'\nprintf 'second line'",
-      },
-    };
-    let approvalQueue = [approval];
-    backend.getBanners = vi.fn(() => Promise.resolve(approvalQueue));
-    backend.acknowledgeApproval = vi.fn(() => pendingAcknowledgement.promise);
-    backend.decideApproval = vi.fn(() => pendingDecision.promise.then(() => {
-      approvalQueue = [];
-    }));
-    const { container } = render(<BannerApp client={backend} />);
-
-    expect(await screen.findByText("Codex requests permission")).toBeVisible();
-    expect(container.querySelector(".aizu-banner__command")?.textContent).toBe(
-      approval.approval?.command,
-    );
-    const allow = screen.getByRole("button", { name: "Allow once" });
-    const deny = screen.getByRole("button", { name: "Deny" });
-    const terminal = screen.getByRole("button", { name: "Choose in terminal" });
-    expect(allow).toBeDisabled();
-    expect(deny).toBeDisabled();
-    expect(terminal).toBeEnabled();
-    await waitFor(() => expect(backend.acknowledgeApproval).toHaveBeenCalledWith(-1));
-    pendingAcknowledgement.resolve(undefined);
-    await waitFor(() => expect(allow).toBeEnabled());
-    await userEvent.click(allow);
-
-    expect(allow).toBeDisabled();
-    expect(deny).toBeDisabled();
-    await userEvent.click(deny);
-    expect(backend.decideApproval).toHaveBeenCalledTimes(1);
-    expect(backend.decideApproval).toHaveBeenCalledWith(-1, "allowOnce");
-    pendingDecision.resolve(undefined);
-    await waitFor(() => {
-      expect(screen.queryByText("Codex requests permission")).not.toBeInTheDocument();
-    });
-  });
-
-  it("returns an approval to the terminal without waiting for render acknowledgement", async () => {
-    const backend = client();
-    const pendingAcknowledgement = deferred<undefined>();
-    const pendingDismiss = deferred<undefined>();
-    const approval: BannerNotification = {
-      ...notices[1],
-      id: -2,
-      title: "Codex が実行許可を求めています",
-      body: "ここで選ぶか、Terminalで標準の許可画面を開いてください。",
-      language: "ja",
-      approval: {
-        agent: "codex",
-        toolName: "Bash",
-        command: "printf 'terminal fallback'",
-      },
-    };
-    let approvalQueue = [approval];
-    backend.getBanners = vi.fn(() => Promise.resolve(approvalQueue));
-    backend.acknowledgeApproval = vi.fn(() => pendingAcknowledgement.promise);
-    backend.dismiss = vi.fn(() => pendingDismiss.promise.then(() => {
-      approvalQueue = [];
-    }));
-    render(<BannerApp client={backend} />);
-
-    const terminal = await screen.findByRole("button", { name: "Terminalで選ぶ" });
-    expect(screen.getByRole("button", { name: "今回だけ許可" })).toBeDisabled();
-    expect(terminal).toBeEnabled();
-    await userEvent.click(terminal);
-
-    expect(backend.dismiss).toHaveBeenCalledTimes(1);
-    expect(backend.dismiss).toHaveBeenCalledWith(-2);
-    expect(backend.decideApproval).not.toHaveBeenCalled();
-    expect(terminal).toBeDisabled();
-    pendingDismiss.resolve(undefined);
-    await waitFor(() => {
-      expect(screen.queryByText("Codex が実行許可を求めています")).not.toBeInTheDocument();
-    });
-  });
 });

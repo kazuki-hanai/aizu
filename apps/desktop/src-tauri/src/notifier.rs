@@ -657,7 +657,6 @@ mod tests {
             language: crate::model::LanguagePreference::English,
             text_size: crate::model::TextSize::Standard,
             can_activate_terminal: false,
-            approval: None,
             activation: None,
         };
 

@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::AgentKind;
 
 const HOOK_TIMEOUT_SECONDS: u8 = 5;
-const PERMISSION_REQUEST_TIMEOUT_SECONDS: u8 = 50;
+const LEGACY_PERMISSION_REQUEST_TIMEOUT_SECONDS: u8 = 50;
 
 /// Builds a first-party user hook configuration without reading or modifying
 /// the agent's configuration files.
@@ -90,7 +90,8 @@ fn is_generated_aizu_handler(handler: &Value, agent: AgentKind, event: &str) -> 
         return false;
     };
     if timeout != u64::from(hook_timeout_seconds(event))
-        && !(event == "PermissionRequest" && timeout == u64::from(HOOK_TIMEOUT_SECONDS))
+        && !(event == "PermissionRequest"
+            && timeout == u64::from(LEGACY_PERMISSION_REQUEST_TIMEOUT_SECONDS))
     {
         return false;
     }
@@ -188,7 +189,8 @@ fn codex_configuration(executable: &str) -> Value {
                 "hooks": [{
                     "type": "command",
                     "command": command("PermissionRequest"),
-                    "timeout": hook_timeout_seconds("PermissionRequest")
+                    "timeout": hook_timeout_seconds("PermissionRequest"),
+                    "async": true
                 }]
             }]
         }
@@ -197,14 +199,18 @@ fn codex_configuration(executable: &str) -> Value {
 
 fn claude_code_configuration(executable: &str) -> Value {
     let handler = |event: &str| {
-        json!({
+        let mut handler = json!({
             "type": "command",
             "command": format!(
                 "{} hook --agent claude-code --event {event}",
                 shell_quote(executable)
             ),
             "timeout": hook_timeout_seconds(event)
-        })
+        });
+        if event == "PermissionRequest" {
+            handler["async"] = Value::Bool(true);
+        }
+        handler
     };
     json!({
         "hooks": {
@@ -215,12 +221,8 @@ fn claude_code_configuration(executable: &str) -> Value {
     })
 }
 
-fn hook_timeout_seconds(event: &str) -> u8 {
-    if event == "PermissionRequest" {
-        PERMISSION_REQUEST_TIMEOUT_SECONDS
-    } else {
-        HOOK_TIMEOUT_SECONDS
-    }
+fn hook_timeout_seconds(_event: &str) -> u8 {
+    HOOK_TIMEOUT_SECONDS
 }
 
 fn shell_quote(value: &str) -> String {
@@ -252,17 +254,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_configures_completion_and_permission_as_bounded_sync_hooks() {
+    fn codex_configures_completion_sync_and_permission_in_background() {
         let config = hook_configuration(AgentKind::Codex, Path::new("/Users/me/.local/bin/aizu"))
             .expect("configuration");
         assert_eq!(config["hooks"]["Stop"][0]["hooks"][0]["timeout"], 5);
         assert_eq!(
             config["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
-            50
+            5
         );
         assert_eq!(
             config["hooks"]["PermissionRequest"][0]["hooks"][0].get("async"),
-            None
+            Some(&Value::Bool(true))
         );
         let serialized = config.to_string();
         assert!(serialized.contains("--agent codex --event Stop"));
@@ -283,7 +285,7 @@ mod tests {
         );
         assert_eq!(
             config["hooks"]["PermissionRequest"][0]["hooks"][0].get("async"),
-            None
+            Some(&Value::Bool(true))
         );
     }
 
@@ -419,6 +421,38 @@ mod tests {
             merge_hook_configuration(AgentKind::Codex, &codex, path).expect("repeat migration"),
             codex
         );
+    }
+
+    #[test]
+    fn merge_migrates_blocking_permission_hooks_to_background() {
+        let path = Path::new("/Users/me/.local/bin/aizu");
+        for (agent, name) in [
+            (AgentKind::Codex, "codex"),
+            (AgentKind::ClaudeCode, "claude-code"),
+        ] {
+            let existing = json!({
+                "hooks": {
+                    "PermissionRequest": [{"hooks": [{
+                        "type": "command",
+                        "command": format!(
+                            "'/Users/me/.local/bin/aizu' hook --agent {name} --event PermissionRequest"
+                        ),
+                        "timeout": 50
+                    }]}]
+                }
+            });
+            let merged = merge_hook_configuration(agent, &existing, path)
+                .expect("migrate blocking permission hook");
+            let handlers: Vec<_> = merged["hooks"]["PermissionRequest"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(hook_handlers)
+                .collect();
+            assert_eq!(handlers.len(), 1);
+            assert_eq!(handlers[0]["timeout"], 5);
+            assert_eq!(handlers[0]["async"], true);
+        }
     }
 
     #[test]

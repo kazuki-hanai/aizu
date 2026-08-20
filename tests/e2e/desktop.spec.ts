@@ -45,9 +45,6 @@ type CapturedNotification = {
   body: string;
   textSize: string;
   canActivateTerminal: boolean;
-  approval?: {
-    command: string;
-  } | null;
 };
 
 const invokeView = async (command: string, args?: Record<string, unknown>): Promise<View> => {
@@ -266,7 +263,10 @@ describe("Aizu desktop MVP", () => {
     }, { timeout: 2_000, timeoutMsg: "swiped banner remained in the backend queue" });
     await browser.switchToWindow("main");
     await expect($("h1=Agents")).toBeDisplayed();
-    const permissionHook = runPermissionHook(stateRoot as string);
+    const hookResult = await runPermissionHook(stateRoot as string);
+    expect(hookResult.code).toBe(0);
+    expect(hookResult.stderr).toBe("");
+    expect(hookResult.stdout).toBe("");
     const blockedBannerRead = await browser.execute(async () => {
       const core = (window as typeof window & {
         __TAURI__?: { core?: { invoke: (command: string) => Promise<unknown> } };
@@ -299,12 +299,16 @@ describe("Aizu desktop MVP", () => {
     expect(forgedEvent).not.toBe("event API unavailable");
     expect(forgedEvent).not.toBe("allowed");
     await browser.switchToWindow("banner");
-    await expect($("strong=Codex requests permission")).toBeDisplayed();
-    await expect($("pre=printf 'Aizu approval E2E'")).toBeDisplayed();
-    const approvalBanners = await invokeCurrentWindow<CapturedNotification[]>("get_banners");
-    const approvalBanner = approvalBanners.find((candidate) => candidate.approval !== null);
-    expect(approvalBanner?.approval?.command).toBe("printf 'Aizu approval E2E'");
-    const approvalId = approvalBanner?.id ?? 0;
+    await expect($("strong=Codex is waiting for permission")).toBeDisplayed();
+    await expect($("button=Allow once")).not.toBeExisting();
+    await expect($("button=Deny")).not.toBeExisting();
+    await expect($("button=Choose in terminal")).not.toBeExisting();
+    await expect($("pre=printf 'Aizu approval E2E'")).not.toBeExisting();
+    const permissionBanners = await invokeCurrentWindow<CapturedNotification[]>("get_banners");
+    const permissionBanner = permissionBanners.find((candidate) =>
+      candidate.title === "Codex is waiting for permission");
+    expect(JSON.stringify(permissionBanner)).not.toContain("printf 'Aizu approval E2E'");
+    const permissionId = permissionBanner?.id ?? 0;
     await browser.switchToWindow("main");
     const blockedDismiss = await browser.execute(async (id) => {
       const core = (window as typeof window & {
@@ -321,44 +325,21 @@ describe("Aizu desktop MVP", () => {
       } catch (error) {
         return String(error);
       }
-    }, approvalId) as string;
+    }, permissionId) as string;
     expect(blockedDismiss).toContain("only from the banner window");
-    const approvalPreferences = (await invokeView("get_app_view")).preferences;
-    await invokeView("update_preferences", {
-      request: { ...approvalPreferences, notificationDelivery: "system" },
-    });
     await browser.switchToWindow("banner");
-    await expect($("pre=printf 'Aizu approval E2E'")).toBeDisplayed();
-    await browser.switchToWindow("main");
-    await invokeView("update_preferences", {
-      request: { ...approvalPreferences, notificationDelivery: "aizuBanner" },
-    });
-    await browser.switchToWindow("banner");
-    await $("button=Allow once").click();
-    const hookResult = await permissionHook;
-    expect(hookResult.code).toBe(0);
-    expect(hookResult.stderr).toBe("");
-    expect(JSON.parse(hookResult.stdout)).toMatchObject({
-      hookSpecificOutput: { decision: { behavior: "allow" } },
-    });
-    const terminalPermissionHook = runPermissionHook(stateRoot as string);
-    await expect($("strong=Codex requests permission")).toBeDisplayed();
-    await $("button=Choose in terminal").click();
-    const terminalHookResult = await terminalPermissionHook;
-    expect(terminalHookResult.code).toBe(0);
-    expect(terminalHookResult.stderr).toBe("");
-    expect(terminalHookResult.stdout).toBe("");
-    await expect($("strong=Codex requests permission")).not.toBeExisting();
+    await invokeCurrentWindow("dismiss_banner", { id: permissionId });
+    await expect($("strong=Codex is waiting for permission")).not.toBeExisting();
     await browser.waitUntil(async () => {
       const view = await invokeView("get_app_view");
       return view.history.some((event) =>
-        event.title === "Codex is waiting for permission" && event.deliveryStatus === "suppressed");
-    }, { timeout: 2_000, timeoutMsg: "approved command event was not retained as suppressed history" });
+        event.title === "Codex is waiting for permission" && event.deliveryStatus === "delivered");
+    }, { timeout: 2_000, timeoutMsg: "permission notification was not retained in history" });
     await browser.waitUntil(async () => {
       const remaining = await browser.tauri.execute(({ core }) =>
         core.invoke("get_e2e_banners")) as CapturedNotification[];
       return remaining.length === 0;
-    }, { timeout: 2_000, timeoutMsg: "approved command banner remained queued" });
+    }, { timeout: 2_000, timeoutMsg: "permission banner remained queued" });
     await browser.switchToWindow("main");
     const paused = await invokeView("set_notifications_paused", { paused: true });
     expect(paused.trayState).toBe("paused");
