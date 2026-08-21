@@ -60,6 +60,7 @@ impl LocalApprovalRequest {
     ) -> Result<Self, ApprovalError> {
         validate_tool_name(&tool_name)?;
         validate_target(&target)?;
+        validate_supported_target(agent, &tool_name, &target)?;
         Ok(Self {
             version: LOCAL_APPROVAL_PROTOCOL_VERSION,
             request_id,
@@ -75,7 +76,8 @@ impl LocalApprovalRequest {
             return Err(ApprovalError::UnsupportedVersion(self.version));
         }
         validate_tool_name(&self.tool_name)?;
-        validate_target(&self.target)
+        validate_target(&self.target)?;
+        validate_supported_target(self.agent, &self.tool_name, &self.target)
     }
 }
 
@@ -159,6 +161,28 @@ fn validate_target(target: &LocalApprovalTarget) -> Result<(), ApprovalError> {
     }
 }
 
+fn validate_supported_target(
+    agent: AgentKind,
+    tool_name: &str,
+    target: &LocalApprovalTarget,
+) -> Result<(), ApprovalError> {
+    if matches!(
+        (agent, tool_name, target),
+        (
+            AgentKind::Codex | AgentKind::ClaudeCode,
+            "Bash",
+            LocalApprovalTarget::ShellCommand { .. },
+        ) | (
+            AgentKind::ClaudeCode,
+            "WebFetch",
+            LocalApprovalTarget::WebFetch { .. },
+        )
+    ) {
+        return Ok(());
+    }
+    Err(ApprovalError::UnsupportedTarget)
+}
+
 fn validate_tool_name(value: &str) -> Result<(), ApprovalError> {
     if value.is_empty()
         || value.len() > MAX_LOCAL_APPROVAL_TOOL_BYTES
@@ -219,6 +243,8 @@ pub enum ApprovalError {
     InvalidCommand,
     #[error("the approval URL is invalid or too large")]
     InvalidUrl,
+    #[error("the approval agent, tool, and target combination is not supported")]
+    UnsupportedTarget,
     #[error("local approval protocol version {0} is not supported")]
     UnsupportedVersion(u16),
     #[error(transparent)]
@@ -365,6 +391,41 @@ mod tests {
                     &payload,
                 ),
                 Err(ApprovalError::InvalidUrl)
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_noncanonical_agent_tool_and_target_combinations() {
+        let request_id = uuid::Uuid::new_v4();
+        for value in [
+            serde_json::json!({
+                "version": LOCAL_APPROVAL_PROTOCOL_VERSION,
+                "requestId": request_id,
+                "agent": "codex",
+                "toolName": "WebFetch",
+                "target": { "kind": "web_fetch", "url": "https://example.com/" },
+            }),
+            serde_json::json!({
+                "version": LOCAL_APPROVAL_PROTOCOL_VERSION,
+                "requestId": request_id,
+                "agent": "claude-code",
+                "toolName": "Bash",
+                "target": { "kind": "web_fetch", "url": "https://example.com/" },
+            }),
+            serde_json::json!({
+                "version": LOCAL_APPROVAL_PROTOCOL_VERSION,
+                "requestId": request_id,
+                "agent": "claude-code",
+                "toolName": "WebFetch",
+                "target": { "kind": "shell_command", "command": "printf unsafe" },
+            }),
+        ] {
+            let request: super::LocalApprovalRequest =
+                serde_json::from_value(value).expect("shape should decode");
+            assert!(matches!(
+                request.validate(),
+                Err(ApprovalError::UnsupportedTarget)
             ));
         }
     }

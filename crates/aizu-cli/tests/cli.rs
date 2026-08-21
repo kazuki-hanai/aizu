@@ -594,11 +594,17 @@ fn claude_web_fetch_permission_uses_the_exact_url_for_local_approval() {
         assert!(matches!(
             request.target,
             aizu_core::LocalApprovalTarget::WebFetch { ref url }
-                if url == "https://docs.example.com/guide?topic=hooks#approval"
+                if url == "https://docs.example.com/private-url-51?view=private-query-51"
         ));
         let serialized = String::from_utf8(frame).unwrap();
-        assert!(!serialized.contains("private prompt"));
-        assert!(!serialized.contains("/private/work"));
+        for private in [
+            "secret-session-51",
+            "transcript-51",
+            "workspace-51",
+            "private-prompt-51",
+        ] {
+            assert!(!serialized.contains(private));
+        }
         let response = aizu_core::LocalApprovalResponse::Decision {
             request_id: request.request_id,
             decision: aizu_core::ApprovalDecision::AllowOnce,
@@ -619,7 +625,7 @@ fn claude_web_fetch_permission_uses_the_exact_url_for_local_approval() {
             "--strict",
         ])
         .write_stdin(
-            r#"{"hook_event_name":"PermissionRequest","cwd":"/private/work","tool_name":"WebFetch","tool_input":{"url":"https://docs.example.com/guide?topic=hooks#approval","prompt":"private prompt"}}"#,
+            r#"{"session_id":"secret-session-51","transcript_path":"/private/transcript-51.jsonl","cwd":"/private/workspace-51","hook_event_name":"PermissionRequest","tool_name":"WebFetch","tool_input":{"url":"https://docs.example.com/private-url-51?view=private-query-51","prompt":"private-prompt-51"}}"#,
         )
         .output()
         .unwrap();
@@ -631,14 +637,46 @@ fn claude_web_fetch_permission_uses_the_exact_url_for_local_approval() {
         response["hookSpecificOutput"]["decision"]["behavior"],
         "allow"
     );
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("docs.example.com"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("private-url-51"));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("private"));
     let spool = Spool::open(StatePaths::new(directory.path())).unwrap();
     let events = spool.events_after(0, Some(10)).unwrap();
     assert_eq!(events.len(), 1);
     let stored = serde_json::to_string(&events[0].event).unwrap();
-    assert!(!stored.contains("docs.example.com"));
-    assert!(!stored.contains("private prompt"));
+    let desktop = DesktopState::open(directory.path().join("desktop.sqlite3")).unwrap();
+    ingest_spool(&spool, &desktop, "local", "This Mac", Utc::now()).unwrap();
+    let history = desktop.recent_history(Some(10)).unwrap();
+    assert_eq!(history.len(), 1);
+    let history = match &history[0] {
+        aizu_core::HistoryItem::Event(item) => item.event.to_json().unwrap(),
+        aizu_core::HistoryItem::Gap(_) => panic!("expected an event history item"),
+    };
+    let bridge = aizu()
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "bridge",
+            "--protocol",
+            "1",
+            "--after",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(bridge.status.success(), "{bridge:?}");
+    let bridge = String::from_utf8(bridge.stdout).unwrap();
+    for private in [
+        "secret-session-51",
+        "transcript-51",
+        "workspace-51",
+        "private-url-51",
+        "private-query-51",
+        "private-prompt-51",
+    ] {
+        assert!(!stored.contains(private));
+        assert!(!history.contains(private));
+        assert!(!bridge.contains(private));
+    }
 }
 
 #[test]

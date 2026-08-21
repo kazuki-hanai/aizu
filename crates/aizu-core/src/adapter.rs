@@ -100,10 +100,16 @@ impl AgentAdapter for ClaudeCodeAdapter {
             });
         }
 
-        let session_id = optional_string(object, "session_id")?
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned);
-        let metadata = adapter_metadata(object, "claude-code-v1")?;
+        let is_web_fetch = event_name == "PermissionRequest"
+            && optional_string(object, "tool_name")? == Some("WebFetch");
+        let session_id = if is_web_fetch {
+            None
+        } else {
+            optional_string(object, "session_id")?
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        };
+        let metadata = adapter_metadata(object, "claude-code-v1", !is_web_fetch)?;
         let (kind, title, body, outcome) = match event_name {
             "Stop" => (
                 EventKind::TaskCompleted,
@@ -162,7 +168,7 @@ impl AgentAdapter for CodexAdapter {
         let session_id = optional_string(object, "session_id")?
             .filter(|value| !value.is_empty())
             .map(str::to_owned);
-        let metadata = adapter_metadata(object, "codex-v1")?;
+        let metadata = adapter_metadata(object, "codex-v1", true)?;
         let (kind, title, body, outcome) = match event_name {
             "Stop" => (
                 EventKind::TaskCompleted,
@@ -1600,13 +1606,18 @@ fn contains_unc_path(token: &str) -> bool {
 fn adapter_metadata(
     object: &Map<String, Value>,
     adapter: &str,
+    include_working_directory: bool,
 ) -> Result<Option<Value>, AdapterError> {
-    let basename = optional_string(object, "cwd")?.and_then(|cwd| {
-        cwd.trim_end_matches(['/', '\\'])
-            .rsplit(['/', '\\'])
-            .next()
-            .filter(|name| !name.is_empty())
-    });
+    let basename = if include_working_directory {
+        optional_string(object, "cwd")?.and_then(|cwd| {
+            cwd.trim_end_matches(['/', '\\'])
+                .rsplit(['/', '\\'])
+                .next()
+                .filter(|name| !name.is_empty())
+        })
+    } else {
+        None
+    };
     let tool_name = optional_string(object, "tool_name")?
         .filter(|name| is_safe_metadata_label(name))
         .map(str::to_owned);
@@ -1729,6 +1740,43 @@ mod tests {
                 .unwrap_or_default()
                 .contains("rm -rf")
         );
+    }
+
+    #[test]
+    fn claude_web_fetch_durable_event_drops_private_hook_context() {
+        let event = ClaudeCodeAdapter
+            .parse_hook(
+                "PermissionRequest",
+                br#"{"session_id":"secret-session-51","transcript_path":"/private/transcript-51.jsonl","cwd":"/private/workspace-51","hook_event_name":"PermissionRequest","tool_name":"WebFetch","tool_input":{"url":"https://docs.example.com/private-url-51","prompt":"private-prompt-51"}}"#,
+            )
+            .expect("permission event")
+            .pop()
+            .expect("one event");
+
+        assert!(event.session_id.is_none());
+        assert_eq!(
+            event.metadata,
+            Some(json!({ "aizu_adapter": "claude-code-v1", "tool_name": "WebFetch" }))
+        );
+        let serialized = format!(
+            "{}{}{}{}{}{}{}",
+            event.title.as_deref().unwrap_or_default(),
+            event.body.as_deref().unwrap_or_default(),
+            event.agent.as_deref().unwrap_or_default(),
+            event.session_id.as_deref().unwrap_or_default(),
+            event.occurred_at.as_deref().unwrap_or_default(),
+            serde_json::to_string(&event.metadata).expect("metadata should serialize"),
+            serde_json::to_string(&event.ignored).expect("ignored fields should serialize"),
+        );
+        for private in [
+            "secret-session-51",
+            "transcript-51",
+            "workspace-51",
+            "private-url-51",
+            "private-prompt-51",
+        ] {
+            assert!(!serialized.contains(private));
+        }
     }
 
     #[test]

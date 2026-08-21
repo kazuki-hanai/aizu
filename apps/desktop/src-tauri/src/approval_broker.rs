@@ -552,7 +552,10 @@ mod tests {
         ApprovalDecision, LocalApprovalRequest, LocalApprovalResponse, LocalApprovalTarget,
     };
 
-    use super::{ApprovalRegistry, approval_notification, bind_listener, expiry_response};
+    use super::{
+        ApprovalRegistry, BrokerError, approval_notification, bind_listener, expiry_response,
+        read_request,
+    };
     use crate::model::{ApprovalTargetPresentation, LanguagePreference, Preferences};
 
     #[test]
@@ -588,6 +591,28 @@ mod tests {
             Some(&serde_json::json!("webFetch"))
         );
         assert!(!serialized.to_string().contains("private prompt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_boundary_rejects_noncanonical_approval_target_combinations() {
+        use std::io::Write;
+
+        let (mut writer, mut reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        let frame = serde_json::json!({
+            "version": aizu_core::LOCAL_APPROVAL_PROTOCOL_VERSION,
+            "requestId": uuid::Uuid::new_v4(),
+            "agent": "codex",
+            "toolName": "WebFetch",
+            "target": { "kind": "web_fetch", "url": "https://example.com/" },
+        });
+        serde_json::to_writer(&mut writer, &frame).unwrap();
+        writer.write_all(b"\n").unwrap();
+
+        assert!(matches!(
+            read_request(&mut reader),
+            Err(BrokerError::InvalidFrame)
+        ));
     }
 
     #[test]
