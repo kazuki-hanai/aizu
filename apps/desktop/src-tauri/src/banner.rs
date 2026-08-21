@@ -106,6 +106,7 @@ const fn notification_display_code(display: NotificationDisplay) -> u8 {
         NotificationDisplay::Primary => 0,
         NotificationDisplay::FocusedWindow => 1,
         NotificationDisplay::Pointer => 2,
+        NotificationDisplay::Secondary => 3,
     }
 }
 
@@ -113,6 +114,7 @@ const fn notification_display_from_code(code: u8) -> NotificationDisplay {
     match code {
         1 => NotificationDisplay::FocusedWindow,
         2 => NotificationDisplay::Pointer,
+        3 => NotificationDisplay::Secondary,
         _ => NotificationDisplay::Primary,
     }
 }
@@ -831,6 +833,27 @@ fn preferred_monitor_identity(
         .or_else(|| primary.filter(|identity| monitors.contains(identity)))
 }
 
+fn notification_display_identity(
+    display: NotificationDisplay,
+    primary: Option<MonitorIdentity>,
+    secondary: Option<MonitorIdentity>,
+    focused_window: Option<MonitorIdentity>,
+    pointer: Option<MonitorIdentity>,
+) -> Option<MonitorIdentity> {
+    match display {
+        NotificationDisplay::Primary => primary,
+        NotificationDisplay::Secondary => secondary,
+        NotificationDisplay::FocusedWindow => focused_window,
+        NotificationDisplay::Pointer => pointer,
+    }
+}
+
+fn secondary_monitor_identity(
+    screen_identities: &[Option<MonitorIdentity>],
+) -> Option<MonitorIdentity> {
+    screen_identities.get(1).copied().flatten()
+}
+
 fn scaled_monitor_identity(
     origin_x: f64,
     origin_y: f64,
@@ -883,29 +906,28 @@ fn macos_monitor_candidates(
 
     let mtm = MainThreadMarker::new()?;
     let screens = objc2_app_kit::NSScreen::screens(mtm);
-    let primary = screens
+    let screen_identities = screens
         .iter()
-        .next()
+        .map(|screen| macos_monitor_identity(&screen))
+        .collect::<Vec<_>>();
+    let primary = screen_identities.first().copied().flatten();
+    let secondary = secondary_monitor_identity(&screen_identities);
+    let focused_window = objc2_app_kit::NSScreen::mainScreen(mtm)
+        .as_deref()
+        .and_then(macos_monitor_identity);
+    let pointer_location = objc2_app_kit::NSEvent::mouseLocation();
+    let pointer = screens
+        .iter()
+        .find(|screen| {
+            let frame = screen.frame();
+            pointer_location.x >= frame.origin.x
+                && pointer_location.x < frame.origin.x + frame.size.width
+                && pointer_location.y >= frame.origin.y
+                && pointer_location.y < frame.origin.y + frame.size.height
+        })
         .and_then(|screen| macos_monitor_identity(&screen));
-    let preferred = match display {
-        NotificationDisplay::Primary => primary,
-        NotificationDisplay::FocusedWindow => objc2_app_kit::NSScreen::mainScreen(mtm)
-            .as_deref()
-            .and_then(macos_monitor_identity),
-        NotificationDisplay::Pointer => {
-            let pointer = objc2_app_kit::NSEvent::mouseLocation();
-            screens
-                .iter()
-                .find(|screen| {
-                    let frame = screen.frame();
-                    pointer.x >= frame.origin.x
-                        && pointer.x < frame.origin.x + frame.size.width
-                        && pointer.y >= frame.origin.y
-                        && pointer.y < frame.origin.y + frame.size.height
-                })
-                .and_then(|screen| macos_monitor_identity(&screen))
-        }
-    };
+    let preferred =
+        notification_display_identity(display, primary, secondary, focused_window, pointer);
     Some((preferred, primary))
 }
 
@@ -976,7 +998,8 @@ mod tests {
     use super::{
         BannerState, MAX_PRESENTATION_ATTEMPTS, MAX_VISIBLE_PASSIVE_BANNERS, MonitorIdentity,
         PresentationMode, WindowGeometry, WorkAreaGeometry, needs_user_attention,
-        preferred_monitor_identity, retry_delay, scaled_monitor_identity, window_geometry,
+        notification_display_identity, preferred_monitor_identity, retry_delay,
+        scaled_monitor_identity, secondary_monitor_identity, window_geometry,
     };
     use crate::model::Notification;
 
@@ -1161,6 +1184,93 @@ mod tests {
                 Some(primary),
             ),
             Some(primary)
+        );
+    }
+
+    #[test]
+    fn every_display_preference_selects_its_matching_monitor_candidate() {
+        let primary = MonitorIdentity {
+            x: 0,
+            y: 0,
+            width: 1_920,
+            height: 1_080,
+        };
+        let secondary = MonitorIdentity {
+            x: 1_920,
+            y: 0,
+            width: 2_560,
+            height: 1_440,
+        };
+        let focused = MonitorIdentity {
+            x: -1_280,
+            y: 0,
+            width: 1_280,
+            height: 1_024,
+        };
+        let pointer = MonitorIdentity {
+            x: 0,
+            y: -900,
+            width: 1_440,
+            height: 900,
+        };
+
+        for (display, expected) in [
+            (crate::model::NotificationDisplay::Primary, Some(primary)),
+            (
+                crate::model::NotificationDisplay::Secondary,
+                Some(secondary),
+            ),
+            (
+                crate::model::NotificationDisplay::FocusedWindow,
+                Some(focused),
+            ),
+            (crate::model::NotificationDisplay::Pointer, Some(pointer)),
+        ] {
+            assert_eq!(
+                notification_display_identity(
+                    display,
+                    Some(primary),
+                    Some(secondary),
+                    Some(focused),
+                    Some(pointer),
+                ),
+                expected
+            );
+        }
+        assert_eq!(
+            notification_display_identity(
+                crate::model::NotificationDisplay::Secondary,
+                Some(primary),
+                None,
+                Some(focused),
+                Some(pointer),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn secondary_display_does_not_skip_an_unusable_first_candidate() {
+        let primary = MonitorIdentity {
+            x: 0,
+            y: 0,
+            width: 1_920,
+            height: 1_080,
+        };
+        let later_secondary = MonitorIdentity {
+            x: 1_920,
+            y: 0,
+            width: 2_560,
+            height: 1_440,
+        };
+
+        assert_eq!(
+            secondary_monitor_identity(&[Some(primary), None, Some(later_secondary)]),
+            None
+        );
+        assert_eq!(
+            secondary_monitor_identity(&[Some(primary), Some(later_secondary)]),
+            Some(later_secondary)
         );
     }
 
@@ -1532,12 +1642,12 @@ mod tests {
 
         assert!(
             state
-                .update_notification_display(crate::model::NotificationDisplay::Pointer)
+                .update_notification_display(crate::model::NotificationDisplay::Secondary)
                 .expect("change display")
         );
         assert_eq!(
             state.notification_display(),
-            crate::model::NotificationDisplay::Pointer
+            crate::model::NotificationDisplay::Secondary
         );
         let refreshed_generation = state.begin_presentation(now).expect("refresh presentation");
         assert_ne!(visible_generation, refreshed_generation);

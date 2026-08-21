@@ -141,11 +141,13 @@ events remain in the source SQLite spool while the Mac is disconnected.
 - **Aizu Banner** is the default. It needs no macOS notification permission,
   keeps up to three alerts visible, preserves safe line breaks, and closes only
   from its close button or a horizontal click-drag/swipe. **Settings > Aizu
-  display** chooses the macOS Main Display by default, the focused-window
-  display, or the display under the mouse pointer. The banner stack scrolls when
-  its complete content is taller than the available display area. Click a local
-  Codex or Claude Code alert to return to its terminal. Text remains selectable,
-  and selecting or dragging it does not activate the terminal.
+  display** chooses the macOS Main Display by default, the first connected
+  Secondary Display, the focused-window display, or the display under the mouse
+  pointer. A missing secondary display falls back to the Main Display. The
+  banner stack scrolls when its complete content is taller than the available
+  display area. Click a local Codex or Claude Code alert to return to its
+  terminal. Text remains selectable, and selecting or dragging it does not
+  activate the terminal.
 - **macOS Notifications** uses Notification Center. Select it under
   **Settings > Notification style**, then use the test action to request system
   permission. Clicking an actionable local Codex or Claude Code alert uses the

@@ -187,6 +187,35 @@ pub fn get_e2e_banner_window_state(app: AppHandle<Wry>) -> Result<(bool, bool, u
 #[cfg(feature = "desktop-e2e")]
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+pub fn get_e2e_banner_monitor_state(app: AppHandle<Wry>) -> Result<(usize, bool), DesktopError> {
+    let window = app
+        .get_webview_window(crate::banner::BANNER_WINDOW)
+        .ok_or_else(|| {
+            crate::notifier::NotifyError::Scheduling("banner window is unavailable".to_owned())
+        })?;
+    let monitors = window
+        .available_monitors()
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?;
+    let current = window
+        .current_monitor()
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?
+        .ok_or_else(|| {
+            crate::notifier::NotifyError::Scheduling("current display is unavailable".to_owned())
+        })?;
+    let primary = window
+        .primary_monitor()
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?
+        .ok_or_else(|| {
+            crate::notifier::NotifyError::Scheduling("primary display is unavailable".to_owned())
+        })?;
+    let current_is_primary =
+        current.position() == primary.position() && current.size() == primary.size();
+    Ok((monitors.len(), current_is_primary))
+}
+
+#[cfg(feature = "desktop-e2e")]
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn show_e2e_terminal_banner(app: AppHandle<Wry>) -> Result<(), DesktopError> {
     crate::banner::show(
         &app,

@@ -457,7 +457,7 @@ describe("Aizu desktop MVP", () => {
       language: "ja",
       textSize: "large",
       agentDetailsEnabled: true,
-      notificationDisplay: "pointer",
+      notificationDisplay: "secondary",
       notificationSound: "bloom",
       quietHours: {
         ...resumed.preferences.quietHours,
@@ -471,7 +471,7 @@ describe("Aizu desktop MVP", () => {
     expect(updated.preferences.language).toBe("ja");
     expect(updated.preferences.textSize).toBe("large");
     expect(updated.preferences.agentDetailsEnabled).toBe(true);
-    expect(updated.preferences.notificationDisplay).toBe("pointer");
+    expect(updated.preferences.notificationDisplay).toBe("secondary");
     await expect($("h1=エージェント")).toBeDisplayed();
     expect(await browser.execute(() => document.documentElement.lang)).toBe("ja");
     expect(await browser.execute(() => document.documentElement.dataset.textSize)).toBe("large");
@@ -482,7 +482,7 @@ describe("Aizu desktop MVP", () => {
     expect(persisted.preferences.agentDetailsEnabled).toBe(true);
     expect(persisted.preferences.commandApprovalsEnabled).toBe(true);
     expect(persisted.preferences.centerApprovalDialogs).toBe(true);
-    expect(persisted.preferences.notificationDisplay).toBe("pointer");
+    expect(persisted.preferences.notificationDisplay).toBe("secondary");
     expect(persisted.preferences.notificationSound).toBe("bloom");
     expect(persisted.preferences.language).toBe("ja");
     expect(persisted.preferences.textSize).toBe("large");
@@ -543,6 +543,11 @@ describe("Aizu desktop MVP", () => {
       return view.history.some((event) => event.title === title && event.deliveryStatus === "delivered");
     }, { timeout: 5_000, timeoutMsg: "local CLI event was not delivered after quiet hours ended" });
     await expect($(`strong=${title}`)).toBeDisplayed();
+    await browser.waitUntil(async () => {
+      const [monitorCount, currentIsPrimary] = await browser.tauri.execute(({ core }) =>
+        core.invoke("get_e2e_banner_monitor_state")) as [number, boolean];
+      return monitorCount === 1 ? currentIsPrimary : !currentIsPrimary;
+    }, { timeout: 2_000, timeoutMsg: "secondary display selection did not move the banner window" });
 
     await browser.tauri.execute(({ core }) => core.invoke("hide_e2e_main_window"));
     const second = await executeFile(desktopBinary, [], {

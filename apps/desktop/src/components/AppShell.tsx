@@ -637,12 +637,13 @@ function SettingsView({ busy, muted, onChange, onMuteChange, preferences, onSend
             value={preferences.notificationDisplay}
             onChange={(event) => {
               const notificationDisplay = event.target.value;
-              if (notificationDisplay === "primary" || notificationDisplay === "focusedWindow" || notificationDisplay === "pointer") {
+              if (notificationDisplay === "primary" || notificationDisplay === "secondary" || notificationDisplay === "focusedWindow" || notificationDisplay === "pointer") {
                 void onChange({ ...preferences, notificationDisplay });
               }
             }}
           >
             <option value="primary">{t.displayPrimary}</option>
+            <option value="secondary">{t.displaySecondary}</option>
             <option value="focusedWindow">{t.displayFocusedWindow}</option>
             <option value="pointer">{t.displayPointer}</option>
           </select>
