@@ -295,10 +295,24 @@ describe("Aizu desktop MVP", () => {
         && bannerBounds.top < viewport.bottom
         && bannerBounds.bottom <= viewport.bottom + 1;
     }), { timeout: 2_000, timeoutMsg: "last notification was not reachable by scrolling" });
+    const [, , overflowWindowHeight] = await invokeCurrentWindow<[boolean, boolean, number]>(
+      "get_e2e_banner_window_state",
+    );
     const scrollable = await invokeCurrentWindow<CapturedNotification[]>("get_banners");
-    for (const queued of scrollable) {
+    const remainingScrollable = scrollable.at(-1);
+    if (!remainingScrollable) throw new Error("scroll fixture queue was unexpectedly empty");
+    for (const queued of scrollable.slice(0, -1)) {
       await invokeCurrentWindow("dismiss_banner", { id: queued.id });
     }
+    await browser.waitUntil(async () => {
+      const queued = await invokeCurrentWindow<CapturedNotification[]>("get_banners");
+      if (queued.length !== 1) return false;
+      const [, , currentHeight] = await invokeCurrentWindow<[boolean, boolean, number]>(
+        "get_e2e_banner_window_state",
+      );
+      return currentHeight < overflowWindowHeight;
+    }, { timeout: 2_000, timeoutMsg: "banner window did not shrink with its remaining content" });
+    await invokeCurrentWindow("dismiss_banner", { id: remainingScrollable.id });
     await browser.waitUntil(async () =>
       (await invokeCurrentWindow<CapturedNotification[]>("get_banners")).length === 0,
     { timeout: 2_000, timeoutMsg: "scroll fixture banners were not dismissed" });
@@ -400,7 +414,7 @@ describe("Aizu desktop MVP", () => {
       const dialog = document.querySelector('[role="alertdialog"]');
       return dialog instanceof HTMLElement ? getComputedStyle(dialog).opacity : "0";
     })).toBe("1");
-    const [approvalWindowVisible] = await invokeCurrentWindow<[boolean, boolean]>(
+    const [approvalWindowVisible] = await invokeCurrentWindow<[boolean, boolean, number]>(
       "get_e2e_banner_window_state",
     );
     expect(approvalWindowVisible).toBe(true);
