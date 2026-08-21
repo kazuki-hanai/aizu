@@ -351,8 +351,20 @@ describe("Aizu desktop MVP", () => {
     await browser.switchToWindow("banner");
     await expect($("strong=Codex requests permission")).toBeDisplayed();
     await expect($("pre=printf 'Aizu approval E2E'")).toBeDisplayed();
+    await expect($('[data-presentation="approval"]')).toBeDisplayed();
+    const approvalDialog = $('[role="alertdialog"]');
+    await expect(approvalDialog).toBeDisplayed();
+    expect(await approvalDialog.getAttribute("aria-modal")).toBe("true");
+    await expect($("button=Dismiss notification")).not.toBeExisting();
     await expect($("button=Choose in terminal")).not.toBeExisting();
     await expect($("button=Deny")).toBeDisplayed();
+    await browser.action("pointer", { parameters: { pointerType: "mouse" } })
+      .move({ duration: 0, origin: approvalDialog, x: 180, y: 80 })
+      .down({ button: 0 })
+      .move({ duration: 120, origin: "pointer", x: -160, y: 0 })
+      .up({ button: 0 })
+      .perform();
+    await expect(approvalDialog).toBeDisplayed();
     const allowOnce = $("button=Allow once");
     await expect(allowOnce).toBeEnabled();
     await allowOnce.click();

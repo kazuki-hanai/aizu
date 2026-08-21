@@ -151,11 +151,12 @@ events remain in the source SQLite spool while the Mac is disconnected.
 - **Aizu Pop** is the default sound. Change it or turn sound off under
   **Settings > Notification sound**.
 - Permission requests use the agent's terminal by default. Turn on **Show
-  command approval buttons** in Settings to show `Deny` and `Allow once` in an
-  Aizu Banner for exact local shell commands. Closing or swiping that banner
-  leaves the request undecided and returns control to the terminal prompt. Aizu
-  never runs the command or creates permanent permission rules. macOS
-  Notification Center and remote SSH approvals remain terminal-only.
+  command approval buttons** in Settings to show a large centered dialog with
+  `Deny` and `Allow once` for exact local shell commands. The dialog stays in
+  front until you choose or the bounded request times out; it cannot be closed
+  or swiped away. Aizu never runs the command or creates permanent permission
+  rules. macOS Notification Center and remote SSH approvals remain
+  terminal-only.
 - **Show agent details** is on by default and adds a short filtered completion
   or permission excerpt. Aizu excludes raw commands, full prompts, transcripts,
   secrets, and absolute paths from notifications and history.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { SwipeDismissBanner } from "./components/SwipeDismissBanner";
 import { bannerBackend, type BannerClient } from "./lib/backend";
@@ -15,6 +15,11 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
   const [unavailable, setUnavailable] = useState(false);
   const stackRef = useRef<HTMLElement>(null);
   const refreshGeneration = useRef(0);
+  const presentedBanners = useMemo(() => {
+    const approval = banners.find((banner) => banner.approval !== null);
+    return approval ? [approval] : banners;
+  }, [banners]);
+  const approvalMode = presentedBanners.some((banner) => banner.approval !== null);
 
   const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current;
@@ -134,9 +139,14 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
   }, [banners, client, runAction, unavailable]);
 
   return (
-    <main aria-label="Aizu notifications" className="banner-stack" ref={stackRef}>
+    <main
+      aria-label="Aizu notifications"
+      className={`banner-stack${approvalMode ? " banner-stack--approval" : ""}`}
+      data-presentation={approvalMode ? "approval" : "passive"}
+      ref={stackRef}
+    >
       {unavailable ? <p className="banner-error">Aizu Banner is unavailable.</p> : null}
-      {banners.map((banner) => (
+      {presentedBanners.map((banner) => (
         <SwipeDismissBanner
           banner={banner}
           key={banner.id}
