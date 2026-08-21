@@ -697,7 +697,7 @@ fn resize_for_mode(
     let window = app
         .get_webview_window(BANNER_WINDOW)
         .ok_or_else(|| NotifyError::Scheduling("Aizu banner window is unavailable".to_owned()))?;
-    let monitor = active_monitor(&window)?;
+    let monitor = configured_primary_monitor(&window)?;
     let scale = monitor.scale_factor();
     let work_area = monitor.work_area();
     let logical_position = work_area.position.to_logical::<f64>(scale);
@@ -746,12 +746,9 @@ fn matching_monitor(monitors: &[Monitor], identity: MonitorIdentity) -> Option<M
 
 fn preferred_monitor_identity(
     monitors: &[MonitorIdentity],
-    focused_window: Option<MonitorIdentity>,
-    pointer: Option<MonitorIdentity>,
+    primary: Option<MonitorIdentity>,
 ) -> Option<MonitorIdentity> {
-    focused_window
-        .filter(|identity| monitors.contains(identity))
-        .or_else(|| pointer.filter(|identity| monitors.contains(identity)))
+    primary.filter(|identity| monitors.contains(identity))
 }
 
 fn scaled_monitor_identity(
@@ -773,70 +770,40 @@ fn scaled_monitor_identity(
     }
 }
 
-fn monitor_containing_point(monitors: &[Monitor], point: PhysicalPosition<f64>) -> Option<Monitor> {
-    monitors
-        .iter()
-        .find(|monitor| {
-            let position = monitor.position();
-            let size = monitor.size();
-            let left = f64::from(position.x);
-            let top = f64::from(position.y);
-            point.x >= left
-                && point.x < left + f64::from(size.width)
-                && point.y >= top
-                && point.y < top + f64::from(size.height)
-        })
-        .cloned()
-}
-
-fn active_monitor(window: &tauri::WebviewWindow<Wry>) -> Result<Monitor, NotifyError> {
+fn configured_primary_monitor(window: &tauri::WebviewWindow<Wry>) -> Result<Monitor, NotifyError> {
     let monitors = window
         .available_monitors()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
     #[cfg(target_os = "macos")]
-    if let Some((focused_window, pointer)) = macos_monitor_candidates() {
+    if let Some(primary) = macos_primary_monitor_identity() {
         let identities = monitors
             .iter()
             .map(MonitorIdentity::from)
             .collect::<Vec<_>>();
-        if let Some(monitor) = preferred_monitor_identity(&identities, focused_window, pointer)
+        if let Some(monitor) = preferred_monitor_identity(&identities, Some(primary))
             .and_then(|identity| matching_monitor(&monitors, identity))
         {
             return Ok(monitor);
         }
     }
-    if let Ok(pointer) = window.cursor_position()
-        && let Some(monitor) = monitor_containing_point(&monitors, pointer)
-    {
-        return Ok(monitor);
-    }
     window
         .primary_monitor()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?
-        .ok_or_else(|| NotifyError::Scheduling("active display is unavailable".to_owned()))
+        .ok_or_else(|| NotifyError::Scheduling("primary display is unavailable".to_owned()))
 }
 
 #[cfg(target_os = "macos")]
-fn macos_monitor_candidates() -> Option<(Option<MonitorIdentity>, Option<MonitorIdentity>)> {
+fn macos_primary_monitor_identity() -> Option<MonitorIdentity> {
     use objc2_foundation::MainThreadMarker;
 
     let mtm = MainThreadMarker::new()?;
-    let pointer = objc2_app_kit::NSEvent::mouseLocation();
     let screens = objc2_app_kit::NSScreen::screens(mtm);
-    let pointer_screen = screens.iter().find(|screen| {
-        let frame = screen.frame();
-        pointer.x >= frame.origin.x
-            && pointer.x < frame.origin.x + frame.size.width
-            && pointer.y >= frame.origin.y
-            && pointer.y < frame.origin.y + frame.size.height
-    });
-    let pointer = pointer_screen.and_then(|screen| macos_monitor_identity(&screen));
-    // AppKit defines the main screen as the one containing the window currently
-    // receiving keyboard events; it is not necessarily the menu-bar display.
-    let focused_window = objc2_app_kit::NSScreen::mainScreen(mtm)
-        .as_deref()
-        .and_then(macos_monitor_identity);
-    Some((focused_window, pointer))
+    // AppKit defines index 0 as the user-configured primary display containing
+    // the menu bar. Read it for every presentation because displays can change.
+    screens
+        .iter()
+        .next()
+        .and_then(|screen| macos_monitor_identity(&screen))
 }
 
 #[cfg(target_os = "macos")]
@@ -1056,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_window_display_wins_then_pointer_display_is_the_fallback() {
+    fn only_the_configured_primary_display_is_selected() {
         let primary = MonitorIdentity {
             x: 0,
             y: 0,
@@ -1072,13 +1039,10 @@ mod tests {
         let monitors = [primary, secondary];
 
         assert_eq!(
-            preferred_monitor_identity(&monitors, Some(secondary), Some(primary)),
-            Some(secondary)
+            preferred_monitor_identity(&monitors, Some(primary)),
+            Some(primary)
         );
-        assert_eq!(
-            preferred_monitor_identity(&monitors, None, Some(secondary)),
-            Some(secondary)
-        );
+        assert_eq!(preferred_monitor_identity(&monitors, None), None);
         assert_eq!(
             preferred_monitor_identity(
                 &monitors,
@@ -1088,9 +1052,8 @@ mod tests {
                     width: 1,
                     height: 1,
                 }),
-                Some(primary),
             ),
-            Some(primary)
+            None
         );
     }
 
