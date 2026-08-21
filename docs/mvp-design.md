@@ -695,7 +695,7 @@ trait Notifier {
 }
 ```
 
-- 既定は app-owned Aizu Banner とし、macOS 通知権限を要求しない。app 稼働中は右上へ最大3件を表示し、privacy filter 後の本文を省略せず、CommonMark と GitHub Flavored Markdown の段落、改行、見出し、リスト、引用、強調、table、inline code、fenced code block をcompactに表示する。raw HTMLは実行せず、linkとimageはnetwork/navigationを発生させない非対話表示にする。ユーザーが右上の close button または横スワイプで閉じるまで自動消去しない。短いドラッグや縦操作では閉じず、本文とcodeは選択可能とする。§13.5 のlocal command approvalだけは中央の専用dialogを使い、closeとswipeを提供しない。復帰情報を持つ local first-party 通知の通常クリック/Enter/Spaceだけは terminal 復帰を行い、本文選択中や swipe 後の合成 click は復帰させない。クリックで Aizu main window は開かない。新規表示とスワイプ終了には短い animation を使い、OS の reduced-motion 設定時は無効化する。超過分および app 再起動後は Recent activity を確認経路とする。
+- 既定は app-owned Aizu Banner とし、macOS 通知権限を要求しない。app 稼働中は右上へ最大3件を表示し、privacy filter 後の本文を省略せず、CommonMark と GitHub Flavored Markdown の段落、改行、見出し、リスト、引用、強調、table、inline code、fenced code block をcompactに表示する。raw HTMLは実行せず、linkとimageはnetwork/navigationを発生させない非対話表示にする。表示先はポインタのあるdisplayを優先し、取得できない場合はAizuのkeyboard-focus display、最後にprimary displayへfallbackする。ユーザーが右上の close button または横スワイプで閉じるまで自動消去しない。短いドラッグや縦操作では閉じず、本文とcodeは選択可能とする。§13.5 のlocal command approvalは既定で同じactive display中央の専用dialogを使い、設定で同display右上へ切替可能とし、closeとswipeを提供しない。復帰情報を持つ local first-party 通知の通常クリック/Enter/Spaceだけは terminal 復帰を行い、本文選択中や swipe 後の合成 click は復帰させない。クリックで Aizu main window は開かない。新規表示とスワイプ終了には短い animation を使い、OS の reduced-motion 設定時は無効化する。超過分および app 再起動後は Recent activity を確認経路とする。
 - Aizu Banner の透明な装飾なし WebView は Tauri の `macos-private-api` feature を使う。MVP は Mac App Store sandbox を対象外とする既存方針を維持し、この feature を notification window の透過だけに限定する。
 - macOS Notifications へ即時切替できる。権限要求は初回起動直後ではなく、テスト通知などの明示操作で行う。
 - macOS Notifications が拒否された場合は System Settings への案内を表示する。
@@ -746,11 +746,11 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 ### 13.5 Local command approval
 
 - first-party local `PermissionRequest` は50秒上限の同期command hookで受ける。`command_approvals_enabled` は既定オフで、オフならprivate local brokerが即時 `unavailable` / `presented: false` を返し、CLIはdecisionをstdoutへ返さずagentの標準terminal UIを続行させる
-- 設定オン時だけ、canonical `Bash` toolのbounded exact commandをprivate Unix-domain socket経由で中央の大型Aizu approval dialogへ一時表示する。dialogは常時前面とし、native focusを要求して未focus時は一回限りのinformational user-attentionへfallbackする。queued passive bannerを削除せず一時的に隠し、`Deny` / `Allow once` だけを提供する。closeとswipeは提供せず、native window showとfrontend render ackの両方が確認できたrequestだけを一回限り消費する
+- 設定オン時だけ、canonical `Bash` toolのbounded exact commandをprivate Unix-domain socket経由で大型Aizu approval dialogへ一時表示する。`center_approval_dialogs` は既定オンでactive display中央へ配置し、オフでは同display右上へ配置する。dialogは常時前面とし、native focusを要求して未focus時は一回限りのinformational user-attentionへfallbackする。queued passive bannerを削除せず一時的に隠し、`Deny` / `Allow once` だけを提供する。closeとswipeは提供せず、native window showとfrontend render ackの両方が確認できたrequestだけを一回限り消費する
 - timeout、app停止、設定オフへの変更、broker不在、別request待機中、表示失敗はdenyを捏造せずno decisionで終了し、その後agentの標準terminal UIへ戻す。`Choose in terminal` の中間buttonは設けない。同期hook契約上、Aizu Bannerとterminalを同時にactionableにはしない
 - raw commandはhook process、private socket buffer、desktop memory、banner WebViewにだけ一時保持し、spool、desktop DB、history、notification outbox、settings、log、SSH bridge、macOS Notification Centerへ保存・転送しない。banner以外のWebViewからraw command取得・ack・decision・dismissを拒否し、frontend event emit権限も与えない
 - CLIはagentの構造化allow/deny responseだけを返す。Aizuはcommandを実行せず、常時許可、permission rule変更、free-form回答、terminal入力注入を提供しない
-- settings schema v2は旧default-on値をfalseへ移行し、upgrade後に明示的な再オプトインを要求する。v2以降の明示選択は保持する
+- settings schema v2は旧default-on値をfalseへ移行し、upgrade後に明示的な再オプトインを要求する。v2以降の明示選択は保持する。schema v3は`center_approval_dialogs`を既定オンで追加し、既存のapproval opt-inを変更しない
 - macOS Notification Centerとremote SSH PermissionRequestはpassiveのままにし、remoteの許可判断はsource terminalだけで行う
 
 ### 13.6 App icon, tray icon, and branding assets

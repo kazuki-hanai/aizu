@@ -145,6 +145,7 @@ const defaultPreferences: Preferences = {
   questionEnabled: true,
   agentDetailsEnabled: true,
   commandApprovalsEnabled: false,
+  centerApprovalDialogs: true,
   soundEnabled: true,
   notificationDelivery: "aizuBanner",
   notificationSound: "default",

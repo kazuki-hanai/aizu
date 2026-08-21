@@ -431,8 +431,11 @@ describe("Aizu desktop shell", () => {
     }
     expect(screen.queryByRole("option", { name: "Hero" })).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Show command approval buttons" })).not.toBeChecked();
+    expect(screen.queryByRole("switch", { name: "Show approval in the center" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Task completion" }));
     await user.click(screen.getByRole("switch", { name: "Show command approval buttons" }));
+    expect(screen.getByRole("switch", { name: "Show approval in the center" })).toBeChecked();
+    await user.click(screen.getByRole("switch", { name: "Show approval in the center" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification style" }), "system");
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification sound" }), "pulse");
     await user.selectOptions(screen.getByRole("combobox", { name: "Text size" }), "large");
@@ -440,12 +443,13 @@ describe("Aizu desktop shell", () => {
     await user.click(screen.getByRole("switch", { name: "Show agent details" }));
 
     await waitFor(async () => {
-      expect(updatePreferences).toHaveBeenCalledTimes(6);
+      expect(updatePreferences).toHaveBeenCalledTimes(7);
       await expect(backend.getView()).resolves.toMatchObject({
         preferences: {
           completionEnabled: false,
           agentDetailsEnabled: false,
           commandApprovalsEnabled: true,
+          centerApprovalDialogs: false,
           notificationDelivery: "system",
           notificationSound: "pulse",
           textSize: "large",
