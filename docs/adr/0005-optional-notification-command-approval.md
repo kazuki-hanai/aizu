@@ -24,10 +24,10 @@ active decision surface for a request, but cannot safely make both surfaces acti
    terminal prompt.
 3. When the setting is on, one canonical local `Bash` request may show a large, centered Aizu
    approval dialog containing the exact bounded command and only `Deny` and `Allow once`. It is
-   always on top, requests focus with platform attention as a fallback, temporarily takes visual
-   priority over queued passive banners, and cannot be closed or swiped away. The command becomes
-   actionable only after native window presentation and frontend render acknowledgement. The
-   decision is consumed once.
+   always on top, requests focus with a one-shot informational platform-attention fallback,
+   temporarily takes visual priority over queued passive banners, and cannot be closed or swiped
+   away. The command becomes actionable only after native window presentation and frontend render
+   acknowledgement. The decision is consumed once.
 4. Timing out, stopping Aizu, disabling the setting, losing the broker, or failing presentation
    returns no decision. The agent then shows its terminal prompt. There is no separate `Choose in
    terminal` button, and the absence of a decision never means deny.

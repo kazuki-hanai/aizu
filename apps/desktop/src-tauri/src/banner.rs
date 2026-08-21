@@ -390,6 +390,10 @@ fn presentation_mode(snapshot: &[Notification]) -> PresentationMode {
     }
 }
 
+fn needs_user_attention(mode: PresentationMode, focused: Option<bool>) -> bool {
+    mode == PresentationMode::Approval && focused != Some(true)
+}
+
 fn window_geometry(
     mode: PresentationMode,
     requested_height: f64,
@@ -524,8 +528,13 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     // WebKit can throttle a non-key banner window before the Tauri event listener resumes.
     // This fixed, payload-free wake-up makes the frontend re-read the authorized backend state.
     let _ = window.eval("window.dispatchEvent(new Event('aizu-banner-refresh'))");
-    if mode == PresentationMode::Approval && window.set_focus().is_err() {
-        let _ = window.request_user_attention(Some(UserAttentionType::Critical));
+    if mode == PresentationMode::Approval {
+        let _ = window.set_focus();
+        if needs_user_attention(mode, window.is_focused().ok()) {
+            // Informational attention bounces the macOS Dock icon once. Unlike Critical,
+            // it cannot outlive an approval that later times out or is disabled.
+            let _ = window.request_user_attention(Some(UserAttentionType::Informational));
+        }
     }
     if let Some(sound) = app.state::<BannerState>().take_pending_sound(generation)? {
         play_sound(sound);
@@ -676,7 +685,7 @@ mod tests {
 
     use super::{
         BannerState, MAX_PRESENTATION_ATTEMPTS, MAX_VISIBLE_PASSIVE_BANNERS, PresentationMode,
-        WindowGeometry, WorkAreaGeometry, retry_delay, window_geometry,
+        WindowGeometry, WorkAreaGeometry, needs_user_attention, retry_delay, window_geometry,
     };
     use crate::model::Notification;
 
@@ -836,6 +845,23 @@ mod tests {
                 height: 268.0,
             }
         );
+    }
+
+    #[test]
+    fn approval_requests_bounded_attention_when_native_focus_is_not_observed() {
+        assert!(!needs_user_attention(
+            PresentationMode::Approval,
+            Some(true)
+        ));
+        assert!(needs_user_attention(
+            PresentationMode::Approval,
+            Some(false)
+        ));
+        assert!(needs_user_attention(PresentationMode::Approval, None));
+        assert!(!needs_user_attention(
+            PresentationMode::Passive,
+            Some(false)
+        ));
     }
 
     #[test]

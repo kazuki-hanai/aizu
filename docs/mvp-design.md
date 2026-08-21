@@ -746,7 +746,7 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 ### 13.5 Local command approval
 
 - first-party local `PermissionRequest` は50秒上限の同期command hookで受ける。`command_approvals_enabled` は既定オフで、オフならprivate local brokerが即時 `unavailable` / `presented: false` を返し、CLIはdecisionをstdoutへ返さずagentの標準terminal UIを続行させる
-- 設定オン時だけ、canonical `Bash` toolのbounded exact commandをprivate Unix-domain socket経由で中央の大型Aizu approval dialogへ一時表示する。dialogは常時前面とし、native focusを要求して拒否時はplatform user-attentionへfallbackする。queued passive bannerを削除せず一時的に隠し、`Deny` / `Allow once` だけを提供する。closeとswipeは提供せず、native window showとfrontend render ackの両方が確認できたrequestだけを一回限り消費する
+- 設定オン時だけ、canonical `Bash` toolのbounded exact commandをprivate Unix-domain socket経由で中央の大型Aizu approval dialogへ一時表示する。dialogは常時前面とし、native focusを要求して未focus時は一回限りのinformational user-attentionへfallbackする。queued passive bannerを削除せず一時的に隠し、`Deny` / `Allow once` だけを提供する。closeとswipeは提供せず、native window showとfrontend render ackの両方が確認できたrequestだけを一回限り消費する
 - timeout、app停止、設定オフへの変更、broker不在、別request待機中、表示失敗はdenyを捏造せずno decisionで終了し、その後agentの標準terminal UIへ戻す。`Choose in terminal` の中間buttonは設けない。同期hook契約上、Aizu Bannerとterminalを同時にactionableにはしない
 - raw commandはhook process、private socket buffer、desktop memory、banner WebViewにだけ一時保持し、spool、desktop DB、history、notification outbox、settings、log、SSH bridge、macOS Notification Centerへ保存・転送しない。banner以外のWebViewからraw command取得・ack・decision・dismissを拒否し、frontend event emit権限も与えない
 - CLIはagentの構造化allow/deny responseだけを返す。Aizuはcommandを実行せず、常時許可、permission rule変更、free-form回答、terminal入力注入を提供しない
