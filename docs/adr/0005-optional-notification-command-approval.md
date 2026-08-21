@@ -24,9 +24,10 @@ active decision surface for a request, but cannot safely make both surfaces acti
    with `presented: false`; the CLI returns no decision and the agent continues to its standard
    terminal prompt.
 3. When the setting is on, one canonical local `Bash` request may show a large Aizu approval dialog
-   containing the exact bounded command and only `Deny` and `Allow once`. Aizu selects the display
-   selected primary display in macOS. The dialog is centered by default; the separate centering
-   setting moves it to that display's top right without removing its approval controls. It is
+   containing the exact bounded command and only `Deny` and `Allow once`. Aizu uses the shared
+   banner-display preference: the macOS primary display by default, the focused-window display, or
+   the pointer display. The dialog is centered by default; the separate centering setting moves it
+   to that display's top right without removing its approval controls. It is
    always on top, requests focus with a one-shot informational platform-attention fallback,
    temporarily takes visual priority over queued passive banners, and cannot be closed or swiped
    away. The command becomes actionable only after native window presentation and frontend render

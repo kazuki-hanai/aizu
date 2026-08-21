@@ -356,6 +356,7 @@ pub fn update_preferences(
     }
     // The preference is already durable. Reposition any current approval as a
     // best-effort presentation refresh without replaying its sound or decision.
+    let _ = crate::banner::update_notification_display(&app, view.preferences.notification_display);
     let _ =
         crate::banner::update_approval_centering(&app, view.preferences.center_approval_dialogs);
     publish(&app, &view);

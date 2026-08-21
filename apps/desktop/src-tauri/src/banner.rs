@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -13,7 +13,7 @@ use tauri::{
 };
 
 use crate::{
-    model::{Notification, NotificationSound, TextSize},
+    model::{Notification, NotificationDisplay, NotificationSound, TextSize},
     notifier::NotifyError,
 };
 
@@ -77,6 +77,7 @@ pub struct BannerState {
     next_activation_claim: AtomicU64,
     generation: AtomicU64,
     center_approval_dialogs: AtomicBool,
+    notification_display: AtomicU8,
     dirty: AtomicBool,
     presentation_scheduled: AtomicBool,
 }
@@ -91,9 +92,28 @@ impl Default for BannerState {
             next_activation_claim: AtomicU64::default(),
             generation: AtomicU64::default(),
             center_approval_dialogs: AtomicBool::new(true),
+            notification_display: AtomicU8::new(notification_display_code(
+                NotificationDisplay::Primary,
+            )),
             dirty: AtomicBool::default(),
             presentation_scheduled: AtomicBool::default(),
         }
+    }
+}
+
+const fn notification_display_code(display: NotificationDisplay) -> u8 {
+    match display {
+        NotificationDisplay::Primary => 0,
+        NotificationDisplay::FocusedWindow => 1,
+        NotificationDisplay::Pointer => 2,
+    }
+}
+
+const fn notification_display_from_code(code: u8) -> NotificationDisplay {
+    match code {
+        1 => NotificationDisplay::FocusedWindow,
+        2 => NotificationDisplay::Pointer,
+        _ => NotificationDisplay::Primary,
     }
 }
 
@@ -304,6 +324,44 @@ impl BannerState {
             .lock()
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
         if !banners.iter().any(|banner| banner.approval.is_some()) {
+            return Ok(false);
+        }
+        let mut pending_sound = self.pending_sound.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
+        })?;
+        let mut retry = self.retry.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner retry state is unavailable".to_owned())
+        })?;
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Some(pending) = pending_sound.as_mut() {
+            pending.generation = generation;
+        }
+        *retry = PresentationRetry::default();
+        self.dirty.store(true, Ordering::Release);
+        Ok(true)
+    }
+
+    fn notification_display(&self) -> NotificationDisplay {
+        notification_display_from_code(self.notification_display.load(Ordering::Acquire))
+    }
+
+    fn update_notification_display(
+        &self,
+        display: NotificationDisplay,
+    ) -> Result<bool, NotifyError> {
+        let display_code = notification_display_code(display);
+        if self
+            .notification_display
+            .swap(display_code, Ordering::AcqRel)
+            == display_code
+        {
+            return Ok(false);
+        }
+        let banners = self
+            .banners
+            .lock()
+            .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
+        if banners.is_empty() {
             return Ok(false);
         }
         let mut pending_sound = self.pending_sound.lock().map_err(|_| {
@@ -579,7 +637,8 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
             .center_approval_dialogs
             .load(Ordering::Acquire),
     );
-    resize_for_mode(app, MIN_BANNER_HEIGHT, mode)?;
+    let monitor = configured_monitor(&window, app.state::<BannerState>().notification_display())?;
+    resize_window_for_mode(&window, &monitor, MIN_BANNER_HEIGHT, mode)?;
     window
         .show()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
@@ -639,6 +698,19 @@ pub fn update_approval_centering(
     Ok(())
 }
 
+pub fn update_notification_display(
+    app: &AppHandle<Wry>,
+    display: NotificationDisplay,
+) -> Result<(), NotifyError> {
+    if app
+        .state::<BannerState>()
+        .update_notification_display(display)?
+    {
+        request_present(app)?;
+    }
+    Ok(())
+}
+
 pub fn dismiss(app: &AppHandle<Wry>, id: i32) -> Result<(), NotifyError> {
     app.state::<BannerState>().dismiss(id)?;
     // Queue removal is the command result. Window presentation is retried independently.
@@ -681,14 +753,6 @@ pub fn resize(app: &AppHandle<Wry>, requested_height: f64) -> Result<(), NotifyE
         &state.snapshot()?,
         state.center_approval_dialogs.load(Ordering::Acquire),
     );
-    resize_for_mode(app, requested_height, mode)
-}
-
-fn resize_for_mode(
-    app: &AppHandle<Wry>,
-    requested_height: f64,
-    mode: PresentationMode,
-) -> Result<(), NotifyError> {
     if !requested_height.is_finite() {
         return Err(NotifyError::Scheduling(
             "Aizu banner height is invalid".to_owned(),
@@ -697,7 +761,20 @@ fn resize_for_mode(
     let window = app
         .get_webview_window(BANNER_WINDOW)
         .ok_or_else(|| NotifyError::Scheduling("Aizu banner window is unavailable".to_owned()))?;
-    let monitor = configured_primary_monitor(&window)?;
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| NotifyError::Scheduling(error.to_string()))?
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .ok_or_else(|| NotifyError::Scheduling("banner display is unavailable".to_owned()))?;
+    resize_window_for_mode(&window, &monitor, requested_height, mode)
+}
+
+fn resize_window_for_mode(
+    window: &tauri::WebviewWindow<Wry>,
+    monitor: &Monitor,
+    requested_height: f64,
+    mode: PresentationMode,
+) -> Result<(), NotifyError> {
     let scale = monitor.scale_factor();
     let work_area = monitor.work_area();
     let logical_position = work_area.position.to_logical::<f64>(scale);
@@ -746,9 +823,12 @@ fn matching_monitor(monitors: &[Monitor], identity: MonitorIdentity) -> Option<M
 
 fn preferred_monitor_identity(
     monitors: &[MonitorIdentity],
+    preferred: Option<MonitorIdentity>,
     primary: Option<MonitorIdentity>,
 ) -> Option<MonitorIdentity> {
-    primary.filter(|identity| monitors.contains(identity))
+    preferred
+        .filter(|identity| monitors.contains(identity))
+        .or_else(|| primary.filter(|identity| monitors.contains(identity)))
 }
 
 fn scaled_monitor_identity(
@@ -770,17 +850,20 @@ fn scaled_monitor_identity(
     }
 }
 
-fn configured_primary_monitor(window: &tauri::WebviewWindow<Wry>) -> Result<Monitor, NotifyError> {
+fn configured_monitor(
+    window: &tauri::WebviewWindow<Wry>,
+    display: NotificationDisplay,
+) -> Result<Monitor, NotifyError> {
     let monitors = window
         .available_monitors()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
     #[cfg(target_os = "macos")]
-    if let Some(primary) = macos_primary_monitor_identity() {
+    if let Some((preferred, primary)) = macos_monitor_candidates(display) {
         let identities = monitors
             .iter()
             .map(MonitorIdentity::from)
             .collect::<Vec<_>>();
-        if let Some(monitor) = preferred_monitor_identity(&identities, Some(primary))
+        if let Some(monitor) = preferred_monitor_identity(&identities, preferred, primary)
             .and_then(|identity| matching_monitor(&monitors, identity))
         {
             return Ok(monitor);
@@ -793,17 +876,37 @@ fn configured_primary_monitor(window: &tauri::WebviewWindow<Wry>) -> Result<Moni
 }
 
 #[cfg(target_os = "macos")]
-fn macos_primary_monitor_identity() -> Option<MonitorIdentity> {
+fn macos_monitor_candidates(
+    display: NotificationDisplay,
+) -> Option<(Option<MonitorIdentity>, Option<MonitorIdentity>)> {
     use objc2_foundation::MainThreadMarker;
 
     let mtm = MainThreadMarker::new()?;
     let screens = objc2_app_kit::NSScreen::screens(mtm);
-    // AppKit defines index 0 as the user-configured primary display containing
-    // the menu bar. Read it for every presentation because displays can change.
-    screens
+    let primary = screens
         .iter()
         .next()
-        .and_then(|screen| macos_monitor_identity(&screen))
+        .and_then(|screen| macos_monitor_identity(&screen));
+    let preferred = match display {
+        NotificationDisplay::Primary => primary,
+        NotificationDisplay::FocusedWindow => objc2_app_kit::NSScreen::mainScreen(mtm)
+            .as_deref()
+            .and_then(macos_monitor_identity),
+        NotificationDisplay::Pointer => {
+            let pointer = objc2_app_kit::NSEvent::mouseLocation();
+            screens
+                .iter()
+                .find(|screen| {
+                    let frame = screen.frame();
+                    pointer.x >= frame.origin.x
+                        && pointer.x < frame.origin.x + frame.size.width
+                        && pointer.y >= frame.origin.y
+                        && pointer.y < frame.origin.y + frame.size.height
+                })
+                .and_then(|screen| macos_monitor_identity(&screen))
+        }
+    };
+    Some((preferred, primary))
 }
 
 #[cfg(target_os = "macos")]
@@ -1023,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_configured_primary_display_is_selected() {
+    fn configured_display_wins_then_primary_display_is_the_fallback() {
         let primary = MonitorIdentity {
             x: 0,
             y: 0,
@@ -1039,10 +1142,13 @@ mod tests {
         let monitors = [primary, secondary];
 
         assert_eq!(
-            preferred_monitor_identity(&monitors, Some(primary)),
+            preferred_monitor_identity(&monitors, Some(secondary), Some(primary)),
+            Some(secondary)
+        );
+        assert_eq!(
+            preferred_monitor_identity(&monitors, None, Some(primary)),
             Some(primary)
         );
-        assert_eq!(preferred_monitor_identity(&monitors, None), None);
         assert_eq!(
             preferred_monitor_identity(
                 &monitors,
@@ -1052,8 +1158,9 @@ mod tests {
                     width: 1,
                     height: 1,
                 }),
+                Some(primary),
             ),
-            None
+            Some(primary)
         );
     }
 
@@ -1404,6 +1511,41 @@ mod tests {
                 state.center_approval_dialogs.load(Ordering::Acquire),
             ),
             PresentationMode::ApprovalCorner
+        );
+    }
+
+    #[test]
+    fn display_setting_refreshes_existing_banners_without_replaying_sound() {
+        let state = BannerState::default();
+        let mut banner = notification(42, "move this banner");
+        banner.sound = Some(crate::model::NotificationSound::Default);
+        state.push(banner).expect("queue banner");
+        let now = Instant::now();
+        let visible_generation = state.begin_presentation(now).expect("initial presentation");
+        assert_eq!(
+            state
+                .take_pending_sound(visible_generation)
+                .expect("initial sound"),
+            Some(crate::model::NotificationSound::Default)
+        );
+        state.finish_presentation(visible_generation, true, now);
+
+        assert!(
+            state
+                .update_notification_display(crate::model::NotificationDisplay::Pointer)
+                .expect("change display")
+        );
+        assert_eq!(
+            state.notification_display(),
+            crate::model::NotificationDisplay::Pointer
+        );
+        let refreshed_generation = state.begin_presentation(now).expect("refresh presentation");
+        assert_ne!(visible_generation, refreshed_generation);
+        assert_eq!(
+            state
+                .take_pending_sound(refreshed_generation)
+                .expect("refresh sound"),
+            None
         );
     }
 }

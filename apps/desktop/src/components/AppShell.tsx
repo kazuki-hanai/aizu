@@ -14,6 +14,7 @@ import {
   LoaderCircle,
   Languages,
   MessageSquareText,
+  Monitor,
   Plus,
   RefreshCw,
   Settings2,
@@ -625,6 +626,25 @@ function SettingsView({ busy, muted, onChange, onMuteChange, preferences, onSend
           >
             <option value="aizuBanner">{t.aizuBanner}</option>
             <option value="system">{t.macosNotifications}</option>
+          </select>
+        </label>
+        <label className="setting-row setting-row--select">
+          <Monitor aria-hidden="true" size={17} />
+          <span>{t.notificationDisplay}</span>
+          <select
+            aria-label={t.notificationDisplay}
+            disabled={busy}
+            value={preferences.notificationDisplay}
+            onChange={(event) => {
+              const notificationDisplay = event.target.value;
+              if (notificationDisplay === "primary" || notificationDisplay === "focusedWindow" || notificationDisplay === "pointer") {
+                void onChange({ ...preferences, notificationDisplay });
+              }
+            }}
+          >
+            <option value="primary">{t.displayPrimary}</option>
+            <option value="focusedWindow">{t.displayFocusedWindow}</option>
+            <option value="pointer">{t.displayPointer}</option>
           </select>
         </label>
         <label className="setting-row setting-row--select">

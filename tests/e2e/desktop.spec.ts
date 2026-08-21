@@ -26,6 +26,7 @@ type View = {
     agentDetailsEnabled: boolean;
     commandApprovalsEnabled: boolean;
     centerApprovalDialogs: boolean;
+    notificationDisplay: string;
     soundEnabled: boolean;
     notificationDelivery: string;
     notificationSound: string;
@@ -118,6 +119,7 @@ describe("Aizu desktop MVP", () => {
     const initial = await invokeView("get_app_view");
     expect(initial.preferences.commandApprovalsEnabled).toBe(false);
     expect(initial.preferences.centerApprovalDialogs).toBe(true);
+    expect(initial.preferences.notificationDisplay).toBe("primary");
     await invokeView("update_preferences", {
       request: { ...initial.preferences, notificationDelivery: "system" },
     });
@@ -404,6 +406,7 @@ describe("Aizu desktop MVP", () => {
       language: "ja",
       textSize: "large",
       agentDetailsEnabled: true,
+      notificationDisplay: "pointer",
       notificationSound: "bloom",
       quietHours: {
         ...resumed.preferences.quietHours,
@@ -417,16 +420,18 @@ describe("Aizu desktop MVP", () => {
     expect(updated.preferences.language).toBe("ja");
     expect(updated.preferences.textSize).toBe("large");
     expect(updated.preferences.agentDetailsEnabled).toBe(true);
+    expect(updated.preferences.notificationDisplay).toBe("pointer");
     await expect($("h1=エージェント")).toBeDisplayed();
     expect(await browser.execute(() => document.documentElement.lang)).toBe("ja");
     expect(await browser.execute(() => document.documentElement.dataset.textSize)).toBe("large");
     expect((await invokeView("get_app_view")).preferences.quietHours.enabled).toBe(true);
     const persisted = JSON.parse(await readFile(path.join(stateRoot as string, "settings.json"), "utf8")) as {
-      preferences: { agentDetailsEnabled: boolean; commandApprovalsEnabled: boolean; centerApprovalDialogs: boolean; language: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
+      preferences: { agentDetailsEnabled: boolean; commandApprovalsEnabled: boolean; centerApprovalDialogs: boolean; language: string; notificationDisplay: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
     };
     expect(persisted.preferences.agentDetailsEnabled).toBe(true);
     expect(persisted.preferences.commandApprovalsEnabled).toBe(true);
     expect(persisted.preferences.centerApprovalDialogs).toBe(true);
+    expect(persisted.preferences.notificationDisplay).toBe("pointer");
     expect(persisted.preferences.notificationSound).toBe("bloom");
     expect(persisted.preferences.language).toBe("ja");
     expect(persisted.preferences.textSize).toBe("large");
