@@ -13,14 +13,17 @@ use std::{
 };
 
 use aizu_core::{
-    ApprovalDecision, LocalApprovalRequest, LocalApprovalResponse, MAX_LOCAL_APPROVAL_FRAME_BYTES,
-    parse_strict_json_value,
+    ApprovalDecision, LocalApprovalRequest, LocalApprovalResponse, LocalApprovalTarget,
+    MAX_LOCAL_APPROVAL_FRAME_BYTES, parse_strict_json_value,
 };
 use tauri::{AppHandle, Manager, Wry};
 use thiserror::Error;
 
 use crate::{
-    model::{AgentKind, ApprovalPresentation, Notification, NotificationDelivery, Preferences},
+    model::{
+        AgentKind, ApprovalPresentation, ApprovalTargetPresentation, Notification,
+        NotificationDelivery, Preferences,
+    },
     state::DesktopState,
 };
 
@@ -393,6 +396,26 @@ fn approval_notification(
         AgentKind::Codex => "Codex",
         AgentKind::ClaudeCode => "Claude Code",
     };
+    let (body, target) = match &request.target {
+        LocalApprovalTarget::ShellCommand { command } => (
+            if japanese {
+                "コマンドを確認して選択してください。"
+            } else {
+                "Review the command before choosing."
+            },
+            ApprovalTargetPresentation::ShellCommand {
+                command: command.clone(),
+            },
+        ),
+        LocalApprovalTarget::WebFetch { url } => (
+            if japanese {
+                "取得するURLを確認して選択してください。"
+            } else {
+                "Review the URL before choosing."
+            },
+            ApprovalTargetPresentation::WebFetch { url: url.clone() },
+        ),
+    };
     Notification {
         id,
         title: if japanese {
@@ -400,12 +423,7 @@ fn approval_notification(
         } else {
             format!("{agent_label} requests permission")
         },
-        body: if japanese {
-            "コマンドを確認して選択してください。"
-        } else {
-            "Review the command before choosing."
-        }
-        .to_owned(),
+        body: body.to_owned(),
         sound: preferences
             .sound_enabled
             .then_some(preferences.notification_sound),
@@ -416,7 +434,7 @@ fn approval_notification(
         approval: Some(ApprovalPresentation {
             agent,
             tool_name: request.tool_name.clone(),
-            command: request.command.clone(),
+            target,
         }),
         activation: None,
     }
@@ -530,9 +548,72 @@ pub enum BrokerError {
 mod tests {
     use std::{fs, sync::mpsc};
 
-    use aizu_core::{ApprovalDecision, LocalApprovalResponse};
+    use aizu_core::{
+        ApprovalDecision, LocalApprovalRequest, LocalApprovalResponse, LocalApprovalTarget,
+    };
 
-    use super::{ApprovalRegistry, bind_listener, expiry_response};
+    use super::{
+        ApprovalRegistry, BrokerError, approval_notification, bind_listener, expiry_response,
+        read_request,
+    };
+    use crate::model::{ApprovalTargetPresentation, LanguagePreference, Preferences};
+
+    #[test]
+    fn web_fetch_approval_exposes_only_the_exact_url() {
+        let request = LocalApprovalRequest::new(
+            uuid::Uuid::new_v4(),
+            aizu_core::AgentKind::ClaudeCode,
+            "WebFetch".to_owned(),
+            LocalApprovalTarget::WebFetch {
+                url: "https://docs.example.com/guide?topic=hooks#approval".to_owned(),
+            },
+        )
+        .expect("valid request");
+        let preferences = Preferences {
+            language: LanguagePreference::English,
+            ..Preferences::default()
+        };
+
+        let notification = approval_notification(&request, &preferences, -1);
+
+        assert_eq!(notification.body, "Review the URL before choosing.");
+        assert!(matches!(
+            notification
+                .approval
+                .as_ref()
+                .map(|approval| &approval.target),
+            Some(ApprovalTargetPresentation::WebFetch { url })
+                if url == "https://docs.example.com/guide?topic=hooks#approval"
+        ));
+        let serialized = serde_json::to_value(notification).expect("notification should serialize");
+        assert_eq!(
+            serialized.pointer("/approval/target/kind"),
+            Some(&serde_json::json!("webFetch"))
+        );
+        assert!(!serialized.to_string().contains("private prompt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_boundary_rejects_noncanonical_approval_target_combinations() {
+        use std::io::Write;
+
+        let (mut writer, mut reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        let frame = serde_json::json!({
+            "version": aizu_core::LOCAL_APPROVAL_PROTOCOL_VERSION,
+            "requestId": uuid::Uuid::new_v4(),
+            "agent": "codex",
+            "toolName": "WebFetch",
+            "target": { "kind": "web_fetch", "url": "https://example.com/" },
+        });
+        serde_json::to_writer(&mut writer, &frame).unwrap();
+        writer.write_all(b"\n").unwrap();
+
+        assert!(matches!(
+            read_request(&mut reader),
+            Err(BrokerError::InvalidFrame)
+        ));
+    }
 
     #[test]
     fn decisions_are_one_shot_and_preserve_the_request_identifier() {

@@ -489,7 +489,11 @@ fn permission_hook_returns_a_one_shot_local_broker_decision() {
         let request: aizu_core::LocalApprovalRequest = serde_json::from_slice(&request).unwrap();
         assert_eq!(request.agent, aizu_core::AgentKind::Codex);
         assert_eq!(request.tool_name, "Bash");
-        assert_eq!(request.command, "printf 'approved'");
+        assert!(matches!(
+            request.target,
+            aizu_core::LocalApprovalTarget::ShellCommand { ref command }
+                if command == "printf 'approved'"
+        ));
         let response = aizu_core::LocalApprovalResponse::Decision {
             request_id: request.request_id,
             decision: aizu_core::ApprovalDecision::AllowOnce,
@@ -565,6 +569,113 @@ fn permission_hook_returns_a_one_shot_local_broker_decision() {
         let serialized = serde_json::to_string(&event.event).unwrap();
         assert!(!serialized.contains("printf 'approved'"));
         assert!(!serialized.contains("printf 'terminal fallback'"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_web_fetch_permission_uses_the_exact_url_for_local_approval() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+
+    let directory = TempDir::new().unwrap();
+    fs::create_dir_all(directory.path()).unwrap();
+    let listener = UnixListener::bind(directory.path().join("approval.sock")).unwrap();
+    let broker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut frame = Vec::new();
+        let mut byte = [0_u8; 1];
+        while stream.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {
+            frame.push(byte[0]);
+        }
+        let request: aizu_core::LocalApprovalRequest = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(request.agent, aizu_core::AgentKind::ClaudeCode);
+        assert_eq!(request.tool_name, "WebFetch");
+        assert!(matches!(
+            request.target,
+            aizu_core::LocalApprovalTarget::WebFetch { ref url }
+                if url == "https://docs.example.com/private-url-51?view=private-query-51"
+        ));
+        let serialized = String::from_utf8(frame).unwrap();
+        for private in [
+            "secret-session-51",
+            "transcript-51",
+            "workspace-51",
+            "private-prompt-51",
+        ] {
+            assert!(!serialized.contains(private));
+        }
+        let response = aizu_core::LocalApprovalResponse::Decision {
+            request_id: request.request_id,
+            decision: aizu_core::ApprovalDecision::AllowOnce,
+        };
+        serde_json::to_writer(&mut stream, &response).unwrap();
+        stream.write_all(b"\n").unwrap();
+    });
+
+    let output = aizu()
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "hook",
+            "--agent",
+            "claude-code",
+            "--event",
+            "PermissionRequest",
+            "--strict",
+        ])
+        .write_stdin(
+            r#"{"session_id":"secret-session-51","transcript_path":"/private/transcript-51.jsonl","cwd":"/private/workspace-51","hook_event_name":"PermissionRequest","tool_name":"WebFetch","tool_input":{"url":"https://docs.example.com/private-url-51?view=private-query-51","prompt":"private-prompt-51"}}"#,
+        )
+        .output()
+        .unwrap();
+
+    broker.join().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        response["hookSpecificOutput"]["decision"]["behavior"],
+        "allow"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("private-url-51"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("private"));
+    let spool = Spool::open(StatePaths::new(directory.path())).unwrap();
+    let events = spool.events_after(0, Some(10)).unwrap();
+    assert_eq!(events.len(), 1);
+    let stored = serde_json::to_string(&events[0].event).unwrap();
+    let desktop = DesktopState::open(directory.path().join("desktop.sqlite3")).unwrap();
+    ingest_spool(&spool, &desktop, "local", "This Mac", Utc::now()).unwrap();
+    let history = desktop.recent_history(Some(10)).unwrap();
+    assert_eq!(history.len(), 1);
+    let history = match &history[0] {
+        aizu_core::HistoryItem::Event(item) => item.event.to_json().unwrap(),
+        aizu_core::HistoryItem::Gap(_) => panic!("expected an event history item"),
+    };
+    let bridge = aizu()
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "bridge",
+            "--protocol",
+            "1",
+            "--after",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(bridge.status.success(), "{bridge:?}");
+    let bridge = String::from_utf8(bridge.stdout).unwrap();
+    for private in [
+        "secret-session-51",
+        "transcript-51",
+        "workspace-51",
+        "private-url-51",
+        "private-query-51",
+        "private-prompt-51",
+    ] {
+        assert!(!stored.contains(private));
+        assert!(!history.contains(private));
+        assert!(!bridge.contains(private));
     }
 }
 

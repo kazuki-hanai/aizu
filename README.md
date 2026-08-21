@@ -156,8 +156,10 @@ events remain in the source SQLite spool while the Mac is disconnected.
 - **Aizu Pop** is the default sound. Change it or turn sound off under
   **Settings > Notification sound**.
 - Permission requests use the agent's terminal by default. Turn on **Show
-  command approval buttons** in Settings to show a large dialog with `Deny` and
-  `Allow once` for exact local shell commands. It uses the same **Aizu display**
+  approval buttons** in Settings to show a large dialog with `Deny` and
+  `Allow once` for exact local shell commands and Claude Code WebFetch URLs.
+  WebFetch prompts are not copied into Aizu, and URLs are shown as selectable
+  text rather than clickable links. The dialog uses the same **Aizu display**
   setting and is centered by default. Turn off **Show approval in the center**
   to place it at that display's top right. The dialog stays in
   front until you choose or the bounded request times out; it cannot be closed

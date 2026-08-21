@@ -395,7 +395,14 @@ pub struct Notification {
 pub struct ApprovalPresentation {
     pub agent: AgentKind,
     pub tool_name: String,
-    pub command: String,
+    pub target: ApprovalTargetPresentation,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ApprovalTargetPresentation {
+    ShellCommand { command: String },
+    WebFetch { url: String },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]

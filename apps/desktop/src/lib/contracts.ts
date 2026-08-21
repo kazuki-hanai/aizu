@@ -109,7 +109,10 @@ export const bannerNotificationSchema = z.object({
   approval: z.object({
     agent: z.enum(["codex", "claudeCode"]),
     toolName: z.string(),
-    command: z.string(),
+    target: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("shellCommand"), command: z.string() }),
+      z.object({ kind: z.literal("webFetch"), url: z.url({ protocol: /^https?$/u }) }),
+    ]),
   }).nullable(),
 });
 

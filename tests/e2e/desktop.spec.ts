@@ -113,6 +113,47 @@ const runPermissionHook = (stateRoot: string) => {
   });
 };
 
+const runClaudeWebFetchPermissionHook = (stateRoot: string) => {
+  const child = spawn(cliBinary, [
+    "--state-dir",
+    stateRoot,
+    "hook",
+    "--agent",
+    "claude-code",
+    "--event",
+    "PermissionRequest",
+    "--strict",
+  ], { stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+  child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+  child.stdin.end(JSON.stringify({
+    hook_event_name: "PermissionRequest",
+    tool_name: "WebFetch",
+    tool_input: {
+      url: "https://docs.example.com/guide?topic=hooks#approval",
+      prompt: "This prompt must never reach the approval UI.",
+    },
+  }));
+  return new Promise<{ code: number | null; stderr: string; stdout: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("Claude WebFetch permission hook did not finish"));
+    }, 10_000);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      resolve({ code, stderr, stdout });
+    });
+  });
+};
+
 describe("Aizu desktop MVP", () => {
   it("runs the isolated backend pipeline, settings, tray, SSH validation, and single instance", async () => {
     await expect($("h1=Keep agent events within reach.")).toBeDisplayed();
@@ -446,6 +487,37 @@ describe("Aizu desktop MVP", () => {
       },
     });
     await expect($("strong=Codex requests permission")).not.toBeExisting();
+
+    const webFetchApproval = runClaudeWebFetchPermissionHook(stateRoot as string);
+    await browser.waitUntil(async () => {
+      const queued = await browser.tauri.execute(({ core }) =>
+        core.invoke("get_e2e_banners")) as CapturedNotification[];
+      return queued.some((banner) => banner.title === "Claude Code requests permission");
+    }, { timeout: 4_000, timeoutMsg: "Claude WebFetch approval never reached the banner queue" });
+    await expect($("strong=Claude Code requests permission")).toBeDisplayed();
+    const webFetchTarget = $('[aria-label="URL to fetch"]');
+    await expect(webFetchTarget).toBeDisplayed();
+    expect(await webFetchTarget.getText()).toBe(
+      "https://docs.example.com/guide?topic=hooks#approval",
+    );
+    expect(await browser.execute(() => ({
+      hasPrompt: document.body.textContent?.includes("This prompt must never reach the approval UI.") ?? false,
+      hasLink: document.querySelector(".aizu-banner__approval-target a") !== null,
+    }))).toEqual({ hasPrompt: false, hasLink: false });
+    const denyWebFetch = $("button=Deny");
+    await expect(denyWebFetch).toBeEnabled();
+    await denyWebFetch.click();
+    const denied = await webFetchApproval;
+    expect(denied.code).toBe(0);
+    expect(denied.stderr).toBe("");
+    expect(JSON.parse(denied.stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: { behavior: "deny", message: "Denied in Aizu." },
+      },
+    });
+    await expect($("strong=Claude Code requests permission")).not.toBeExisting();
+
     await browser.switchToWindow("main");
     const paused = await invokeView("set_notifications_paused", { paused: true });
     expect(paused.trayState).toBe("paused");

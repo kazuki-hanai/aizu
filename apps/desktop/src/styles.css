@@ -307,7 +307,7 @@ html[data-window="banner"] body {
 }
 
 .aizu-markdown code,
-.aizu-banner__command code {
+.aizu-banner__approval-target code {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
@@ -383,7 +383,7 @@ html[data-window="banner"] body {
   font-size: var(--font-size-sm);
 }
 
-.aizu-banner__command {
+.aizu-banner__approval-target {
   max-height: 180px;
   margin: 1px 0 2px;
   padding: 9px 10px;
@@ -400,11 +400,11 @@ html[data-window="banner"] body {
   -webkit-user-select: text;
 }
 
-.aizu-banner__command code {
+.aizu-banner__approval-target code {
   font: inherit;
 }
 
-.aizu-banner--approval .aizu-banner__command {
+.aizu-banner--approval .aizu-banner__approval-target {
   max-height: 260px;
   min-height: 96px;
   margin: 0;

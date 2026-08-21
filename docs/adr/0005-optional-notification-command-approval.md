@@ -1,4 +1,4 @@
-# ADR 0005: Notification command approval is an explicit opt-in
+# ADR 0005: Notification approval is an explicit opt-in
 
 - Status: Accepted
 - Date: 2026-08-21
@@ -9,14 +9,16 @@
 ## Context
 
 The terminal is the least surprising default place to answer Codex and Claude Code permission
-requests. Some users nevertheless want to review an exact local shell command and choose a one-time
-decision from Aizu Banner. A synchronous agent hook can use either Aizu or the terminal as the
-active decision surface for a request, but cannot safely make both surfaces actionable at once.
+requests. Some users nevertheless want to review an exact local shell command or Claude Code
+WebFetch URL and choose a one-time decision from Aizu Banner. A synchronous agent hook can use
+either Aizu or the terminal as the active decision surface for a request, but cannot safely make
+both surfaces actionable at once.
 
 ## Decision
 
-1. **Show command approval buttons** is persisted in Settings and defaults to off. Settings schema
-   version 2 resets the former default-on value to off so an upgrade never exposes command text or
+1. **Show approval buttons** is persisted in Settings and defaults to off. The stored
+   `commandApprovalsEnabled` field remains for settings compatibility. Settings schema version 2
+   resets the former default-on value to off so an upgrade never exposes an approval target or
    changes the decision surface without a fresh opt-in. Settings schema version 3 adds **Show
    approval in the center**, defaults it to on, and preserves every version 2 approval opt-in.
    Version 5 adds the secondary-display selection and preserves every version 4 display choice.
@@ -24,23 +26,25 @@ active decision surface for a request, but cannot safely make both surfaces acti
    timeout. When the setting is off, the private desktop broker immediately returns `unavailable`
    with `presented: false`; the CLI returns no decision and the agent continues to its standard
    terminal prompt.
-3. When the setting is on, one canonical local `Bash` request may show a large Aizu approval dialog
-   containing the exact bounded command and only `Deny` and `Allow once`. Aizu uses the shared
+3. When the setting is on, one canonical local `Bash` request or Claude Code `WebFetch` request may
+   show a large Aizu approval dialog containing the exact bounded command or HTTP(S) URL and only
+   `Deny` and `Allow once`. A WebFetch `prompt` and all other hook context are discarded before the
+   broker request is built; the URL is selectable but is not rendered as a link. Aizu uses the shared
    banner-display preference: the macOS primary display by default, the first connected secondary
    display, the focused-window display, or the pointer display. The dialog is centered by default;
    the separate centering setting moves it to that display's top right without removing its
    approval controls. A missing secondary display falls back to the primary display. It is
    always on top, requests focus with a one-shot informational platform-attention fallback,
    temporarily takes visual priority over queued passive banners, and cannot be closed or swiped
-   away. The command becomes actionable only after native window presentation and frontend render
+   away. The request becomes actionable only after native window presentation and frontend render
    acknowledgement. The decision is consumed once.
 4. Timing out, stopping Aizu, disabling the setting, losing the broker, or failing presentation
    returns no decision. The agent then shows its terminal prompt. There is no separate `Choose in
    terminal` button, and the absence of a decision never means deny.
-5. The raw command remains ephemeral in the hook process, private socket buffers, desktop memory,
-   and banner WebView. It is never written to the spool, settings, desktop database, history,
-   notification outbox, logs, SSH bridge, or Notification Center. Banner data and approval commands
-   are restricted to the banner WebView and frontend event emission remains disallowed.
+5. The raw command or WebFetch URL remains ephemeral in the hook process, private socket buffers,
+   desktop memory, and banner WebView. It is never written to the spool, settings, desktop database,
+   history, notification outbox, logs, SSH bridge, or Notification Center. Banner data and approval
+   targets are restricted to the banner WebView and frontend event emission remains disallowed.
 6. Aizu returns only the agent's structured one-time allow or deny response. It never executes the
    command, edits permission rules, or offers permanent approval.
 7. Notification Center and remote SSH requests remain passive. Remote decisions stay in the source
@@ -69,8 +73,8 @@ active decision surface for a request, but cannot safely make both surfaces acti
   output cannot later decide the request, and terminal input injection is unsafe.
 - **Keep a `Choose in terminal` button:** rejected because the approval dialog is intentionally a
   focused two-choice surface; bounded failure and timeout paths already preserve terminal fallback.
-- **Persist raw approval requests:** rejected because commands can contain credentials, paths, and
-  user data.
+- **Persist raw approval requests:** rejected because commands and URLs can contain credentials,
+  paths, query values, and user data.
 
 ## References
 

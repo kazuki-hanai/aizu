@@ -1,16 +1,19 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+use url::Url;
 use uuid::Uuid;
 
 use crate::{AgentKind, MAX_FRAME_BYTES, parse_strict_json_value};
 
 /// Version of the local, ephemeral approval protocol.
-pub const LOCAL_APPROVAL_PROTOCOL_VERSION: u16 = 1;
+pub const LOCAL_APPROVAL_PROTOCOL_VERSION: u16 = 2;
 /// Maximum encoded local approval frame size, excluding a trailing newline.
 pub const MAX_LOCAL_APPROVAL_FRAME_BYTES: usize = 32_768;
 /// Maximum exact command size shown for a local approval.
 pub const MAX_LOCAL_APPROVAL_COMMAND_BYTES: usize = 16_384;
+/// Maximum exact `WebFetch` URL size shown for a local approval.
+pub const MAX_LOCAL_APPROVAL_URL_BYTES: usize = 8_192;
 /// Maximum tool label size accepted from an agent payload.
 pub const MAX_LOCAL_APPROVAL_TOOL_BYTES: usize = 64;
 /// Safe event marker used to suppress the duplicate passive notification after
@@ -25,9 +28,17 @@ pub enum ApprovalDecision {
     Deny,
 }
 
+/// Exact, ephemeral target shown by the local approval UI.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LocalApprovalTarget {
+    ShellCommand { command: String },
+    WebFetch { url: String },
+}
+
 /// Ephemeral request sent from a local first-party hook to the desktop app.
 ///
-/// This type intentionally does not implement `Debug`: `command` may contain
+/// This type intentionally does not implement `Debug`: the target may contain
 /// sensitive input and must not be copied into logs, history, or the spool.
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -36,7 +47,7 @@ pub struct LocalApprovalRequest {
     pub request_id: Uuid,
     pub agent: AgentKind,
     pub tool_name: String,
-    pub command: String,
+    pub target: LocalApprovalTarget,
 }
 
 impl LocalApprovalRequest {
@@ -45,16 +56,17 @@ impl LocalApprovalRequest {
         request_id: Uuid,
         agent: AgentKind,
         tool_name: String,
-        command: String,
+        target: LocalApprovalTarget,
     ) -> Result<Self, ApprovalError> {
         validate_tool_name(&tool_name)?;
-        validate_command(&command)?;
+        validate_target(&target)?;
+        validate_supported_target(agent, &tool_name, &target)?;
         Ok(Self {
             version: LOCAL_APPROVAL_PROTOCOL_VERSION,
             request_id,
             agent,
             tool_name,
-            command,
+            target,
         })
     }
 
@@ -64,7 +76,8 @@ impl LocalApprovalRequest {
             return Err(ApprovalError::UnsupportedVersion(self.version));
         }
         validate_tool_name(&self.tool_name)?;
-        validate_command(&self.command)
+        validate_target(&self.target)?;
+        validate_supported_target(self.agent, &self.tool_name, &self.target)
     }
 }
 
@@ -91,7 +104,7 @@ impl LocalApprovalResponse {
     }
 }
 
-/// Extracts an exact shell command from a supported first-party
+/// Extracts a typed, exact target from a supported first-party
 /// `PermissionRequest`. Unsupported tools return `None` so the agent's normal
 /// approval UI remains authoritative.
 pub fn local_approval_request_from_hook(
@@ -116,24 +129,58 @@ pub fn local_approval_request_from_hook(
     let Some(tool_name) = object.get("tool_name").and_then(Value::as_str) else {
         return Ok(None);
     };
-    if tool_name != "Bash" {
-        return Ok(None);
-    }
-    let Some(command) = object
-        .get("tool_input")
-        .and_then(Value::as_object)
-        .and_then(|input| input.get("command"))
-        .and_then(Value::as_str)
-    else {
+    let Some(tool_input) = object.get("tool_input").and_then(Value::as_object) else {
         return Ok(None);
     };
-    LocalApprovalRequest::new(
-        Uuid::new_v4(),
-        agent,
-        tool_name.to_owned(),
-        command.to_owned(),
-    )
-    .map(Some)
+    let target = match (agent, tool_name) {
+        (_, "Bash") => {
+            let Some(command) = tool_input.get("command").and_then(Value::as_str) else {
+                return Ok(None);
+            };
+            LocalApprovalTarget::ShellCommand {
+                command: command.to_owned(),
+            }
+        }
+        (AgentKind::ClaudeCode, "WebFetch") => {
+            let Some(url) = tool_input.get("url").and_then(Value::as_str) else {
+                return Ok(None);
+            };
+            LocalApprovalTarget::WebFetch {
+                url: url.to_owned(),
+            }
+        }
+        _ => return Ok(None),
+    };
+    LocalApprovalRequest::new(Uuid::new_v4(), agent, tool_name.to_owned(), target).map(Some)
+}
+
+fn validate_target(target: &LocalApprovalTarget) -> Result<(), ApprovalError> {
+    match target {
+        LocalApprovalTarget::ShellCommand { command } => validate_command(command),
+        LocalApprovalTarget::WebFetch { url } => validate_web_url(url),
+    }
+}
+
+fn validate_supported_target(
+    agent: AgentKind,
+    tool_name: &str,
+    target: &LocalApprovalTarget,
+) -> Result<(), ApprovalError> {
+    if matches!(
+        (agent, tool_name, target),
+        (
+            AgentKind::Codex | AgentKind::ClaudeCode,
+            "Bash",
+            LocalApprovalTarget::ShellCommand { .. },
+        ) | (
+            AgentKind::ClaudeCode,
+            "WebFetch",
+            LocalApprovalTarget::WebFetch { .. },
+        )
+    ) {
+        return Ok(());
+    }
+    Err(ApprovalError::UnsupportedTarget)
 }
 
 fn validate_tool_name(value: &str) -> Result<(), ApprovalError> {
@@ -154,6 +201,20 @@ fn validate_command(value: &str) -> Result<(), ApprovalError> {
         })
     {
         return Err(ApprovalError::InvalidCommand);
+    }
+    Ok(())
+}
+
+fn validate_web_url(value: &str) -> Result<(), ApprovalError> {
+    if value.is_empty()
+        || value.len() > MAX_LOCAL_APPROVAL_URL_BYTES
+        || value.chars().any(is_unsafe_display_character)
+    {
+        return Err(ApprovalError::InvalidUrl);
+    }
+    let parsed = Url::parse(value).map_err(|_| ApprovalError::InvalidUrl)?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(ApprovalError::InvalidUrl);
     }
     Ok(())
 }
@@ -180,6 +241,10 @@ pub enum ApprovalError {
     InvalidToolName,
     #[error("the approval command is invalid or too large")]
     InvalidCommand,
+    #[error("the approval URL is invalid or too large")]
+    InvalidUrl,
+    #[error("the approval agent, tool, and target combination is not supported")]
+    UnsupportedTarget,
     #[error("local approval protocol version {0} is not supported")]
     UnsupportedVersion(u16),
     #[error(transparent)]
@@ -189,7 +254,8 @@ pub enum ApprovalError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalError, LOCAL_APPROVAL_PROTOCOL_VERSION, MAX_LOCAL_APPROVAL_COMMAND_BYTES,
+        ApprovalError, LOCAL_APPROVAL_PROTOCOL_VERSION, LocalApprovalTarget,
+        MAX_LOCAL_APPROVAL_COMMAND_BYTES, MAX_LOCAL_APPROVAL_URL_BYTES,
         local_approval_request_from_hook,
     };
     use crate::AgentKind;
@@ -208,11 +274,37 @@ mod tests {
             assert_eq!(request.version, LOCAL_APPROVAL_PROTOCOL_VERSION);
             assert_eq!(request.agent, agent);
             assert_eq!(request.tool_name, "Bash");
-            assert_eq!(request.command, "printf 'hello\\nworld'");
+            assert!(matches!(
+                request.target,
+                LocalApprovalTarget::ShellCommand { ref command }
+                    if command == "printf 'hello\\nworld'"
+            ));
             let encoded = serde_json::to_string(&request).expect("request should serialize");
             assert!(!encoded.contains("/private/work"));
             assert!(!encoded.contains("Run it?"));
         }
+    }
+
+    #[test]
+    fn extracts_only_a_valid_claude_web_fetch_url() {
+        let request = local_approval_request_from_hook(
+            AgentKind::ClaudeCode,
+            "PermissionRequest",
+            br#"{"session_id":"private-session","transcript_path":"/private/transcript","cwd":"/private/work","hook_event_name":"PermissionRequest","tool_name":"WebFetch","tool_input":{"url":"https://docs.example.com/api?view=full#usage","prompt":"Summarize private instructions"}}"#,
+        )
+        .expect("payload should parse")
+        .expect("WebFetch request should be supported");
+
+        assert_eq!(request.tool_name, "WebFetch");
+        assert!(matches!(
+            request.target,
+            LocalApprovalTarget::WebFetch { ref url }
+                if url == "https://docs.example.com/api?view=full#usage"
+        ));
+        let encoded = serde_json::to_string(&request).expect("request should serialize");
+        assert!(!encoded.contains("private-session"));
+        assert!(!encoded.contains("/private/"));
+        assert!(!encoded.contains("private instructions"));
     }
 
     #[test]
@@ -221,6 +313,15 @@ mod tests {
             AgentKind::ClaudeCode,
             "PermissionRequest",
             br#"{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"question":"Continue?"}}"#,
+        )
+        .expect("payload should parse");
+
+        assert!(request.is_none());
+
+        let request = local_approval_request_from_hook(
+            AgentKind::Codex,
+            "PermissionRequest",
+            br#"{"hook_event_name":"PermissionRequest","tool_name":"WebFetch","tool_input":{"url":"https://example.com/"}}"#,
         )
         .expect("payload should parse");
 
@@ -261,6 +362,70 @@ mod tests {
             assert!(matches!(
                 local_approval_request_from_hook(AgentKind::Codex, "PermissionRequest", &payload),
                 Err(ApprovalError::InvalidCommand)
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_web_fetch_urls_without_truncating_them() {
+        let oversized_url = format!(
+            "https://example.com/{}",
+            "x".repeat(MAX_LOCAL_APPROVAL_URL_BYTES)
+        );
+        for url in [
+            oversized_url.as_str(),
+            "file:///private/data",
+            "javascript:alert(1)",
+            "https://example.com/safe\u{202e}hidden",
+        ] {
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "WebFetch",
+                "tool_input": { "url": url, "prompt": "Read it" },
+            }))
+            .expect("fixture should serialize");
+            assert!(matches!(
+                local_approval_request_from_hook(
+                    AgentKind::ClaudeCode,
+                    "PermissionRequest",
+                    &payload,
+                ),
+                Err(ApprovalError::InvalidUrl)
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_noncanonical_agent_tool_and_target_combinations() {
+        let request_id = uuid::Uuid::new_v4();
+        for value in [
+            serde_json::json!({
+                "version": LOCAL_APPROVAL_PROTOCOL_VERSION,
+                "requestId": request_id,
+                "agent": "codex",
+                "toolName": "WebFetch",
+                "target": { "kind": "web_fetch", "url": "https://example.com/" },
+            }),
+            serde_json::json!({
+                "version": LOCAL_APPROVAL_PROTOCOL_VERSION,
+                "requestId": request_id,
+                "agent": "claude-code",
+                "toolName": "Bash",
+                "target": { "kind": "web_fetch", "url": "https://example.com/" },
+            }),
+            serde_json::json!({
+                "version": LOCAL_APPROVAL_PROTOCOL_VERSION,
+                "requestId": request_id,
+                "agent": "claude-code",
+                "toolName": "WebFetch",
+                "target": { "kind": "shell_command", "command": "printf unsafe" },
+            }),
+        ] {
+            let request: super::LocalApprovalRequest =
+                serde_json::from_value(value).expect("shape should decode");
+            assert!(matches!(
+                request.validate(),
+                Err(ApprovalError::UnsupportedTarget)
             ));
         }
     }
