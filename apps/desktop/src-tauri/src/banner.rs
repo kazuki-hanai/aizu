@@ -8,7 +8,7 @@ use std::{
 };
 
 use tauri::{
-    App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl,
+    App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, UserAttentionType, WebviewUrl,
     WebviewWindowBuilder, Wry,
 };
 
@@ -514,12 +514,6 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     window
         .show()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
-    if mode == PresentationMode::Approval
-        && let Err(error) = window.set_focus()
-    {
-        let _ = window.hide();
-        return Err(NotifyError::Scheduling(error.to_string()));
-    }
     if let Some(broker) = app.try_state::<crate::approval_broker::ApprovalBroker>() {
         for banner in visible.iter().filter(|banner| banner.approval.is_some()) {
             let _ = broker.mark_window_shown(banner.id);
@@ -527,6 +521,12 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     }
     app.emit_to(BANNER_WINDOW, "aizu://banners-changed", &visible)
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
+    // WebKit can throttle a non-key banner window before the Tauri event listener resumes.
+    // This fixed, payload-free wake-up makes the frontend re-read the authorized backend state.
+    let _ = window.eval("window.dispatchEvent(new Event('aizu-banner-refresh'))");
+    if mode == PresentationMode::Approval && window.set_focus().is_err() {
+        let _ = window.request_user_attention(Some(UserAttentionType::Critical));
+    }
     if let Some(sound) = app.state::<BannerState>().take_pending_sound(generation)? {
         play_sound(sound);
     }

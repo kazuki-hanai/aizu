@@ -250,9 +250,11 @@ describe("Aizu Banner", () => {
 
     fireEvent.mouseDown(handle, { button: 0, clientX: 140, clientY: 20 });
     fireEvent.mouseMove(window, { button: 0, clientX: 40, clientY: 20 });
+    await waitFor(() => expect(banner).toHaveClass("aizu-banner--dragging"));
+    expect(Number.parseInt(banner.style.getPropertyValue("--aizu-swipe-offset"), 10)).toBeLessThanOrEqual(-72);
     fireEvent.mouseUp(window, { button: 0, clientX: 40, clientY: 20 });
 
-    expect(banner).toHaveClass("aizu-banner--dismiss-left");
+    await waitFor(() => expect(banner).toHaveClass("aizu-banner--dismiss-left"));
     await waitFor(() => expect(backend.dismiss).toHaveBeenCalledWith(1));
   });
 
@@ -391,7 +393,7 @@ describe("Aizu Banner", () => {
     expect(banner.style.getPropertyValue("--aizu-swipe-offset")).toBe("0px");
   });
 
-  it("does not let an older banner snapshot replace a newer one", async () => {
+  it("serializes overlapping refreshes and applies the queued follow-up", async () => {
     const older = deferred<BannerNotification[]>();
     const newer = deferred<BannerNotification[]>();
     const backend = client();
@@ -400,15 +402,31 @@ describe("Aizu Banner", () => {
       .mockImplementationOnce(() => newer.promise);
 
     render(<BannerApp client={backend} />);
-    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(1));
 
-    newer.resolve([notices[1]]);
-    expect(await screen.findByText(notices[1].body)).toBeVisible();
     older.resolve([notices[0]]);
-    await Promise.resolve();
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
+    newer.resolve([notices[1]]);
 
+    expect(await screen.findByText(notices[1].body)).toBeVisible();
     expect(screen.queryByText(notices[0].body)).not.toBeInTheDocument();
-    expect(screen.getByText(notices[1].body)).toBeVisible();
+  });
+
+  it("re-reads backend state when the native window sends a payload-free wake-up", async () => {
+    const backend = client();
+    let queued: BannerNotification[] = [];
+    backend.getBanners = vi.fn(() => Promise.resolve(queued));
+    render(<BannerApp client={backend} />);
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalled());
+    const callsBeforeWake = vi.mocked(backend.getBanners).mock.calls.length;
+
+    queued = [notices[0]];
+    window.dispatchEvent(new Event("aizu-banner-refresh"));
+
+    await waitFor(() => {
+      expect(backend.getBanners).toHaveBeenCalledTimes(callsBeforeWake + 1);
+    });
+    expect(await screen.findByText(notices[0].title)).toBeVisible();
   });
 
   it("does not let an in-flight snapshot replace a pushed banner state", async () => {
@@ -419,17 +437,17 @@ describe("Aizu Banner", () => {
       .mockImplementationOnce(() => firstStale.promise)
       .mockImplementationOnce(() => secondStale.promise);
     render(<BannerApp client={backend} />);
-    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(1));
     const [[subscription]] = vi.mocked(backend.subscribe).mock.calls;
     subscription([notices[1]]);
     expect(await screen.findByText(notices[1].body)).toBeVisible();
 
     firstStale.resolve(notices);
-    secondStale.resolve(notices);
-    await Promise.resolve();
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
+    secondStale.resolve([notices[1]]);
 
     expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument();
-    expect(screen.getByText(notices[1].body)).toBeVisible();
+    expect(await screen.findByText(notices[1].body)).toBeVisible();
   });
 
   it("refreshes authoritatively after dismiss so a concurrent new banner remains visible", async () => {
