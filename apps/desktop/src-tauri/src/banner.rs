@@ -848,6 +848,12 @@ fn notification_display_identity(
     }
 }
 
+fn secondary_monitor_identity(
+    screen_identities: &[Option<MonitorIdentity>],
+) -> Option<MonitorIdentity> {
+    screen_identities.get(1).copied().flatten()
+}
+
 fn scaled_monitor_identity(
     origin_x: f64,
     origin_y: f64,
@@ -900,14 +906,12 @@ fn macos_monitor_candidates(
 
     let mtm = MainThreadMarker::new()?;
     let screens = objc2_app_kit::NSScreen::screens(mtm);
-    let primary = screens
+    let screen_identities = screens
         .iter()
-        .next()
-        .and_then(|screen| macos_monitor_identity(&screen));
-    let secondary = screens
-        .iter()
-        .skip(1)
-        .find_map(|screen| macos_monitor_identity(&screen));
+        .map(|screen| macos_monitor_identity(&screen))
+        .collect::<Vec<_>>();
+    let primary = screen_identities.first().copied().flatten();
+    let secondary = secondary_monitor_identity(&screen_identities);
     let focused_window = objc2_app_kit::NSScreen::mainScreen(mtm)
         .as_deref()
         .and_then(macos_monitor_identity);
@@ -995,7 +999,7 @@ mod tests {
         BannerState, MAX_PRESENTATION_ATTEMPTS, MAX_VISIBLE_PASSIVE_BANNERS, MonitorIdentity,
         PresentationMode, WindowGeometry, WorkAreaGeometry, needs_user_attention,
         notification_display_identity, preferred_monitor_identity, retry_delay,
-        scaled_monitor_identity, window_geometry,
+        scaled_monitor_identity, secondary_monitor_identity, window_geometry,
     };
     use crate::model::Notification;
 
@@ -1242,6 +1246,31 @@ mod tests {
                 Some(pointer),
             ),
             None
+        );
+    }
+
+    #[test]
+    fn secondary_display_does_not_skip_an_unusable_first_candidate() {
+        let primary = MonitorIdentity {
+            x: 0,
+            y: 0,
+            width: 1_920,
+            height: 1_080,
+        };
+        let later_secondary = MonitorIdentity {
+            x: 1_920,
+            y: 0,
+            width: 2_560,
+            height: 1_440,
+        };
+
+        assert_eq!(
+            secondary_monitor_identity(&[Some(primary), None, Some(later_secondary)]),
+            None
+        );
+        assert_eq!(
+            secondary_monitor_identity(&[Some(primary), Some(later_secondary)]),
+            Some(later_secondary)
         );
     }
 
