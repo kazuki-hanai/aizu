@@ -135,7 +135,7 @@ fn ensure_banner_caller(window_label: &str) -> Result<(), DesktopError> {
 
 fn approval_unavailable() -> DesktopError {
     crate::notifier::NotifyError::Scheduling(
-        "this command approval is no longer available".to_owned(),
+        "this approval request is no longer available".to_owned(),
     )
     .into()
 }

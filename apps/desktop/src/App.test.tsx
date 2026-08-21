@@ -434,10 +434,10 @@ describe("Aizu desktop shell", () => {
       expect(screen.getByRole("option", { name: sound })).toBeInTheDocument();
     }
     expect(screen.queryByRole("option", { name: "Hero" })).not.toBeInTheDocument();
-    expect(screen.getByRole("switch", { name: "Show command approval buttons" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Show approval buttons" })).not.toBeChecked();
     expect(screen.queryByRole("switch", { name: "Show approval in the center" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Task completion" }));
-    await user.click(screen.getByRole("switch", { name: "Show command approval buttons" }));
+    await user.click(screen.getByRole("switch", { name: "Show approval buttons" }));
     expect(screen.getByRole("switch", { name: "Show approval in the center" })).toBeChecked();
     await user.click(screen.getByRole("switch", { name: "Show approval in the center" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification style" }), "system");

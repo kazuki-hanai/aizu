@@ -489,7 +489,11 @@ fn permission_hook_returns_a_one_shot_local_broker_decision() {
         let request: aizu_core::LocalApprovalRequest = serde_json::from_slice(&request).unwrap();
         assert_eq!(request.agent, aizu_core::AgentKind::Codex);
         assert_eq!(request.tool_name, "Bash");
-        assert_eq!(request.command, "printf 'approved'");
+        assert!(matches!(
+            request.target,
+            aizu_core::LocalApprovalTarget::ShellCommand { ref command }
+                if command == "printf 'approved'"
+        ));
         let response = aizu_core::LocalApprovalResponse::Decision {
             request_id: request.request_id,
             decision: aizu_core::ApprovalDecision::AllowOnce,
@@ -566,6 +570,75 @@ fn permission_hook_returns_a_one_shot_local_broker_decision() {
         assert!(!serialized.contains("printf 'approved'"));
         assert!(!serialized.contains("printf 'terminal fallback'"));
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_web_fetch_permission_uses_the_exact_url_for_local_approval() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+
+    let directory = TempDir::new().unwrap();
+    fs::create_dir_all(directory.path()).unwrap();
+    let listener = UnixListener::bind(directory.path().join("approval.sock")).unwrap();
+    let broker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut frame = Vec::new();
+        let mut byte = [0_u8; 1];
+        while stream.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {
+            frame.push(byte[0]);
+        }
+        let request: aizu_core::LocalApprovalRequest = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(request.agent, aizu_core::AgentKind::ClaudeCode);
+        assert_eq!(request.tool_name, "WebFetch");
+        assert!(matches!(
+            request.target,
+            aizu_core::LocalApprovalTarget::WebFetch { ref url }
+                if url == "https://docs.example.com/guide?topic=hooks#approval"
+        ));
+        let serialized = String::from_utf8(frame).unwrap();
+        assert!(!serialized.contains("private prompt"));
+        assert!(!serialized.contains("/private/work"));
+        let response = aizu_core::LocalApprovalResponse::Decision {
+            request_id: request.request_id,
+            decision: aizu_core::ApprovalDecision::AllowOnce,
+        };
+        serde_json::to_writer(&mut stream, &response).unwrap();
+        stream.write_all(b"\n").unwrap();
+    });
+
+    let output = aizu()
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "hook",
+            "--agent",
+            "claude-code",
+            "--event",
+            "PermissionRequest",
+            "--strict",
+        ])
+        .write_stdin(
+            r#"{"hook_event_name":"PermissionRequest","cwd":"/private/work","tool_name":"WebFetch","tool_input":{"url":"https://docs.example.com/guide?topic=hooks#approval","prompt":"private prompt"}}"#,
+        )
+        .output()
+        .unwrap();
+
+    broker.join().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        response["hookSpecificOutput"]["decision"]["behavior"],
+        "allow"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("docs.example.com"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("private"));
+    let spool = Spool::open(StatePaths::new(directory.path())).unwrap();
+    let events = spool.events_after(0, Some(10)).unwrap();
+    assert_eq!(events.len(), 1);
+    let stored = serde_json::to_string(&events[0].event).unwrap();
+    assert!(!stored.contains("docs.example.com"));
+    assert!(!stored.contains("private prompt"));
 }
 
 #[test]

@@ -154,7 +154,7 @@ impl BannerState {
         if notification.approval.is_some() {
             if banners.iter().any(|banner| banner.approval.is_some()) {
                 return Err(NotifyError::Scheduling(
-                    "an Aizu command approval is already visible".to_owned(),
+                    "an Aizu approval request is already visible".to_owned(),
                 ));
             }
         } else if banners
@@ -1046,7 +1046,9 @@ mod tests {
         approval.approval = Some(crate::model::ApprovalPresentation {
             agent: crate::model::AgentKind::Codex,
             tool_name: "Bash".to_owned(),
-            command: "printf approved".to_owned(),
+            target: crate::model::ApprovalTargetPresentation::ShellCommand {
+                command: "printf approved".to_owned(),
+            },
         });
         state.push(approval).unwrap();
 
@@ -1074,7 +1076,9 @@ mod tests {
         approval.approval = Some(crate::model::ApprovalPresentation {
             agent: crate::model::AgentKind::Codex,
             tool_name: "Bash".to_owned(),
-            command: "printf approved".to_owned(),
+            target: crate::model::ApprovalTargetPresentation::ShellCommand {
+                command: "printf approved".to_owned(),
+            },
         });
         state.push(approval).unwrap();
 
@@ -1094,7 +1098,9 @@ mod tests {
         approval.approval = Some(crate::model::ApprovalPresentation {
             agent: crate::model::AgentKind::Codex,
             tool_name: "Bash".to_owned(),
-            command: "printf approved".to_owned(),
+            target: crate::model::ApprovalTargetPresentation::ShellCommand {
+                command: "printf approved".to_owned(),
+            },
         });
         state.push(approval).unwrap();
 
@@ -1589,7 +1595,9 @@ mod tests {
         approval.approval = Some(crate::model::ApprovalPresentation {
             agent: crate::model::AgentKind::Codex,
             tool_name: "Bash".to_owned(),
-            command: "printf approved".to_owned(),
+            target: crate::model::ApprovalTargetPresentation::ShellCommand {
+                command: "printf approved".to_owned(),
+            },
         });
         approval.sound = Some(crate::model::NotificationSound::Default);
         state.push(approval).expect("approval");

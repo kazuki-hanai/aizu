@@ -513,7 +513,10 @@ describe("Aizu Banner", () => {
       approval: {
         agent: "codex",
         toolName: "Bash",
-        command: "printf 'first line'\nprintf 'second line'",
+        target: {
+          kind: "shellCommand",
+          command: "printf 'first line'\nprintf 'second line'",
+        },
       },
     };
     let approvalQueue = [notices[0], approval];
@@ -532,8 +535,10 @@ describe("Aizu Banner", () => {
     );
     expect(container.querySelector(".aizu-banner")).toHaveClass("aizu-banner--approval");
     expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument();
-    expect(container.querySelector(".aizu-banner__command")?.textContent).toBe(
-      approval.approval?.command,
+    expect(container.querySelector(".aizu-banner__approval-target")?.textContent).toBe(
+      approval.approval?.target.kind === "shellCommand"
+        ? approval.approval.target.command
+        : undefined,
     );
     const allow = screen.getByRole("button", { name: "Allow once" });
     const deny = screen.getByRole("button", { name: "Deny" });
@@ -562,6 +567,33 @@ describe("Aizu Banner", () => {
     );
   });
 
+  it("shows a Claude Code WebFetch URL without turning it into a link", async () => {
+    const backend = client();
+    const approval: BannerNotification = {
+      ...notices[1],
+      id: -3,
+      title: "Claude Code requests permission",
+      body: "Review the URL before choosing.",
+      approval: {
+        agent: "claudeCode",
+        toolName: "WebFetch",
+        target: {
+          kind: "webFetch",
+          url: "https://docs.example.com/guide?topic=hooks#approval",
+        },
+      },
+    };
+    backend.getBanners = vi.fn(() => Promise.resolve([approval]));
+    const { container } = render(<BannerApp client={backend} />);
+
+    expect(await screen.findByText("Claude Code requests permission")).toBeVisible();
+    const target = screen.getByLabelText("URL to fetch");
+    expect(target).toHaveTextContent("https://docs.example.com/guide?topic=hooks#approval");
+    expect(target).toHaveClass("aizu-banner__approval-target");
+    expect(container.querySelector("a")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Allow once" })).toBeEnabled());
+  });
+
   it("keeps approval visible until an explicit decision", async () => {
     const backend = client();
     const approval: BannerNotification = {
@@ -573,7 +605,10 @@ describe("Aizu Banner", () => {
       approval: {
         agent: "codex",
         toolName: "Bash",
-        command: "printf 'terminal fallback'",
+        target: {
+          kind: "shellCommand",
+          command: "printf 'terminal fallback'",
+        },
       },
     };
     backend.getBanners = vi.fn(() => Promise.resolve([approval]));

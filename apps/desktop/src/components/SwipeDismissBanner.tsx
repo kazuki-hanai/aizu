@@ -312,7 +312,16 @@ export function SwipeDismissBanner({
           {banner.approval ? (
             <>
               <span className="aizu-banner__approval-tool">{banner.approval.toolName}</span>
-              <pre className="aizu-banner__command"><code>{banner.approval.command}</code></pre>
+              <pre
+                aria-label={banner.approval.target.kind === "webFetch"
+                  ? messages(banner.language).approvalUrl
+                  : messages(banner.language).approvalCommand}
+                className="aizu-banner__approval-target"
+              >
+                <code>{banner.approval.target.kind === "webFetch"
+                  ? banner.approval.target.url
+                  : banner.approval.target.command}</code>
+              </pre>
               <div className="aizu-banner__actions">
                 <button
                   className="aizu-banner__action aizu-banner__action--deny"
