@@ -220,6 +220,8 @@ pub struct Preferences {
     pub center_approval_dialogs: bool,
     pub sound_enabled: bool,
     #[serde(default)]
+    pub notification_display: NotificationDisplay,
+    #[serde(default)]
     pub notification_delivery: NotificationDelivery,
     #[serde(default)]
     pub notification_sound: NotificationSound,
@@ -244,6 +246,7 @@ impl Default for Preferences {
             command_approvals_enabled: false,
             center_approval_dialogs: true,
             sound_enabled: true,
+            notification_display: NotificationDisplay::default(),
             notification_delivery: NotificationDelivery::default(),
             notification_sound: NotificationSound::default(),
             privacy_mode: PrivacyMode::Generic,
@@ -268,6 +271,15 @@ pub enum NotificationDelivery {
     #[default]
     AizuBanner,
     System,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NotificationDisplay {
+    #[default]
+    Primary,
+    FocusedWindow,
+    Pointer,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,6 +467,10 @@ mod tests {
         assert_eq!(preferences.text_size, TextSize::Standard);
         assert!(!preferences.command_approvals_enabled);
         assert!(preferences.center_approval_dialogs);
+        assert_eq!(
+            preferences.notification_display,
+            super::NotificationDisplay::Primary
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::model::Preferences;
 
-const CURRENT_SETTINGS_VERSION: u32 = 3;
+const CURRENT_SETTINGS_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -394,6 +394,40 @@ mod tests {
                 .expect("decode migrated settings");
         assert!(persisted.preferences.command_approvals_enabled);
         assert!(persisted.preferences.center_approval_dialogs);
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn version_three_defaults_and_persists_the_primary_notification_display() {
+        let (directory, path) = temporary_settings_path("migrate-notification-display");
+        let mut fixture = serde_json::to_value(StoredSettings::default())
+            .expect("encode current settings fixture");
+        fixture["settingsVersion"] = serde_json::json!(3);
+        fixture["preferences"]
+            .as_object_mut()
+            .expect("preferences object")
+            .remove("notificationDisplay");
+        fs::write(
+            &path,
+            serde_json::to_vec(&fixture).expect("encode v3 settings"),
+        )
+        .expect("write v3 settings");
+
+        let store = SettingsStore::new(path.clone());
+        let migrated = store.load().expect("v3 settings migrate");
+
+        assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
+        assert_eq!(
+            migrated.preferences.notification_display,
+            crate::model::NotificationDisplay::Primary
+        );
+        let persisted: StoredSettings =
+            serde_json::from_slice(&fs::read(&path).expect("read migrated settings"))
+                .expect("decode migrated settings");
+        assert_eq!(
+            persisted.preferences.notification_display,
+            crate::model::NotificationDisplay::Primary
+        );
         fs::remove_dir_all(directory).expect("temporary directory should be removable");
     }
 

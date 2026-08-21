@@ -89,6 +89,7 @@ export const preferencesSchema = z.object({
   commandApprovalsEnabled: z.boolean().default(false),
   centerApprovalDialogs: z.boolean().default(true),
   soundEnabled: z.boolean(),
+  notificationDisplay: z.enum(["primary", "focusedWindow", "pointer"]).default("primary"),
   notificationDelivery: z.enum(["aizuBanner", "system"]).default("aizuBanner"),
   notificationSound: z.enum(["default", "chime", "pulse", "bloom"]),
   privacyMode: z.literal("generic"),

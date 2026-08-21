@@ -139,11 +139,12 @@ events remain in the source SQLite spool while the Mac is disconnected.
 ## Notifications
 
 - **Aizu Banner** is the default. It needs no macOS notification permission,
-  appears on the primary display selected in macOS, keeps up to three alerts
-  visible, preserves safe line breaks, and closes only from its close button or
-  a horizontal click-drag/swipe. Click a local Codex or Claude Code alert to
-  return to its terminal. Text remains selectable, and selecting or dragging it
-  does not activate the terminal.
+  keeps up to three alerts visible, preserves safe line breaks, and closes only
+  from its close button or a horizontal click-drag/swipe. **Settings > Aizu
+  display** chooses the macOS Main Display by default, the focused-window
+  display, or the display under the mouse pointer. Click a local Codex or Claude
+  Code alert to return to its terminal. Text remains selectable, and selecting
+  or dragging it does not activate the terminal.
 - **macOS Notifications** uses Notification Center. Select it under
   **Settings > Notification style**, then use the test action to request system
   permission. Clicking an actionable local Codex or Claude Code alert uses the
@@ -153,9 +154,9 @@ events remain in the source SQLite spool while the Mac is disconnected.
   **Settings > Notification sound**.
 - Permission requests use the agent's terminal by default. Turn on **Show
   command approval buttons** in Settings to show a large dialog with `Deny` and
-  `Allow once` for exact local shell commands. It appears on the primary display
-  selected in macOS and is centered by default. Turn off **Show approval in the
-  center** to place it at that display's top right. The dialog stays in
+  `Allow once` for exact local shell commands. It uses the same **Aizu display**
+  setting and is centered by default. Turn off **Show approval in the center**
+  to place it at that display's top right. The dialog stays in
   front until you choose or the bounded request times out; it cannot be closed
   or swiped away. Aizu never runs the command or creates permanent permission
   rules. macOS Notification Center and remote SSH approvals remain

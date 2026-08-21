@@ -423,6 +423,10 @@ describe("Aizu desktop shell", () => {
     await user.click(await screen.findByRole("button", { name: "Settings" }));
     expect(screen.queryByRole("button", { name: "Save settings" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Notification style" })).toHaveValue("aizuBanner");
+    expect(screen.getByRole("combobox", { name: "Aizu display" })).toHaveValue("primary");
+    for (const display of ["Main display", "Focused window", "Mouse pointer"]) {
+      expect(screen.getByRole("option", { name: display })).toBeInTheDocument();
+    }
     expect(screen.getByRole("combobox", { name: "Text size" })).toHaveValue("standard");
     expect(screen.getByRole("combobox", { name: "Notification sound" }))
       .toHaveDisplayValue("Aizu Pop");
@@ -437,19 +441,21 @@ describe("Aizu desktop shell", () => {
     expect(screen.getByRole("switch", { name: "Show approval in the center" })).toBeChecked();
     await user.click(screen.getByRole("switch", { name: "Show approval in the center" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification style" }), "system");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Aizu display" }), "pointer");
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification sound" }), "pulse");
     await user.selectOptions(screen.getByRole("combobox", { name: "Text size" }), "large");
     await user.click(screen.getByText("Advanced"));
     await user.click(screen.getByRole("switch", { name: "Show agent details" }));
 
     await waitFor(async () => {
-      expect(updatePreferences).toHaveBeenCalledTimes(7);
+      expect(updatePreferences).toHaveBeenCalledTimes(8);
       await expect(backend.getView()).resolves.toMatchObject({
         preferences: {
           completionEnabled: false,
           agentDetailsEnabled: false,
           commandApprovalsEnabled: true,
           centerApprovalDialogs: false,
+          notificationDisplay: "pointer",
           notificationDelivery: "system",
           notificationSound: "pulse",
           textSize: "large",

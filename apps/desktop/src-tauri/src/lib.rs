@@ -95,6 +95,14 @@ fn desktop_builder() -> tauri::Builder<tauri::Wry> {
     builder
 }
 
+fn initialize_banner_preferences(
+    app: &AppHandle<Wry>,
+    preferences: &model::Preferences,
+) -> Result<(), notifier::NotifyError> {
+    banner::update_notification_display(app, preferences.notification_display)?;
+    banner::update_approval_centering(app, preferences.center_approval_dialogs)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = desktop_builder();
@@ -134,8 +142,7 @@ pub fn run() {
             let _ = service.poll_local_pipeline();
             let initial_view = service.view();
             app.manage(DesktopState::new(service));
-            let center_approvals = initial_view.preferences.center_approval_dialogs;
-            banner::update_approval_centering(app.handle(), center_approvals)?;
+            initialize_banner_preferences(app.handle(), &initial_view.preferences)?;
             app.manage(approval_broker::ApprovalBroker::start(
                 app.handle().clone(),
                 &state_paths.approval_socket(),
