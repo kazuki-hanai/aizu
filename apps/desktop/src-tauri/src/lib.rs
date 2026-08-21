@@ -26,9 +26,10 @@ use tauri::{AppHandle, Manager, RunEvent, WindowEvent, Wry};
 
 #[cfg(feature = "desktop-e2e")]
 use crate::commands::{
-    get_e2e_banner_window_state, get_e2e_banners, get_e2e_notifications,
-    get_e2e_terminal_activation_count, hide_e2e_main_window, is_e2e_main_window_visible,
-    set_e2e_remote_status, show_e2e_scrollable_banners, show_e2e_terminal_banner,
+    get_e2e_banner_monitor_state, get_e2e_banner_window_state, get_e2e_banners,
+    get_e2e_notifications, get_e2e_terminal_activation_count, hide_e2e_main_window,
+    is_e2e_main_window_visible, set_e2e_remote_status, show_e2e_scrollable_banners,
+    show_e2e_terminal_banner,
 };
 use crate::{
     commands::{
@@ -126,6 +127,8 @@ fn register_commands(builder: tauri::Builder<Wry>) -> tauri::Builder<Wry> {
         install_cli,
         configure_agents,
         confirm_codex_hook_trust,
+        #[cfg(feature = "desktop-e2e")]
+        get_e2e_banner_monitor_state,
         #[cfg(feature = "desktop-e2e")]
         get_e2e_banner_window_state,
         #[cfg(feature = "desktop-e2e")]

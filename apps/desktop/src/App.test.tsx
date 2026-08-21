@@ -424,7 +424,7 @@ describe("Aizu desktop shell", () => {
     expect(screen.queryByRole("button", { name: "Save settings" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Notification style" })).toHaveValue("aizuBanner");
     expect(screen.getByRole("combobox", { name: "Aizu display" })).toHaveValue("primary");
-    for (const display of ["Main display", "Focused window", "Mouse pointer"]) {
+    for (const display of ["Main display", "Secondary display", "Focused window", "Mouse pointer"]) {
       expect(screen.getByRole("option", { name: display })).toBeInTheDocument();
     }
     expect(screen.getByRole("combobox", { name: "Text size" })).toHaveValue("standard");
@@ -441,7 +441,7 @@ describe("Aizu desktop shell", () => {
     expect(screen.getByRole("switch", { name: "Show approval in the center" })).toBeChecked();
     await user.click(screen.getByRole("switch", { name: "Show approval in the center" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification style" }), "system");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Aizu display" }), "pointer");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Aizu display" }), "secondary");
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification sound" }), "pulse");
     await user.selectOptions(screen.getByRole("combobox", { name: "Text size" }), "large");
     await user.click(screen.getByText("Advanced"));
@@ -455,7 +455,7 @@ describe("Aizu desktop shell", () => {
           agentDetailsEnabled: false,
           commandApprovalsEnabled: true,
           centerApprovalDialogs: false,
-          notificationDisplay: "pointer",
+          notificationDisplay: "secondary",
           notificationDelivery: "system",
           notificationSound: "pulse",
           textSize: "large",
@@ -483,6 +483,7 @@ describe("Aizu desktop shell", () => {
     expect(await screen.findByRole("heading", { name: "設定" })).toBeVisible();
     expect(screen.getByRole("button", { name: "エージェント" })).toBeVisible();
     expect(screen.getByRole("combobox", { name: "言語" })).toHaveValue("ja");
+    expect(screen.getByRole("option", { name: "サブディスプレイ" })).toBeInTheDocument();
     expect(document.documentElement).toHaveAttribute("lang", "ja");
     expect(updatePreferences).toHaveBeenLastCalledWith({
       ...initial.preferences,

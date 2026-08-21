@@ -278,6 +278,7 @@ pub enum NotificationDelivery {
 pub enum NotificationDisplay {
     #[default]
     Primary,
+    Secondary,
     FocusedWindow,
     Pointer,
 }

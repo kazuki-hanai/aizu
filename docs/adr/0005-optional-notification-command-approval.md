@@ -19,15 +19,17 @@ active decision surface for a request, but cannot safely make both surfaces acti
    version 2 resets the former default-on value to off so an upgrade never exposes command text or
    changes the decision surface without a fresh opt-in. Settings schema version 3 adds **Show
    approval in the center**, defaults it to on, and preserves every version 2 approval opt-in.
+   Version 5 adds the secondary-display selection and preserves every version 4 display choice.
 2. Generated local first-party `PermissionRequest` hooks are synchronous with a 50-second outer
    timeout. When the setting is off, the private desktop broker immediately returns `unavailable`
    with `presented: false`; the CLI returns no decision and the agent continues to its standard
    terminal prompt.
 3. When the setting is on, one canonical local `Bash` request may show a large Aizu approval dialog
    containing the exact bounded command and only `Deny` and `Allow once`. Aizu uses the shared
-   banner-display preference: the macOS primary display by default, the focused-window display, or
-   the pointer display. The dialog is centered by default; the separate centering setting moves it
-   to that display's top right without removing its approval controls. It is
+   banner-display preference: the macOS primary display by default, the first connected secondary
+   display, the focused-window display, or the pointer display. The dialog is centered by default;
+   the separate centering setting moves it to that display's top right without removing its
+   approval controls. A missing secondary display falls back to the primary display. It is
    always on top, requests focus with a one-shot informational platform-attention fallback,
    temporarily takes visual priority over queued passive banners, and cannot be closed or swiped
    away. The command becomes actionable only after native window presentation and frontend render
