@@ -354,6 +354,10 @@ pub fn update_preferences(
         // retried independently and must not turn that commit into an error.
         let _ = crate::banner::update_text_size(&app, view.preferences.text_size);
     }
+    // The preference is already durable. Reposition any current approval as a
+    // best-effort presentation refresh without replaying its sound or decision.
+    let _ =
+        crate::banner::update_approval_centering(&app, view.preferences.center_approval_dialogs);
     publish(&app, &view);
     Ok(view)
 }

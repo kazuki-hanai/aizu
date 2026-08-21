@@ -25,6 +25,7 @@ type View = {
     questionEnabled: boolean;
     agentDetailsEnabled: boolean;
     commandApprovalsEnabled: boolean;
+    centerApprovalDialogs: boolean;
     soundEnabled: boolean;
     notificationDelivery: string;
     notificationSound: string;
@@ -116,6 +117,7 @@ describe("Aizu desktop MVP", () => {
     await expect($("h1=Keep agent events within reach.")).toBeDisplayed();
     const initial = await invokeView("get_app_view");
     expect(initial.preferences.commandApprovalsEnabled).toBe(false);
+    expect(initial.preferences.centerApprovalDialogs).toBe(true);
     await invokeView("update_preferences", {
       request: { ...initial.preferences, notificationDelivery: "system" },
     });
@@ -420,10 +422,11 @@ describe("Aizu desktop MVP", () => {
     expect(await browser.execute(() => document.documentElement.dataset.textSize)).toBe("large");
     expect((await invokeView("get_app_view")).preferences.quietHours.enabled).toBe(true);
     const persisted = JSON.parse(await readFile(path.join(stateRoot as string, "settings.json"), "utf8")) as {
-      preferences: { agentDetailsEnabled: boolean; commandApprovalsEnabled: boolean; language: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
+      preferences: { agentDetailsEnabled: boolean; commandApprovalsEnabled: boolean; centerApprovalDialogs: boolean; language: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
     };
     expect(persisted.preferences.agentDetailsEnabled).toBe(true);
     expect(persisted.preferences.commandApprovalsEnabled).toBe(true);
+    expect(persisted.preferences.centerApprovalDialogs).toBe(true);
     expect(persisted.preferences.notificationSound).toBe("bloom");
     expect(persisted.preferences.language).toBe("ja");
     expect(persisted.preferences.textSize).toBe("large");

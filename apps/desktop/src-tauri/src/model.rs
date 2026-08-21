@@ -216,6 +216,8 @@ pub struct Preferences {
     pub agent_details_enabled: bool,
     #[serde(default)]
     pub command_approvals_enabled: bool,
+    #[serde(default = "default_true")]
+    pub center_approval_dialogs: bool,
     pub sound_enabled: bool,
     #[serde(default)]
     pub notification_delivery: NotificationDelivery,
@@ -240,6 +242,7 @@ impl Default for Preferences {
             question_enabled: true,
             agent_details_enabled: true,
             command_approvals_enabled: false,
+            center_approval_dialogs: true,
             sound_enabled: true,
             notification_delivery: NotificationDelivery::default(),
             notification_sound: NotificationSound::default(),
@@ -451,6 +454,7 @@ mod tests {
         assert_eq!(preferences.language, LanguagePreference::System);
         assert_eq!(preferences.text_size, TextSize::Standard);
         assert!(!preferences.command_approvals_enabled);
+        assert!(preferences.center_approval_dialogs);
     }
 
     #[test]

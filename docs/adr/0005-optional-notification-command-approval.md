@@ -17,13 +17,17 @@ active decision surface for a request, but cannot safely make both surfaces acti
 
 1. **Show command approval buttons** is persisted in Settings and defaults to off. Settings schema
    version 2 resets the former default-on value to off so an upgrade never exposes command text or
-   changes the decision surface without a fresh opt-in.
+   changes the decision surface without a fresh opt-in. Settings schema version 3 adds **Show
+   approval in the center**, defaults it to on, and preserves every version 2 approval opt-in.
 2. Generated local first-party `PermissionRequest` hooks are synchronous with a 50-second outer
    timeout. When the setting is off, the private desktop broker immediately returns `unavailable`
    with `presented: false`; the CLI returns no decision and the agent continues to its standard
    terminal prompt.
-3. When the setting is on, one canonical local `Bash` request may show a large, centered Aizu
-   approval dialog containing the exact bounded command and only `Deny` and `Allow once`. It is
+3. When the setting is on, one canonical local `Bash` request may show a large Aizu approval dialog
+   containing the exact bounded command and only `Deny` and `Allow once`. Aizu selects the display
+   under the pointer, then falls back to Aizu's keyboard-focus display and the primary display. The
+   dialog is centered by default; the separate centering setting moves it to that display's top
+   right without removing its approval controls. It is
    always on top, requests focus with a one-shot informational platform-attention fallback,
    temporarily takes visual priority over queued passive banners, and cannot be closed or swiped
    away. The command becomes actionable only after native window presentation and frontend render
@@ -48,6 +52,8 @@ active decision surface for a request, but cannot safely make both surfaces acti
   timeout and other failure paths hand the request back to the terminal without a decision.
 - Passive banners remain queued while the approval dialog is visible and return to the normal
   top-right stack after the request is resolved.
+- Changing the centering setting repositions an existing approval without replaying notification
+  sound or changing its one-shot decision state.
 - The setup merger replaces recognized five-second background Aizu permission hooks with the
   synchronous form while preserving unrelated and lookalike hooks.
 - Two simultaneously actionable approval surfaces remain out of scope without an agent-owned,

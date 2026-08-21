@@ -8,8 +8,8 @@ use std::{
 };
 
 use tauri::{
-    App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, UserAttentionType, WebviewUrl,
-    WebviewWindowBuilder, Wry,
+    App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition,
+    PhysicalSize, UserAttentionType, WebviewUrl, WebviewWindowBuilder, Wry,
 };
 
 use crate::{
@@ -31,7 +31,14 @@ const MAX_PRESENTATION_ATTEMPTS: u8 = 5;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PresentationMode {
     Passive,
-    Approval,
+    ApprovalCentered,
+    ApprovalCorner,
+}
+
+impl PresentationMode {
+    const fn is_approval(self) -> bool {
+        matches!(self, Self::ApprovalCentered | Self::ApprovalCorner)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -62,7 +69,6 @@ struct PendingSound {
     sound: Option<NotificationSound>,
 }
 
-#[derive(Default)]
 pub struct BannerState {
     banners: Mutex<VecDeque<Notification>>,
     activation_claims: Mutex<BTreeMap<i32, u64>>,
@@ -70,8 +76,25 @@ pub struct BannerState {
     retry: Mutex<PresentationRetry>,
     next_activation_claim: AtomicU64,
     generation: AtomicU64,
+    center_approval_dialogs: AtomicBool,
     dirty: AtomicBool,
     presentation_scheduled: AtomicBool,
+}
+
+impl Default for BannerState {
+    fn default() -> Self {
+        Self {
+            banners: Mutex::default(),
+            activation_claims: Mutex::default(),
+            pending_sound: Mutex::default(),
+            retry: Mutex::default(),
+            next_activation_claim: AtomicU64::default(),
+            generation: AtomicU64::default(),
+            center_approval_dialogs: AtomicBool::new(true),
+            dirty: AtomicBool::default(),
+            presentation_scheduled: AtomicBool::default(),
+        }
+    }
 }
 
 impl BannerState {
@@ -269,6 +292,35 @@ impl BannerState {
         Ok(true)
     }
 
+    fn update_approval_centering(&self, centered: bool) -> Result<bool, NotifyError> {
+        let previous = self
+            .center_approval_dialogs
+            .swap(centered, Ordering::AcqRel);
+        if previous == centered {
+            return Ok(false);
+        }
+        let banners = self
+            .banners
+            .lock()
+            .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
+        if !banners.iter().any(|banner| banner.approval.is_some()) {
+            return Ok(false);
+        }
+        let mut pending_sound = self.pending_sound.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner sound state is unavailable".to_owned())
+        })?;
+        let mut retry = self.retry.lock().map_err(|_| {
+            NotifyError::Scheduling("Aizu banner retry state is unavailable".to_owned())
+        })?;
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Some(pending) = pending_sound.as_mut() {
+            pending.generation = generation;
+        }
+        *retry = PresentationRetry::default();
+        self.dirty.store(true, Ordering::Release);
+        Ok(true)
+    }
+
     fn clear_passive(&self) -> Result<(), NotifyError> {
         let ids = self
             .snapshot()?
@@ -382,16 +434,20 @@ fn visible_notifications(snapshot: &[Notification]) -> Vec<Notification> {
         .map_or_else(|| snapshot.to_vec(), |approval| vec![approval.clone()])
 }
 
-fn presentation_mode(snapshot: &[Notification]) -> PresentationMode {
+fn presentation_mode(snapshot: &[Notification], center_approval_dialogs: bool) -> PresentationMode {
     if snapshot.iter().any(|banner| banner.approval.is_some()) {
-        PresentationMode::Approval
+        if center_approval_dialogs {
+            PresentationMode::ApprovalCentered
+        } else {
+            PresentationMode::ApprovalCorner
+        }
     } else {
         PresentationMode::Passive
     }
 }
 
 fn needs_user_attention(mode: PresentationMode, focused: Option<bool>) -> bool {
-    mode == PresentationMode::Approval && focused != Some(true)
+    mode.is_approval() && focused != Some(true)
 }
 
 fn window_geometry(
@@ -402,19 +458,23 @@ fn window_geometry(
     let available_width = (work_area.width - SCREEN_MARGIN * 2.0).max(1.0);
     let available_height = (work_area.height - SCREEN_MARGIN * 2.0).max(1.0);
     let (target_width, minimum_height, maximum_height) = match mode {
-        PresentationMode::Passive => (BANNER_WIDTH, MIN_BANNER_HEIGHT, MAX_BANNER_HEIGHT),
-        PresentationMode::Approval => (APPROVAL_WIDTH, MIN_APPROVAL_HEIGHT, MAX_APPROVAL_HEIGHT),
+        PresentationMode::Passive | PresentationMode::ApprovalCorner => {
+            (BANNER_WIDTH, MIN_BANNER_HEIGHT, MAX_BANNER_HEIGHT)
+        }
+        PresentationMode::ApprovalCentered => {
+            (APPROVAL_WIDTH, MIN_APPROVAL_HEIGHT, MAX_APPROVAL_HEIGHT)
+        }
     };
     let width = target_width.min(available_width);
     let minimum_height = minimum_height.min(available_height);
     let maximum_height = maximum_height.min(available_height).max(minimum_height);
     let height = requested_height.clamp(minimum_height, maximum_height);
     let (x, y) = match mode {
-        PresentationMode::Passive => (
+        PresentationMode::Passive | PresentationMode::ApprovalCorner => (
             work_area.x + work_area.width - width - SCREEN_MARGIN,
             work_area.y + SCREEN_MARGIN,
         ),
-        PresentationMode::Approval => (
+        PresentationMode::ApprovalCentered => (
             work_area.x + (work_area.width - width) / 2.0,
             work_area.y + (work_area.height - height) / 2.0,
         ),
@@ -513,7 +573,12 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     }
     let window = ensure_window(app)?;
     let visible = visible_notifications(&snapshot);
-    let mode = presentation_mode(&visible);
+    let mode = presentation_mode(
+        &visible,
+        app.state::<BannerState>()
+            .center_approval_dialogs
+            .load(Ordering::Acquire),
+    );
     resize_for_mode(app, MIN_BANNER_HEIGHT, mode)?;
     window
         .show()
@@ -528,7 +593,7 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     // WebKit can throttle a non-key banner window before the Tauri event listener resumes.
     // This fixed, payload-free wake-up makes the frontend re-read the authorized backend state.
     let _ = window.eval("window.dispatchEvent(new Event('aizu-banner-refresh'))");
-    if mode == PresentationMode::Approval {
+    if mode.is_approval() {
         let _ = window.set_focus();
         if needs_user_attention(mode, window.is_focused().ok()) {
             // Informational attention bounces the macOS Dock icon once. Unlike Critical,
@@ -556,6 +621,19 @@ pub fn has_approval(app: &AppHandle<Wry>, id: i32) -> Result<bool, NotifyError> 
 
 pub fn update_text_size(app: &AppHandle<Wry>, text_size: TextSize) -> Result<(), NotifyError> {
     if app.state::<BannerState>().update_text_size(text_size)? {
+        request_present(app)?;
+    }
+    Ok(())
+}
+
+pub fn update_approval_centering(
+    app: &AppHandle<Wry>,
+    center_approval_dialogs: bool,
+) -> Result<(), NotifyError> {
+    if app
+        .state::<BannerState>()
+        .update_approval_centering(center_approval_dialogs)?
+    {
         request_present(app)?;
     }
     Ok(())
@@ -598,7 +676,11 @@ pub fn clear_passive(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
 }
 
 pub fn resize(app: &AppHandle<Wry>, requested_height: f64) -> Result<(), NotifyError> {
-    let mode = presentation_mode(&app.state::<BannerState>().snapshot()?);
+    let state = app.state::<BannerState>();
+    let mode = presentation_mode(
+        &state.snapshot()?,
+        state.center_approval_dialogs.load(Ordering::Acquire),
+    );
     resize_for_mode(app, requested_height, mode)
 }
 
@@ -615,10 +697,7 @@ fn resize_for_mode(
     let window = app
         .get_webview_window(BANNER_WINDOW)
         .ok_or_else(|| NotifyError::Scheduling("Aizu banner window is unavailable".to_owned()))?;
-    let monitor = window
-        .primary_monitor()
-        .map_err(|error| NotifyError::Scheduling(error.to_string()))?
-        .ok_or_else(|| NotifyError::Scheduling("primary display is unavailable".to_owned()))?;
+    let monitor = active_monitor(&window)?;
     let scale = monitor.scale_factor();
     let work_area = monitor.work_area();
     let logical_position = work_area.position.to_logical::<f64>(scale);
@@ -637,6 +716,145 @@ fn resize_for_mode(
         .set_size(LogicalSize::new(geometry.width, geometry.height))
         .and_then(|()| window.set_position(LogicalPosition::new(geometry.x, geometry.y)))
         .map_err(|error| NotifyError::Scheduling(error.to_string()))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MonitorIdentity {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl From<&Monitor> for MonitorIdentity {
+    fn from(monitor: &Monitor) -> Self {
+        Self {
+            x: monitor.position().x,
+            y: monitor.position().y,
+            width: monitor.size().width,
+            height: monitor.size().height,
+        }
+    }
+}
+
+fn matching_monitor(monitors: &[Monitor], identity: MonitorIdentity) -> Option<Monitor> {
+    monitors
+        .iter()
+        .find(|monitor| MonitorIdentity::from(*monitor) == identity)
+        .cloned()
+}
+
+fn preferred_monitor_identity(
+    monitors: &[MonitorIdentity],
+    pointer: Option<MonitorIdentity>,
+    keyboard: Option<MonitorIdentity>,
+) -> Option<MonitorIdentity> {
+    pointer
+        .filter(|identity| monitors.contains(identity))
+        .or_else(|| keyboard.filter(|identity| monitors.contains(identity)))
+}
+
+fn scaled_monitor_identity(
+    origin_x: f64,
+    origin_y: f64,
+    width: u32,
+    height: u32,
+    scale: f64,
+) -> MonitorIdentity {
+    let position: PhysicalPosition<i32> =
+        PhysicalPosition::from_logical::<_, f64>((origin_x, origin_y), scale);
+    let size: PhysicalSize<u32> =
+        PhysicalSize::from_logical::<_, f64>((f64::from(width), f64::from(height)), scale);
+    MonitorIdentity {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    }
+}
+
+fn monitor_containing_point(monitors: &[Monitor], point: PhysicalPosition<f64>) -> Option<Monitor> {
+    monitors
+        .iter()
+        .find(|monitor| {
+            let position = monitor.position();
+            let size = monitor.size();
+            let left = f64::from(position.x);
+            let top = f64::from(position.y);
+            point.x >= left
+                && point.x < left + f64::from(size.width)
+                && point.y >= top
+                && point.y < top + f64::from(size.height)
+        })
+        .cloned()
+}
+
+fn active_monitor(window: &tauri::WebviewWindow<Wry>) -> Result<Monitor, NotifyError> {
+    let monitors = window
+        .available_monitors()
+        .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
+    #[cfg(target_os = "macos")]
+    if let Some((pointer, keyboard)) = macos_active_monitor_identities() {
+        let identities = monitors
+            .iter()
+            .map(MonitorIdentity::from)
+            .collect::<Vec<_>>();
+        if let Some(monitor) = preferred_monitor_identity(&identities, pointer, keyboard)
+            .and_then(|identity| matching_monitor(&monitors, identity))
+        {
+            return Ok(monitor);
+        }
+    }
+    if let Ok(pointer) = window.cursor_position()
+        && let Some(monitor) = monitor_containing_point(&monitors, pointer)
+    {
+        return Ok(monitor);
+    }
+    window
+        .primary_monitor()
+        .map_err(|error| NotifyError::Scheduling(error.to_string()))?
+        .ok_or_else(|| NotifyError::Scheduling("active display is unavailable".to_owned()))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_active_monitor_identities() -> Option<(Option<MonitorIdentity>, Option<MonitorIdentity>)> {
+    use objc2_foundation::MainThreadMarker;
+
+    let mtm = MainThreadMarker::new()?;
+    let pointer = objc2_app_kit::NSEvent::mouseLocation();
+    let screens = objc2_app_kit::NSScreen::screens(mtm);
+    let pointer_screen = screens.iter().find(|screen| {
+        let frame = screen.frame();
+        pointer.x >= frame.origin.x
+            && pointer.x < frame.origin.x + frame.size.width
+            && pointer.y >= frame.origin.y
+            && pointer.y < frame.origin.y + frame.size.height
+    });
+    let pointer = pointer_screen.and_then(|screen| macos_monitor_identity(&screen));
+    let keyboard = objc2_app_kit::NSScreen::mainScreen(mtm)
+        .as_deref()
+        .and_then(macos_monitor_identity);
+    Some((pointer, keyboard))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_monitor_identity(screen: &objc2_app_kit::NSScreen) -> Option<MonitorIdentity> {
+    use core_graphics::display::CGDisplay;
+    use objc2_foundation::{NSDictionary, NSNumber, ns_string};
+
+    let description = screen.deviceDescription();
+    let display_number = NSDictionary::objectForKey(&description, ns_string!("NSScreenNumber"))?;
+    let display_id = u32::try_from(display_number.downcast_ref::<NSNumber>()?.as_usize()).ok()?;
+    let display = CGDisplay::new(display_id);
+    let bounds = display.bounds();
+    let scale = screen.backingScaleFactor();
+    Some(scaled_monitor_identity(
+        bounds.origin.x,
+        bounds.origin.y,
+        u32::try_from(display.pixels_wide()).ok()?,
+        u32::try_from(display.pixels_high()).ok()?,
+        scale,
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -684,8 +902,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        BannerState, MAX_PRESENTATION_ATTEMPTS, MAX_VISIBLE_PASSIVE_BANNERS, PresentationMode,
-        WindowGeometry, WorkAreaGeometry, needs_user_attention, retry_delay, window_geometry,
+        BannerState, MAX_PRESENTATION_ATTEMPTS, MAX_VISIBLE_PASSIVE_BANNERS, MonitorIdentity,
+        PresentationMode, WindowGeometry, WorkAreaGeometry, needs_user_attention,
+        preferred_monitor_identity, retry_delay, scaled_monitor_identity, window_geometry,
     };
     use crate::model::Notification;
 
@@ -815,12 +1034,73 @@ mod tests {
             }
         );
         assert_eq!(
-            window_geometry(PresentationMode::Approval, 200.0, work_area),
+            window_geometry(PresentationMode::ApprovalCentered, 200.0, work_area),
             WindowGeometry {
                 x: 480.0,
                 y: 320.0,
                 width: 680.0,
                 height: 360.0,
+            }
+        );
+        assert_eq!(
+            window_geometry(PresentationMode::ApprovalCorner, 200.0, work_area),
+            WindowGeometry {
+                x: 1_104.0,
+                y: 66.0,
+                width: 420.0,
+                height: 200.0,
+            }
+        );
+    }
+
+    #[test]
+    fn pointer_display_wins_then_keyboard_display_is_the_fallback() {
+        let primary = MonitorIdentity {
+            x: 0,
+            y: 0,
+            width: 1_920,
+            height: 1_080,
+        };
+        let secondary = MonitorIdentity {
+            x: 1_920,
+            y: 0,
+            width: 2_560,
+            height: 1_440,
+        };
+        let monitors = [primary, secondary];
+
+        assert_eq!(
+            preferred_monitor_identity(&monitors, Some(secondary), Some(primary)),
+            Some(secondary)
+        );
+        assert_eq!(
+            preferred_monitor_identity(&monitors, None, Some(secondary)),
+            Some(secondary)
+        );
+        assert_eq!(
+            preferred_monitor_identity(
+                &monitors,
+                Some(MonitorIdentity {
+                    x: -1,
+                    y: -1,
+                    width: 1,
+                    height: 1,
+                }),
+                Some(primary),
+            ),
+            Some(primary)
+        );
+    }
+
+    #[test]
+    fn appkit_display_geometry_uses_the_same_backing_scale_as_tauri() {
+        assert_eq!(
+            scaled_monitor_identity(1_512.0, 0.0, 1_512, 982, 2.0),
+            MonitorIdentity {
+                x: 3_024,
+                y: 0,
+                width: 3_024,
+                height: 1_964,
             }
         );
     }
@@ -829,7 +1109,7 @@ mod tests {
     fn approval_window_remains_inside_a_small_work_area() {
         assert_eq!(
             window_geometry(
-                PresentationMode::Approval,
+                PresentationMode::ApprovalCentered,
                 900.0,
                 WorkAreaGeometry {
                     x: 0.0,
@@ -850,14 +1130,17 @@ mod tests {
     #[test]
     fn approval_requests_bounded_attention_when_native_focus_is_not_observed() {
         assert!(!needs_user_attention(
-            PresentationMode::Approval,
+            PresentationMode::ApprovalCentered,
             Some(true)
         ));
         assert!(needs_user_attention(
-            PresentationMode::Approval,
+            PresentationMode::ApprovalCorner,
             Some(false)
         ));
-        assert!(needs_user_attention(PresentationMode::Approval, None));
+        assert!(needs_user_attention(
+            PresentationMode::ApprovalCentered,
+            None
+        ));
         assert!(!needs_user_attention(
             PresentationMode::Passive,
             Some(false)
@@ -1114,5 +1397,48 @@ mod tests {
 
         let refreshed_generation = state.begin_presentation(now).expect("refresh presentation");
         assert_ne!(stale_generation, refreshed_generation);
+    }
+
+    #[test]
+    fn approval_centering_refreshes_an_existing_dialog_without_replaying_sound() {
+        let state = BannerState::default();
+        let now = Instant::now();
+        let mut approval = notification(-1, "review command");
+        approval.approval = Some(crate::model::ApprovalPresentation {
+            agent: crate::model::AgentKind::Codex,
+            tool_name: "Bash".to_owned(),
+            command: "printf approved".to_owned(),
+        });
+        approval.sound = Some(crate::model::NotificationSound::Default);
+        state.push(approval).expect("approval");
+        let visible_generation = state.begin_presentation(now).expect("presentation");
+        assert_eq!(
+            state
+                .take_pending_sound(visible_generation)
+                .expect("initial sound"),
+            Some(crate::model::NotificationSound::Default)
+        );
+        state.finish_presentation(visible_generation, true, now);
+
+        assert!(
+            state
+                .update_approval_centering(false)
+                .expect("disable centering")
+        );
+        let refreshed_generation = state.begin_presentation(now).expect("refresh presentation");
+        assert_ne!(visible_generation, refreshed_generation);
+        assert_eq!(
+            state
+                .take_pending_sound(refreshed_generation)
+                .expect("refresh sound"),
+            None
+        );
+        assert_eq!(
+            super::presentation_mode(
+                &state.snapshot().expect("snapshot"),
+                state.center_approval_dialogs.load(Ordering::Acquire),
+            ),
+            PresentationMode::ApprovalCorner
+        );
     }
 }
