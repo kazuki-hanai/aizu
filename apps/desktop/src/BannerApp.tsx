@@ -14,6 +14,7 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
   const [banners, setBanners] = useState<BannerNotification[]>([]);
   const [unavailable, setUnavailable] = useState(false);
   const stackRef = useRef<HTMLElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const refreshGeneration = useRef(0);
   const refreshInFlight = useRef(false);
   const refreshRequestVersion = useRef(0);
@@ -150,11 +151,17 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
 
   useEffect(() => {
     const stack = stackRef.current;
-    if (!stack) return;
-    const resize = () => void runAction(() => client.resize(stack.scrollHeight));
+    const content = contentRef.current;
+    if (!stack || !content) return;
+    const resize = () => {
+      const style = window.getComputedStyle(stack);
+      const padding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      const requestedHeight = content.scrollHeight + (Number.isFinite(padding) ? padding : 0);
+      void runAction(() => client.resize(requestedHeight));
+    };
     resize();
     const observer = new ResizeObserver(resize);
-    observer.observe(stack);
+    observer.observe(content);
     return () => observer.disconnect();
   }, [banners, client, runAction, unavailable]);
 
@@ -165,17 +172,19 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
       data-presentation={approvalMode ? "approval" : "passive"}
       ref={stackRef}
     >
-      {unavailable ? <p className="banner-error">Aizu Banner is unavailable.</p> : null}
-      {presentedBanners.map((banner) => (
-        <SwipeDismissBanner
-          banner={banner}
-          key={banner.id}
-          onAcknowledgeApproval={acknowledgeApproval}
-          onActivate={activate}
-          onDecideApproval={decideApproval}
-          onDismiss={dismiss}
-        />
-      ))}
+      <div className="banner-stack__content" ref={contentRef}>
+        {unavailable ? <p className="banner-error">Aizu Banner is unavailable.</p> : null}
+        {presentedBanners.map((banner) => (
+          <SwipeDismissBanner
+            banner={banner}
+            key={banner.id}
+            onAcknowledgeApproval={acknowledgeApproval}
+            onActivate={activate}
+            onDecideApproval={decideApproval}
+            onDismiss={dismiss}
+          />
+        ))}
+      </div>
     </main>
   );
 }

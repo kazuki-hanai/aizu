@@ -165,7 +165,7 @@ pub fn get_e2e_banners(app: AppHandle<Wry>) -> Result<Vec<Notification>, Desktop
 #[cfg(feature = "desktop-e2e")]
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_e2e_banner_window_state(app: AppHandle<Wry>) -> Result<(bool, bool), DesktopError> {
+pub fn get_e2e_banner_window_state(app: AppHandle<Wry>) -> Result<(bool, bool, u32), DesktopError> {
     let window = app
         .get_webview_window(crate::banner::BANNER_WINDOW)
         .ok_or_else(|| {
@@ -177,7 +177,11 @@ pub fn get_e2e_banner_window_state(app: AppHandle<Wry>) -> Result<(bool, bool), 
     let focused = window
         .is_focused()
         .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?;
-    Ok((visible, focused))
+    let height = window
+        .inner_size()
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?
+        .height;
+    Ok((visible, focused, height))
 }
 
 #[cfg(feature = "desktop-e2e")]
@@ -204,6 +208,40 @@ pub fn show_e2e_terminal_banner(app: AppHandle<Wry>) -> Result<(), DesktopError>
             }),
         },
     )?;
+    Ok(())
+}
+
+#[cfg(feature = "desktop-e2e")]
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn show_e2e_scrollable_banners(app: AppHandle<Wry>) -> Result<(), DesktopError> {
+    for index in 1..=3 {
+        let lines = (1..=18)
+            .map(|line| format!("- Notification {index}, line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = if index == 3 {
+            "The final short notification remains visible after the long notifications close."
+                .to_owned()
+        } else {
+            format!("## Full notification {index}\n\n{lines}")
+        };
+        crate::banner::show(
+            &app,
+            &Notification {
+                id: 8_675_400 + index,
+                title: format!("Scrollable notification {index}"),
+                body,
+                sound: None,
+                delivery: NotificationDelivery::AizuBanner,
+                language: crate::model::LanguagePreference::English,
+                text_size: crate::model::TextSize::Standard,
+                can_activate_terminal: false,
+                approval: None,
+                activation: None,
+            },
+        )?;
+    }
     Ok(())
 }
 

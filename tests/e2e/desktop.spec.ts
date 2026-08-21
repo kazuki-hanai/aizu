@@ -266,6 +266,57 @@ describe("Aizu desktop MVP", () => {
         core.invoke("get_e2e_banners")) as CapturedNotification[];
       return remaining.length === 0;
     }, { timeout: 2_000, timeoutMsg: "swiped banner remained in the backend queue" });
+
+    await browser.tauri.execute(({ core }) => core.invoke("show_e2e_scrollable_banners"));
+    await browser.waitUntil(async () => {
+      const queued = await invokeCurrentWindow<CapturedNotification[]>("get_banners");
+      return queued.length === 3;
+    }, { timeout: 2_000, timeoutMsg: "scrollable banner fixture was not presented" });
+    await browser.waitUntil(async () => {
+      const metrics = await browser.execute(() => {
+        const stack = document.querySelector(".banner-stack");
+        return stack instanceof HTMLElement
+          ? { clientHeight: stack.clientHeight, scrollHeight: stack.scrollHeight }
+          : null;
+      });
+      return metrics !== null && metrics.scrollHeight > metrics.clientHeight;
+    }, { timeout: 2_000, timeoutMsg: "overflowing banners did not create a scroll viewport" });
+    await browser.execute(() => {
+      const stack = document.querySelector(".banner-stack");
+      if (stack instanceof HTMLElement) stack.scrollTop = stack.scrollHeight;
+    });
+    await browser.waitUntil(async () => await browser.execute(() => {
+      const stack = document.querySelector(".banner-stack");
+      const last = document.querySelector('[data-banner-id="8675403"]');
+      if (!(stack instanceof HTMLElement) || !(last instanceof HTMLElement)) return false;
+      const viewport = stack.getBoundingClientRect();
+      const bannerBounds = last.getBoundingClientRect();
+      return stack.scrollTop > 0
+        && bannerBounds.top < viewport.bottom
+        && bannerBounds.bottom <= viewport.bottom + 1;
+    }), { timeout: 2_000, timeoutMsg: "last notification was not reachable by scrolling" });
+    const [, , overflowWindowHeight] = await invokeCurrentWindow<[boolean, boolean, number]>(
+      "get_e2e_banner_window_state",
+    );
+    const scrollable = await invokeCurrentWindow<CapturedNotification[]>("get_banners");
+    const remainingScrollable = scrollable.at(-1);
+    if (!remainingScrollable) throw new Error("scroll fixture queue was unexpectedly empty");
+    for (const queued of scrollable.slice(0, -1)) {
+      await invokeCurrentWindow("dismiss_banner", { id: queued.id });
+    }
+    await browser.waitUntil(async () => {
+      const queued = await invokeCurrentWindow<CapturedNotification[]>("get_banners");
+      if (queued.length !== 1) return false;
+      const [, , currentHeight] = await invokeCurrentWindow<[boolean, boolean, number]>(
+        "get_e2e_banner_window_state",
+      );
+      return currentHeight < overflowWindowHeight;
+    }, { timeout: 2_000, timeoutMsg: "banner window did not shrink with its remaining content" });
+    await invokeCurrentWindow("dismiss_banner", { id: remainingScrollable.id });
+    await browser.waitUntil(async () =>
+      (await invokeCurrentWindow<CapturedNotification[]>("get_banners")).length === 0,
+    { timeout: 2_000, timeoutMsg: "scroll fixture banners were not dismissed" });
+
     await browser.switchToWindow("main");
     await expect($("h1=Agents")).toBeDisplayed();
     const hookResult = await runPermissionHook(stateRoot as string);
@@ -363,7 +414,7 @@ describe("Aizu desktop MVP", () => {
       const dialog = document.querySelector('[role="alertdialog"]');
       return dialog instanceof HTMLElement ? getComputedStyle(dialog).opacity : "0";
     })).toBe("1");
-    const [approvalWindowVisible] = await invokeCurrentWindow<[boolean, boolean]>(
+    const [approvalWindowVisible] = await invokeCurrentWindow<[boolean, boolean, number]>(
       "get_e2e_banner_window_state",
     );
     expect(approvalWindowVisible).toBe(true);

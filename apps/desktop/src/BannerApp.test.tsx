@@ -15,10 +15,19 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+const resizeCallbacks = new WeakMap<Element, ResizeObserverCallback>();
+
 class TestResizeObserver {
-  observe() { return undefined; }
+  constructor(private readonly callback: ResizeObserverCallback) {}
+  observe(target: Element) {
+    resizeCallbacks.set(target, this.callback);
+  }
   disconnect() { return undefined; }
   unobserve() { return undefined; }
+}
+
+function notifyResize(target: Element) {
+  resizeCallbacks.get(target)?.([], {} as ResizeObserver);
 }
 
 Object.defineProperty(window, "ResizeObserver", {
@@ -119,6 +128,26 @@ describe("Aizu Banner", () => {
     expect(container.querySelectorAll(".aizu-banner")).toHaveLength(2);
     expect(backend.dismiss).not.toHaveBeenCalled();
     await waitFor(() => expect(backend.resize).toHaveBeenCalled());
+  });
+
+  it("keeps overflow inside a scrollable viewport while measuring full content height", async () => {
+    const backend = client();
+    const { container } = render(<BannerApp client={backend} />);
+
+    await screen.findByText("Codex task completed");
+    const stack = container.querySelector<HTMLElement>(".banner-stack");
+    const content = container.querySelector<HTMLElement>(".banner-stack__content");
+    expect(stack).not.toBeNull();
+    expect(content).not.toBeNull();
+    if (!stack || !content) return;
+
+    const stackStyle = window.getComputedStyle(stack);
+    expect(stackStyle.overflowY).toBe("auto");
+    expect(stackStyle.overflowX).toBe("hidden");
+    Object.defineProperty(content, "scrollHeight", { configurable: true, value: 960 });
+    notifyResize(content);
+
+    await waitFor(() => expect(backend.resize).toHaveBeenLastCalledWith(980));
   });
 
   it("applies the persisted text size to each banner", async () => {
