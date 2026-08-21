@@ -18,7 +18,7 @@ use crate::{
 };
 
 pub(crate) const BANNER_WINDOW: &str = "banner";
-const MAX_VISIBLE_BANNERS: usize = 3;
+const MAX_VISIBLE_PASSIVE_BANNERS: usize = 3;
 const BANNER_WIDTH: f64 = 420.0;
 const MIN_BANNER_HEIGHT: f64 = 104.0;
 const MAX_BANNER_HEIGHT: f64 = 720.0;
@@ -106,16 +106,21 @@ impl BannerState {
             self.dirty.store(true, Ordering::Release);
             return Ok(());
         }
-        if banners.len() == MAX_VISIBLE_BANNERS {
-            let eviction = banners.iter().position(|banner| banner.approval.is_none());
-            let Some(eviction) = eviction else {
+        if notification.approval.is_some() {
+            if banners.iter().any(|banner| banner.approval.is_some()) {
                 return Err(NotifyError::Scheduling(
-                    "all Aizu banner slots are waiting for approval".to_owned(),
+                    "an Aizu command approval is already visible".to_owned(),
                 ));
-            };
-            if let Some(evicted) = banners.remove(eviction) {
-                activation_claims.remove(&evicted.id);
             }
+        } else if banners
+            .iter()
+            .filter(|banner| banner.approval.is_none())
+            .count()
+            >= MAX_VISIBLE_PASSIVE_BANNERS
+            && let Some(eviction) = banners.iter().position(|banner| banner.approval.is_none())
+            && let Some(evicted) = banners.remove(eviction)
+        {
+            activation_claims.remove(&evicted.id);
         }
         banners.push_back(notification);
         self.dirty.store(true, Ordering::Release);
@@ -509,6 +514,12 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     window
         .show()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
+    if mode == PresentationMode::Approval
+        && let Err(error) = window.set_focus()
+    {
+        let _ = window.hide();
+        return Err(NotifyError::Scheduling(error.to_string()));
+    }
     if let Some(broker) = app.try_state::<crate::approval_broker::ApprovalBroker>() {
         for banner in visible.iter().filter(|banner| banner.approval.is_some()) {
             let _ = broker.mark_window_shown(banner.id);
@@ -516,9 +527,6 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
     }
     app.emit_to(BANNER_WINDOW, "aizu://banners-changed", &visible)
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
-    if mode == PresentationMode::Approval {
-        let _ = window.set_focus();
-    }
     if let Some(sound) = app.state::<BannerState>().take_pending_sound(generation)? {
         play_sound(sound);
     }
@@ -667,7 +675,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        BannerState, MAX_PRESENTATION_ATTEMPTS, MAX_VISIBLE_BANNERS, PresentationMode,
+        BannerState, MAX_PRESENTATION_ATTEMPTS, MAX_VISIBLE_PASSIVE_BANNERS, PresentationMode,
         WindowGeometry, WorkAreaGeometry, retry_delay, window_geometry,
     };
     use crate::model::Notification;
@@ -690,7 +698,7 @@ mod tests {
     #[test]
     fn queue_is_bounded_and_replaces_matching_identifiers() {
         let state = BannerState::default();
-        for id in 1..=i32::try_from(MAX_VISIBLE_BANNERS).expect("small banner bound") + 1 {
+        for id in 1..=i32::try_from(MAX_VISIBLE_PASSIVE_BANNERS).expect("small banner bound") + 1 {
             state
                 .push(notification(id, "original"))
                 .expect("queue banner");
@@ -700,7 +708,7 @@ mod tests {
             .expect("replace banner");
 
         let banners = state.snapshot().expect("banner snapshot");
-        assert_eq!(banners.len(), MAX_VISIBLE_BANNERS);
+        assert_eq!(banners.len(), MAX_VISIBLE_PASSIVE_BANNERS);
         assert_eq!(banners[0].id, 2);
         assert_eq!(banners[1].body, "replacement");
     }
@@ -709,6 +717,8 @@ mod tests {
     fn ordinary_notifications_do_not_evict_a_pending_command_approval() {
         let state = BannerState::default();
         state.push(notification(1, "first")).unwrap();
+        state.push(notification(2, "second")).unwrap();
+        state.push(notification(3, "third")).unwrap();
         let mut approval = notification(-1, "review command");
         approval.approval = Some(crate::model::ApprovalPresentation {
             agent: crate::model::AgentKind::Codex,
@@ -716,13 +726,21 @@ mod tests {
             command: "printf approved".to_owned(),
         });
         state.push(approval).unwrap();
-        state.push(notification(2, "second")).unwrap();
-        state.push(notification(3, "third")).unwrap();
 
         let snapshot = state.snapshot().unwrap();
-        assert_eq!(snapshot.len(), MAX_VISIBLE_BANNERS);
+        assert_eq!(snapshot.len(), MAX_VISIBLE_PASSIVE_BANNERS + 1);
         assert!(snapshot.iter().any(|banner| banner.id == -1));
-        assert!(!snapshot.iter().any(|banner| banner.id == 1));
+        assert!(snapshot.iter().any(|banner| banner.id == 1));
+        assert!(snapshot.iter().any(|banner| banner.id == 2));
+        assert!(snapshot.iter().any(|banner| banner.id == 3));
+        assert_eq!(state.presentation_snapshot().unwrap()[0].id, -1);
+
+        state.dismiss(-1).unwrap();
+        let restored = state.presentation_snapshot().unwrap();
+        assert_eq!(
+            restored.iter().map(|banner| banner.id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
     }
 
     #[test]
