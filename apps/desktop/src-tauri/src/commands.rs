@@ -209,6 +209,34 @@ pub fn show_e2e_terminal_banner(app: AppHandle<Wry>) -> Result<(), DesktopError>
 
 #[cfg(feature = "desktop-e2e")]
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn show_e2e_scrollable_banners(app: AppHandle<Wry>) -> Result<(), DesktopError> {
+    for index in 1..=3 {
+        let lines = (1..=18)
+            .map(|line| format!("- Notification {index}, line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        crate::banner::show(
+            &app,
+            &Notification {
+                id: 8_675_400 + index,
+                title: format!("Scrollable notification {index}"),
+                body: format!("## Full notification {index}\n\n{lines}"),
+                sound: None,
+                delivery: NotificationDelivery::AizuBanner,
+                language: crate::model::LanguagePreference::English,
+                text_size: crate::model::TextSize::Standard,
+                can_activate_terminal: false,
+                approval: None,
+                activation: None,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "desktop-e2e")]
+#[tauri::command]
 pub fn get_e2e_terminal_activation_count() -> usize {
     crate::terminal_activation::e2e_activation_count()
 }

@@ -28,7 +28,7 @@ use tauri::{AppHandle, Manager, RunEvent, WindowEvent, Wry};
 use crate::commands::{
     get_e2e_banner_window_state, get_e2e_banners, get_e2e_notifications,
     get_e2e_terminal_activation_count, hide_e2e_main_window, is_e2e_main_window_visible,
-    set_e2e_remote_status, show_e2e_terminal_banner,
+    set_e2e_remote_status, show_e2e_scrollable_banners, show_e2e_terminal_banner,
 };
 use crate::{
     commands::{
@@ -103,6 +103,50 @@ fn initialize_banner_preferences(
     banner::update_approval_centering(app, preferences.center_approval_dialogs)
 }
 
+fn register_commands(builder: tauri::Builder<Wry>) -> tauri::Builder<Wry> {
+    builder.invoke_handler(tauri::generate_handler![
+        get_banners,
+        dismiss_banner,
+        acknowledge_banner_approval,
+        activate_banner,
+        decide_banner_approval,
+        resize_banner,
+        get_app_view,
+        complete_onboarding,
+        request_notification_permission,
+        send_test_notification,
+        clear_history,
+        set_notifications_paused,
+        update_preferences,
+        add_remote_source,
+        remove_remote_source,
+        reconnect_remote_source,
+        test_ssh_connection,
+        confirm_remote_identity,
+        install_cli,
+        configure_agents,
+        confirm_codex_hook_trust,
+        #[cfg(feature = "desktop-e2e")]
+        get_e2e_banner_window_state,
+        #[cfg(feature = "desktop-e2e")]
+        get_e2e_banners,
+        #[cfg(feature = "desktop-e2e")]
+        get_e2e_notifications,
+        #[cfg(feature = "desktop-e2e")]
+        get_e2e_terminal_activation_count,
+        #[cfg(feature = "desktop-e2e")]
+        hide_e2e_main_window,
+        #[cfg(feature = "desktop-e2e")]
+        is_e2e_main_window_visible,
+        #[cfg(feature = "desktop-e2e")]
+        set_e2e_remote_status,
+        #[cfg(feature = "desktop-e2e")]
+        show_e2e_scrollable_banners,
+        #[cfg(feature = "desktop-e2e")]
+        show_e2e_terminal_banner,
+    ])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = desktop_builder();
@@ -110,99 +154,60 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_wdio::init())
         .plugin(tauri_plugin_wdio_webdriver::init());
-    let app = builder
-        .setup(|app| {
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-            banner::setup(app);
+    let builder = builder.setup(|app| {
+        #[cfg(target_os = "macos")]
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        banner::setup(app);
 
-            let state_paths = aizu_core::StatePaths::discover()?;
-            #[cfg(feature = "desktop-e2e")]
-            let settings_path = state_paths.root().join("settings.json");
-            #[cfg(not(feature = "desktop-e2e"))]
-            let settings_path = app.path().app_config_dir()?.join("settings.json");
-            let worker_lease = WorkerLease::acquire(state_paths.root())?;
-            #[cfg(feature = "desktop-e2e")]
-            let notification_recorder =
-                notifier::FakeNotifier::with_permission(model::PermissionStatus::NotDetermined);
-            #[cfg(not(feature = "desktop-e2e"))]
-            let notifier = Arc::new(notifier::SystemNotifier::new(app.handle().clone()));
-            #[cfg(feature = "desktop-e2e")]
-            let service_notifier: Arc<dyn notifier::Notifier> =
-                notifier::E2eNotifier::new(app.handle().clone(), notification_recorder.clone());
-            #[cfg(not(feature = "desktop-e2e"))]
-            let service_notifier: Arc<dyn notifier::Notifier> = notifier;
-            let mut service = AppService::new(
-                service_notifier,
-                SettingsStore::new(settings_path),
-                &state_paths,
-            )?;
-            #[cfg(feature = "desktop-e2e")]
-            service.prepare_e2e_state()?;
-            let _ = service.poll_local_pipeline();
-            let initial_view = service.view();
-            app.manage(DesktopState::new(service));
-            initialize_banner_preferences(app.handle(), &initial_view.preferences)?;
-            app.manage(approval_broker::ApprovalBroker::start(
-                app.handle().clone(),
-                &state_paths.approval_socket(),
-            ));
-            #[cfg(feature = "desktop-e2e")]
-            app.manage(notification_recorder);
-            app.manage(worker_lease);
-            app.manage(tray::setup(app, &initial_view)?);
-            app.manage(worker::LocalWorker::start(app.handle().clone())?);
+        let state_paths = aizu_core::StatePaths::discover()?;
+        #[cfg(feature = "desktop-e2e")]
+        let settings_path = state_paths.root().join("settings.json");
+        #[cfg(not(feature = "desktop-e2e"))]
+        let settings_path = app.path().app_config_dir()?.join("settings.json");
+        let worker_lease = WorkerLease::acquire(state_paths.root())?;
+        #[cfg(feature = "desktop-e2e")]
+        let notification_recorder =
+            notifier::FakeNotifier::with_permission(model::PermissionStatus::NotDetermined);
+        #[cfg(not(feature = "desktop-e2e"))]
+        let notifier = Arc::new(notifier::SystemNotifier::new(app.handle().clone()));
+        #[cfg(feature = "desktop-e2e")]
+        let service_notifier: Arc<dyn notifier::Notifier> =
+            notifier::E2eNotifier::new(app.handle().clone(), notification_recorder.clone());
+        #[cfg(not(feature = "desktop-e2e"))]
+        let service_notifier: Arc<dyn notifier::Notifier> = notifier;
+        let mut service = AppService::new(
+            service_notifier,
+            SettingsStore::new(settings_path),
+            &state_paths,
+        )?;
+        #[cfg(feature = "desktop-e2e")]
+        service.prepare_e2e_state()?;
+        let _ = service.poll_local_pipeline();
+        let initial_view = service.view();
+        app.manage(DesktopState::new(service));
+        initialize_banner_preferences(app.handle(), &initial_view.preferences)?;
+        app.manage(approval_broker::ApprovalBroker::start(
+            app.handle().clone(),
+            &state_paths.approval_socket(),
+        ));
+        #[cfg(feature = "desktop-e2e")]
+        app.manage(notification_recorder);
+        app.manage(worker_lease);
+        app.manage(tray::setup(app, &initial_view)?);
+        app.manage(worker::LocalWorker::start(app.handle().clone())?);
 
-            if let Some(window) = app.get_webview_window("main") {
-                let window_to_hide = window.clone();
-                window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = window_to_hide.hide();
-                    }
-                });
-            }
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            get_banners,
-            dismiss_banner,
-            acknowledge_banner_approval,
-            activate_banner,
-            decide_banner_approval,
-            resize_banner,
-            get_app_view,
-            complete_onboarding,
-            request_notification_permission,
-            send_test_notification,
-            clear_history,
-            set_notifications_paused,
-            update_preferences,
-            add_remote_source,
-            remove_remote_source,
-            reconnect_remote_source,
-            test_ssh_connection,
-            confirm_remote_identity,
-            install_cli,
-            configure_agents,
-            confirm_codex_hook_trust,
-            #[cfg(feature = "desktop-e2e")]
-            get_e2e_banner_window_state,
-            #[cfg(feature = "desktop-e2e")]
-            get_e2e_banners,
-            #[cfg(feature = "desktop-e2e")]
-            get_e2e_notifications,
-            #[cfg(feature = "desktop-e2e")]
-            get_e2e_terminal_activation_count,
-            #[cfg(feature = "desktop-e2e")]
-            hide_e2e_main_window,
-            #[cfg(feature = "desktop-e2e")]
-            is_e2e_main_window_visible,
-            #[cfg(feature = "desktop-e2e")]
-            set_e2e_remote_status,
-            #[cfg(feature = "desktop-e2e")]
-            show_e2e_terminal_banner,
-        ])
+        if let Some(window) = app.get_webview_window("main") {
+            let window_to_hide = window.clone();
+            window.on_window_event(move |event| {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window_to_hide.hide();
+                }
+            });
+        }
+        Ok(())
+    });
+    let app = register_commands(builder)
         .build(tauri::generate_context!())
         .expect("Aizu desktop runtime failed");
     app.run(|app, event| handle_run_event(app, &event));
