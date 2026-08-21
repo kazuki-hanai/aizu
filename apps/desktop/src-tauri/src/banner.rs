@@ -746,12 +746,12 @@ fn matching_monitor(monitors: &[Monitor], identity: MonitorIdentity) -> Option<M
 
 fn preferred_monitor_identity(
     monitors: &[MonitorIdentity],
+    focused_window: Option<MonitorIdentity>,
     pointer: Option<MonitorIdentity>,
-    keyboard: Option<MonitorIdentity>,
 ) -> Option<MonitorIdentity> {
-    pointer
+    focused_window
         .filter(|identity| monitors.contains(identity))
-        .or_else(|| keyboard.filter(|identity| monitors.contains(identity)))
+        .or_else(|| pointer.filter(|identity| monitors.contains(identity)))
 }
 
 fn scaled_monitor_identity(
@@ -794,12 +794,12 @@ fn active_monitor(window: &tauri::WebviewWindow<Wry>) -> Result<Monitor, NotifyE
         .available_monitors()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
     #[cfg(target_os = "macos")]
-    if let Some((pointer, keyboard)) = macos_active_monitor_identities() {
+    if let Some((focused_window, pointer)) = macos_monitor_candidates() {
         let identities = monitors
             .iter()
             .map(MonitorIdentity::from)
             .collect::<Vec<_>>();
-        if let Some(monitor) = preferred_monitor_identity(&identities, pointer, keyboard)
+        if let Some(monitor) = preferred_monitor_identity(&identities, focused_window, pointer)
             .and_then(|identity| matching_monitor(&monitors, identity))
         {
             return Ok(monitor);
@@ -817,7 +817,7 @@ fn active_monitor(window: &tauri::WebviewWindow<Wry>) -> Result<Monitor, NotifyE
 }
 
 #[cfg(target_os = "macos")]
-fn macos_active_monitor_identities() -> Option<(Option<MonitorIdentity>, Option<MonitorIdentity>)> {
+fn macos_monitor_candidates() -> Option<(Option<MonitorIdentity>, Option<MonitorIdentity>)> {
     use objc2_foundation::MainThreadMarker;
 
     let mtm = MainThreadMarker::new()?;
@@ -831,10 +831,12 @@ fn macos_active_monitor_identities() -> Option<(Option<MonitorIdentity>, Option<
             && pointer.y < frame.origin.y + frame.size.height
     });
     let pointer = pointer_screen.and_then(|screen| macos_monitor_identity(&screen));
-    let keyboard = objc2_app_kit::NSScreen::mainScreen(mtm)
+    // AppKit defines the main screen as the one containing the window currently
+    // receiving keyboard events; it is not necessarily the menu-bar display.
+    let focused_window = objc2_app_kit::NSScreen::mainScreen(mtm)
         .as_deref()
         .and_then(macos_monitor_identity);
-    Some((pointer, keyboard))
+    Some((focused_window, pointer))
 }
 
 #[cfg(target_os = "macos")]
@@ -1054,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn pointer_display_wins_then_keyboard_display_is_the_fallback() {
+    fn focused_window_display_wins_then_pointer_display_is_the_fallback() {
         let primary = MonitorIdentity {
             x: 0,
             y: 0,
