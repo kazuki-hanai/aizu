@@ -8,7 +8,7 @@ use std::{
 };
 
 use tauri::{
-    App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl,
+    App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, UserAttentionType, WebviewUrl,
     WebviewWindowBuilder, Wry,
 };
 
@@ -18,12 +18,37 @@ use crate::{
 };
 
 pub(crate) const BANNER_WINDOW: &str = "banner";
-const MAX_VISIBLE_BANNERS: usize = 3;
+const MAX_VISIBLE_PASSIVE_BANNERS: usize = 3;
 const BANNER_WIDTH: f64 = 420.0;
 const MIN_BANNER_HEIGHT: f64 = 104.0;
 const MAX_BANNER_HEIGHT: f64 = 720.0;
+const APPROVAL_WIDTH: f64 = 680.0;
+const MIN_APPROVAL_HEIGHT: f64 = 360.0;
+const MAX_APPROVAL_HEIGHT: f64 = 640.0;
 const SCREEN_MARGIN: f64 = 16.0;
 const MAX_PRESENTATION_ATTEMPTS: u8 = 5;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PresentationMode {
+    Passive,
+    Approval,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WorkAreaGeometry {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct WindowGeometry {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
 
 #[derive(Default)]
 struct PresentationRetry {
@@ -81,16 +106,21 @@ impl BannerState {
             self.dirty.store(true, Ordering::Release);
             return Ok(());
         }
-        if banners.len() == MAX_VISIBLE_BANNERS {
-            let eviction = banners.iter().position(|banner| banner.approval.is_none());
-            let Some(eviction) = eviction else {
+        if notification.approval.is_some() {
+            if banners.iter().any(|banner| banner.approval.is_some()) {
                 return Err(NotifyError::Scheduling(
-                    "all Aizu banner slots are waiting for approval".to_owned(),
+                    "an Aizu command approval is already visible".to_owned(),
                 ));
-            };
-            if let Some(evicted) = banners.remove(eviction) {
-                activation_claims.remove(&evicted.id);
             }
+        } else if banners
+            .iter()
+            .filter(|banner| banner.approval.is_none())
+            .count()
+            >= MAX_VISIBLE_PASSIVE_BANNERS
+            && let Some(eviction) = banners.iter().position(|banner| banner.approval.is_none())
+            && let Some(evicted) = banners.remove(eviction)
+        {
+            activation_claims.remove(&evicted.id);
         }
         banners.push_back(notification);
         self.dirty.store(true, Ordering::Release);
@@ -145,6 +175,11 @@ impl BannerState {
             .lock()
             .map(|banners| banners.iter().cloned().collect())
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))
+    }
+
+    fn presentation_snapshot(&self) -> Result<Vec<Notification>, NotifyError> {
+        self.snapshot()
+            .map(|snapshot| visible_notifications(&snapshot))
     }
 
     fn claim_activation(
@@ -340,6 +375,58 @@ fn retry_delay(attempts: u8) -> Duration {
     }
 }
 
+fn visible_notifications(snapshot: &[Notification]) -> Vec<Notification> {
+    snapshot
+        .iter()
+        .find(|banner| banner.approval.is_some())
+        .map_or_else(|| snapshot.to_vec(), |approval| vec![approval.clone()])
+}
+
+fn presentation_mode(snapshot: &[Notification]) -> PresentationMode {
+    if snapshot.iter().any(|banner| banner.approval.is_some()) {
+        PresentationMode::Approval
+    } else {
+        PresentationMode::Passive
+    }
+}
+
+fn needs_user_attention(mode: PresentationMode, focused: Option<bool>) -> bool {
+    mode == PresentationMode::Approval && focused != Some(true)
+}
+
+fn window_geometry(
+    mode: PresentationMode,
+    requested_height: f64,
+    work_area: WorkAreaGeometry,
+) -> WindowGeometry {
+    let available_width = (work_area.width - SCREEN_MARGIN * 2.0).max(1.0);
+    let available_height = (work_area.height - SCREEN_MARGIN * 2.0).max(1.0);
+    let (target_width, minimum_height, maximum_height) = match mode {
+        PresentationMode::Passive => (BANNER_WIDTH, MIN_BANNER_HEIGHT, MAX_BANNER_HEIGHT),
+        PresentationMode::Approval => (APPROVAL_WIDTH, MIN_APPROVAL_HEIGHT, MAX_APPROVAL_HEIGHT),
+    };
+    let width = target_width.min(available_width);
+    let minimum_height = minimum_height.min(available_height);
+    let maximum_height = maximum_height.min(available_height).max(minimum_height);
+    let height = requested_height.clamp(minimum_height, maximum_height);
+    let (x, y) = match mode {
+        PresentationMode::Passive => (
+            work_area.x + work_area.width - width - SCREEN_MARGIN,
+            work_area.y + SCREEN_MARGIN,
+        ),
+        PresentationMode::Approval => (
+            work_area.x + (work_area.width - width) / 2.0,
+            work_area.y + (work_area.height - height) / 2.0,
+        ),
+    };
+    WindowGeometry {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
 pub fn setup(app: &App<Wry>) {
     app.manage(BannerState::default());
 }
@@ -425,17 +512,30 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
         return Ok(());
     }
     let window = ensure_window(app)?;
-    resize(app, MIN_BANNER_HEIGHT)?;
+    let visible = visible_notifications(&snapshot);
+    let mode = presentation_mode(&visible);
+    resize_for_mode(app, MIN_BANNER_HEIGHT, mode)?;
     window
         .show()
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
     if let Some(broker) = app.try_state::<crate::approval_broker::ApprovalBroker>() {
-        for banner in snapshot.iter().filter(|banner| banner.approval.is_some()) {
+        for banner in visible.iter().filter(|banner| banner.approval.is_some()) {
             let _ = broker.mark_window_shown(banner.id);
         }
     }
-    app.emit_to(BANNER_WINDOW, "aizu://banners-changed", &snapshot)
+    app.emit_to(BANNER_WINDOW, "aizu://banners-changed", &visible)
         .map_err(|error| NotifyError::Scheduling(error.to_string()))?;
+    // WebKit can throttle a non-key banner window before the Tauri event listener resumes.
+    // This fixed, payload-free wake-up makes the frontend re-read the authorized backend state.
+    let _ = window.eval("window.dispatchEvent(new Event('aizu-banner-refresh'))");
+    if mode == PresentationMode::Approval {
+        let _ = window.set_focus();
+        if needs_user_attention(mode, window.is_focused().ok()) {
+            // Informational attention bounces the macOS Dock icon once. Unlike Critical,
+            // it cannot outlive an approval that later times out or is disabled.
+            let _ = window.request_user_attention(Some(UserAttentionType::Informational));
+        }
+    }
     if let Some(sound) = app.state::<BannerState>().take_pending_sound(generation)? {
         play_sound(sound);
     }
@@ -443,7 +543,7 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
 }
 
 pub fn banners(app: &AppHandle<Wry>) -> Result<Vec<Notification>, NotifyError> {
-    app.state::<BannerState>().snapshot()
+    app.state::<BannerState>().presentation_snapshot()
 }
 
 pub fn has_approval(app: &AppHandle<Wry>, id: i32) -> Result<bool, NotifyError> {
@@ -498,6 +598,15 @@ pub fn clear_passive(app: &AppHandle<Wry>) -> Result<(), NotifyError> {
 }
 
 pub fn resize(app: &AppHandle<Wry>, requested_height: f64) -> Result<(), NotifyError> {
+    let mode = presentation_mode(&app.state::<BannerState>().snapshot()?);
+    resize_for_mode(app, requested_height, mode)
+}
+
+fn resize_for_mode(
+    app: &AppHandle<Wry>,
+    requested_height: f64,
+    mode: PresentationMode,
+) -> Result<(), NotifyError> {
     if !requested_height.is_finite() {
         return Err(NotifyError::Scheduling(
             "Aizu banner height is invalid".to_owned(),
@@ -514,14 +623,19 @@ pub fn resize(app: &AppHandle<Wry>, requested_height: f64) -> Result<(), NotifyE
     let work_area = monitor.work_area();
     let logical_position = work_area.position.to_logical::<f64>(scale);
     let logical_size = work_area.size.to_logical::<f64>(scale);
-    let max_height =
-        (logical_size.height - SCREEN_MARGIN * 2.0).clamp(MIN_BANNER_HEIGHT, MAX_BANNER_HEIGHT);
-    let height = requested_height.clamp(MIN_BANNER_HEIGHT, max_height);
-    let x = logical_position.x + logical_size.width - BANNER_WIDTH - SCREEN_MARGIN;
-    let y = logical_position.y + SCREEN_MARGIN;
+    let geometry = window_geometry(
+        mode,
+        requested_height,
+        WorkAreaGeometry {
+            x: logical_position.x,
+            y: logical_position.y,
+            width: logical_size.width,
+            height: logical_size.height,
+        },
+    );
     window
-        .set_size(LogicalSize::new(BANNER_WIDTH, height))
-        .and_then(|()| window.set_position(LogicalPosition::new(x, y)))
+        .set_size(LogicalSize::new(geometry.width, geometry.height))
+        .and_then(|()| window.set_position(LogicalPosition::new(geometry.x, geometry.y)))
         .map_err(|error| NotifyError::Scheduling(error.to_string()))
 }
 
@@ -569,7 +683,10 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
 
-    use super::{BannerState, MAX_PRESENTATION_ATTEMPTS, MAX_VISIBLE_BANNERS, retry_delay};
+    use super::{
+        BannerState, MAX_PRESENTATION_ATTEMPTS, MAX_VISIBLE_PASSIVE_BANNERS, PresentationMode,
+        WindowGeometry, WorkAreaGeometry, needs_user_attention, retry_delay, window_geometry,
+    };
     use crate::model::Notification;
 
     fn notification(id: i32, body: &str) -> Notification {
@@ -590,7 +707,7 @@ mod tests {
     #[test]
     fn queue_is_bounded_and_replaces_matching_identifiers() {
         let state = BannerState::default();
-        for id in 1..=i32::try_from(MAX_VISIBLE_BANNERS).expect("small banner bound") + 1 {
+        for id in 1..=i32::try_from(MAX_VISIBLE_PASSIVE_BANNERS).expect("small banner bound") + 1 {
             state
                 .push(notification(id, "original"))
                 .expect("queue banner");
@@ -600,7 +717,7 @@ mod tests {
             .expect("replace banner");
 
         let banners = state.snapshot().expect("banner snapshot");
-        assert_eq!(banners.len(), MAX_VISIBLE_BANNERS);
+        assert_eq!(banners.len(), MAX_VISIBLE_PASSIVE_BANNERS);
         assert_eq!(banners[0].id, 2);
         assert_eq!(banners[1].body, "replacement");
     }
@@ -609,6 +726,8 @@ mod tests {
     fn ordinary_notifications_do_not_evict_a_pending_command_approval() {
         let state = BannerState::default();
         state.push(notification(1, "first")).unwrap();
+        state.push(notification(2, "second")).unwrap();
+        state.push(notification(3, "third")).unwrap();
         let mut approval = notification(-1, "review command");
         approval.approval = Some(crate::model::ApprovalPresentation {
             agent: crate::model::AgentKind::Codex,
@@ -616,13 +735,21 @@ mod tests {
             command: "printf approved".to_owned(),
         });
         state.push(approval).unwrap();
-        state.push(notification(2, "second")).unwrap();
-        state.push(notification(3, "third")).unwrap();
 
         let snapshot = state.snapshot().unwrap();
-        assert_eq!(snapshot.len(), MAX_VISIBLE_BANNERS);
+        assert_eq!(snapshot.len(), MAX_VISIBLE_PASSIVE_BANNERS + 1);
         assert!(snapshot.iter().any(|banner| banner.id == -1));
-        assert!(!snapshot.iter().any(|banner| banner.id == 1));
+        assert!(snapshot.iter().any(|banner| banner.id == 1));
+        assert!(snapshot.iter().any(|banner| banner.id == 2));
+        assert!(snapshot.iter().any(|banner| banner.id == 3));
+        assert_eq!(state.presentation_snapshot().unwrap()[0].id, -1);
+
+        state.dismiss(-1).unwrap();
+        let restored = state.presentation_snapshot().unwrap();
+        assert_eq!(
+            restored.iter().map(|banner| banner.id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
     }
 
     #[test]
@@ -643,6 +770,98 @@ mod tests {
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].id, -1);
         assert!(snapshot[0].approval.is_some());
+    }
+
+    #[test]
+    fn approval_presentation_temporarily_hides_but_preserves_passive_banners() {
+        let state = BannerState::default();
+        state.push(notification(1, "ordinary")).unwrap();
+        let mut approval = notification(-1, "review command");
+        approval.approval = Some(crate::model::ApprovalPresentation {
+            agent: crate::model::AgentKind::Codex,
+            tool_name: "Bash".to_owned(),
+            command: "printf approved".to_owned(),
+        });
+        state.push(approval).unwrap();
+
+        let queued = state.snapshot().unwrap();
+        let presented = state.presentation_snapshot().unwrap();
+        assert_eq!(queued.len(), 2);
+        assert_eq!(presented.len(), 1);
+        assert_eq!(presented[0].id, -1);
+
+        state.dismiss(-1).unwrap();
+        let presented = state.presentation_snapshot().unwrap();
+        assert_eq!(presented.len(), 1);
+        assert_eq!(presented[0].id, 1);
+    }
+
+    #[test]
+    fn approval_window_is_large_and_centered_while_passive_banners_stay_top_right() {
+        let work_area = WorkAreaGeometry {
+            x: 100.0,
+            y: 50.0,
+            width: 1_440.0,
+            height: 900.0,
+        };
+
+        assert_eq!(
+            window_geometry(PresentationMode::Passive, 200.0, work_area),
+            WindowGeometry {
+                x: 1_104.0,
+                y: 66.0,
+                width: 420.0,
+                height: 200.0,
+            }
+        );
+        assert_eq!(
+            window_geometry(PresentationMode::Approval, 200.0, work_area),
+            WindowGeometry {
+                x: 480.0,
+                y: 320.0,
+                width: 680.0,
+                height: 360.0,
+            }
+        );
+    }
+
+    #[test]
+    fn approval_window_remains_inside_a_small_work_area() {
+        assert_eq!(
+            window_geometry(
+                PresentationMode::Approval,
+                900.0,
+                WorkAreaGeometry {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 600.0,
+                    height: 300.0,
+                },
+            ),
+            WindowGeometry {
+                x: 16.0,
+                y: 16.0,
+                width: 568.0,
+                height: 268.0,
+            }
+        );
+    }
+
+    #[test]
+    fn approval_requests_bounded_attention_when_native_focus_is_not_observed() {
+        assert!(!needs_user_attention(
+            PresentationMode::Approval,
+            Some(true)
+        ));
+        assert!(needs_user_attention(
+            PresentationMode::Approval,
+            Some(false)
+        ));
+        assert!(needs_user_attention(PresentationMode::Approval, None));
+        assert!(!needs_user_attention(
+            PresentationMode::Passive,
+            Some(false)
+        ));
     }
 
     #[test]

@@ -56,6 +56,7 @@ export function SwipeDismissBanner({
   const [exitDirection, setExitDirection] = useState<-1 | 1 | null>(null);
   const [approvalPending, setApprovalPending] = useState(false);
   const requiresApproval = banner.approval !== null;
+  const approvalTitleId = `aizu-approval-title-${String(Math.abs(banner.id))}`;
   const [acknowledgedApprovalId, setAcknowledgedApprovalId] = useState<number | null>(null);
   const approvalReady = !requiresApproval || acknowledgedApprovalId === banner.id;
 
@@ -69,6 +70,10 @@ export function SwipeDismissBanner({
       active = false;
     };
   }, [banner.id, onAcknowledgeApproval, requiresApproval]);
+
+  useEffect(() => {
+    if (requiresApproval) bannerRef.current?.focus();
+  }, [requiresApproval]);
 
   const reset = useCallback(() => {
     swipe.current = null;
@@ -131,6 +136,7 @@ export function SwipeDismissBanner({
     clientY: number,
     target: EventTarget,
   ) => {
+    if (requiresApproval) return false;
     if (
       swipe.current ||
       dismissStarted.current ||
@@ -202,12 +208,18 @@ export function SwipeDismissBanner({
   };
   const classes = [
     "aizu-banner",
+    requiresApproval ? "aizu-banner--approval" : "",
     dragging ? "aizu-banner--dragging" : "",
     exitDirection === -1 ? "aizu-banner--dismiss-left" : "",
     exitDirection === 1 ? "aizu-banner--dismiss-right" : "",
   ].filter(Boolean).join(" ");
   const dismissImmediately = () => {
-    if (dismissStarted.current || activationStarted.current || approvalStarted.current) return;
+    if (
+      requiresApproval ||
+      dismissStarted.current ||
+      activationStarted.current ||
+      approvalStarted.current
+    ) return;
     dismissStarted.current = true;
     void onDismiss(banner.id).then((dismissed) => {
       if (!dismissed) reset();
@@ -245,6 +257,8 @@ export function SwipeDismissBanner({
   };
   return (
     <article
+      aria-labelledby={requiresApproval ? approvalTitleId : undefined}
+      aria-modal={requiresApproval ? true : undefined}
       className={classes}
       data-banner-id={banner.id}
       data-text-size={banner.textSize}
@@ -274,7 +288,9 @@ export function SwipeDismissBanner({
         if (captured) event.currentTarget.releasePointerCapture(event.pointerId);
       }}
       ref={bannerRef}
+      role={requiresApproval ? "alertdialog" : undefined}
       style={style}
+      tabIndex={requiresApproval ? -1 : undefined}
     >
       <div
         className="aizu-banner__content"
@@ -291,7 +307,7 @@ export function SwipeDismissBanner({
       >
         <span className="aizu-banner__mark"><BrandMark small /></span>
         <div className="aizu-banner__copy">
-          <strong>{banner.title}</strong>
+          <strong id={requiresApproval ? approvalTitleId : undefined}>{banner.title}</strong>
           {banner.body ? <SafeMarkdown>{banner.body}</SafeMarkdown> : null}
           {banner.approval ? (
             <>
@@ -319,15 +335,17 @@ export function SwipeDismissBanner({
           ) : null}
         </div>
       </div>
-      <button
-        aria-label={messages(banner.language).dismissNotification}
-        className="aizu-banner__dismiss"
-        onClick={dismissImmediately}
-        title={messages(banner.language).dismissNotification}
-        type="button"
-      >
-        <X aria-hidden="true" size={16} />
-      </button>
+      {requiresApproval ? null : (
+        <button
+          aria-label={messages(banner.language).dismissNotification}
+          className="aizu-banner__dismiss"
+          onClick={dismissImmediately}
+          title={messages(banner.language).dismissNotification}
+          type="button"
+        >
+          <X aria-hidden="true" size={16} />
+        </button>
+      )}
     </article>
   );
 }

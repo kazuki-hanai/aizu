@@ -165,6 +165,24 @@ pub fn get_e2e_banners(app: AppHandle<Wry>) -> Result<Vec<Notification>, Desktop
 #[cfg(feature = "desktop-e2e")]
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+pub fn get_e2e_banner_window_state(app: AppHandle<Wry>) -> Result<(bool, bool), DesktopError> {
+    let window = app
+        .get_webview_window(crate::banner::BANNER_WINDOW)
+        .ok_or_else(|| {
+            crate::notifier::NotifyError::Scheduling("banner window is unavailable".to_owned())
+        })?;
+    let visible = window
+        .is_visible()
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?;
+    let focused = window
+        .is_focused()
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?;
+    Ok((visible, focused))
+}
+
+#[cfg(feature = "desktop-e2e")]
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn show_e2e_terminal_banner(app: AppHandle<Wry>) -> Result<(), DesktopError> {
     crate::banner::show(
         &app,

@@ -250,9 +250,11 @@ describe("Aizu Banner", () => {
 
     fireEvent.mouseDown(handle, { button: 0, clientX: 140, clientY: 20 });
     fireEvent.mouseMove(window, { button: 0, clientX: 40, clientY: 20 });
+    await waitFor(() => expect(banner).toHaveClass("aizu-banner--dragging"));
+    expect(Number.parseInt(banner.style.getPropertyValue("--aizu-swipe-offset"), 10)).toBeLessThanOrEqual(-72);
     fireEvent.mouseUp(window, { button: 0, clientX: 40, clientY: 20 });
 
-    expect(banner).toHaveClass("aizu-banner--dismiss-left");
+    await waitFor(() => expect(banner).toHaveClass("aizu-banner--dismiss-left"));
     await waitFor(() => expect(backend.dismiss).toHaveBeenCalledWith(1));
   });
 
@@ -391,7 +393,7 @@ describe("Aizu Banner", () => {
     expect(banner.style.getPropertyValue("--aizu-swipe-offset")).toBe("0px");
   });
 
-  it("does not let an older banner snapshot replace a newer one", async () => {
+  it("serializes overlapping refreshes and applies the queued follow-up", async () => {
     const older = deferred<BannerNotification[]>();
     const newer = deferred<BannerNotification[]>();
     const backend = client();
@@ -400,15 +402,31 @@ describe("Aizu Banner", () => {
       .mockImplementationOnce(() => newer.promise);
 
     render(<BannerApp client={backend} />);
-    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(1));
 
-    newer.resolve([notices[1]]);
-    expect(await screen.findByText(notices[1].body)).toBeVisible();
     older.resolve([notices[0]]);
-    await Promise.resolve();
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
+    newer.resolve([notices[1]]);
 
+    expect(await screen.findByText(notices[1].body)).toBeVisible();
     expect(screen.queryByText(notices[0].body)).not.toBeInTheDocument();
-    expect(screen.getByText(notices[1].body)).toBeVisible();
+  });
+
+  it("re-reads backend state when the native window sends a payload-free wake-up", async () => {
+    const backend = client();
+    let queued: BannerNotification[] = [];
+    backend.getBanners = vi.fn(() => Promise.resolve(queued));
+    render(<BannerApp client={backend} />);
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalled());
+    const callsBeforeWake = vi.mocked(backend.getBanners).mock.calls.length;
+
+    queued = [notices[0]];
+    window.dispatchEvent(new Event("aizu-banner-refresh"));
+
+    await waitFor(() => {
+      expect(backend.getBanners).toHaveBeenCalledTimes(callsBeforeWake + 1);
+    });
+    expect(await screen.findByText(notices[0].title)).toBeVisible();
   });
 
   it("does not let an in-flight snapshot replace a pushed banner state", async () => {
@@ -419,17 +437,17 @@ describe("Aizu Banner", () => {
       .mockImplementationOnce(() => firstStale.promise)
       .mockImplementationOnce(() => secondStale.promise);
     render(<BannerApp client={backend} />);
-    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(1));
     const [[subscription]] = vi.mocked(backend.subscribe).mock.calls;
     subscription([notices[1]]);
     expect(await screen.findByText(notices[1].body)).toBeVisible();
 
     firstStale.resolve(notices);
-    secondStale.resolve(notices);
-    await Promise.resolve();
+    await waitFor(() => expect(backend.getBanners).toHaveBeenCalledTimes(2));
+    secondStale.resolve([notices[1]]);
 
     expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument();
-    expect(screen.getByText(notices[1].body)).toBeVisible();
+    expect(await screen.findByText(notices[1].body)).toBeVisible();
   });
 
   it("refreshes authoritatively after dismiss so a concurrent new banner remains visible", async () => {
@@ -469,15 +487,22 @@ describe("Aizu Banner", () => {
         command: "printf 'first line'\nprintf 'second line'",
       },
     };
-    let approvalQueue = [approval];
+    let approvalQueue = [notices[0], approval];
     backend.getBanners = vi.fn(() => Promise.resolve(approvalQueue));
     backend.acknowledgeApproval = vi.fn(() => pendingAcknowledgement.promise);
     backend.decideApproval = vi.fn(() => pendingDecision.promise.then(() => {
-      approvalQueue = [];
+      approvalQueue = approvalQueue.filter((banner) => banner.id !== -1);
     }));
     const { container } = render(<BannerApp client={backend} />);
 
     expect(await screen.findByText("Codex requests permission")).toBeVisible();
+    expect(screen.getByRole("alertdialog")).toHaveAttribute("aria-modal", "true");
+    expect(container.querySelector(".banner-stack")).toHaveAttribute(
+      "data-presentation",
+      "approval",
+    );
+    expect(container.querySelector(".aizu-banner")).toHaveClass("aizu-banner--approval");
+    expect(screen.queryByText("Codex task completed")).not.toBeInTheDocument();
     expect(container.querySelector(".aizu-banner__command")?.textContent).toBe(
       approval.approval?.command,
     );
@@ -485,6 +510,7 @@ describe("Aizu Banner", () => {
     const deny = screen.getByRole("button", { name: "Deny" });
     expect(allow).toBeDisabled();
     expect(deny).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Dismiss notification" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Choose in terminal" })).not.toBeInTheDocument();
     await waitFor(() => expect(backend.acknowledgeApproval).toHaveBeenCalledWith(-1));
     pendingAcknowledgement.resolve(undefined);
@@ -500,12 +526,15 @@ describe("Aizu Banner", () => {
     await waitFor(() => {
       expect(screen.queryByText("Codex requests permission")).not.toBeInTheDocument();
     });
+    expect(await screen.findByText("Codex task completed")).toBeVisible();
+    expect(container.querySelector(".banner-stack")).toHaveAttribute(
+      "data-presentation",
+      "passive",
+    );
   });
 
-  it("returns an undecided approval to the terminal when the banner is closed", async () => {
+  it("keeps approval visible until an explicit decision", async () => {
     const backend = client();
-    const pendingAcknowledgement = deferred<undefined>();
-    const pendingDismiss = deferred<undefined>();
     const approval: BannerNotification = {
       ...notices[1],
       id: -2,
@@ -518,28 +547,30 @@ describe("Aizu Banner", () => {
         command: "printf 'terminal fallback'",
       },
     };
-    let approvalQueue = [approval];
-    backend.getBanners = vi.fn(() => Promise.resolve(approvalQueue));
-    backend.acknowledgeApproval = vi.fn(() => pendingAcknowledgement.promise);
-    backend.dismiss = vi.fn(() => pendingDismiss.promise.then(() => {
-      approvalQueue = [];
-    }));
-    render(<BannerApp client={backend} />);
+    backend.getBanners = vi.fn(() => Promise.resolve([approval]));
+    const { container } = render(<BannerApp client={backend} />);
 
     await screen.findByText("Codex が実行許可を求めています");
-    expect(screen.getByRole("button", { name: "今回だけ許可" })).toBeDisabled();
+    const dialog = screen.getByRole("alertdialog");
+    await waitFor(() => expect(dialog).toHaveFocus());
     expect(screen.queryByRole("button", { name: "Terminalで選ぶ" })).not.toBeInTheDocument();
-    const close = screen.getByRole("button", { name: "通知を閉じる" });
-    await userEvent.click(close);
+    expect(screen.queryByRole("button", { name: "通知を閉じる" })).not.toBeInTheDocument();
 
-    expect(backend.dismiss).toHaveBeenCalledTimes(1);
-    expect(backend.dismiss).toHaveBeenCalledWith(-2);
-    expect(backend.decideApproval).not.toHaveBeenCalled();
-    await userEvent.click(close);
-    expect(backend.dismiss).toHaveBeenCalledTimes(1);
-    pendingDismiss.resolve(undefined);
-    await waitFor(() => {
-      expect(screen.queryByText("Codex が実行許可を求めています")).not.toBeInTheDocument();
+    fireEvent.pointerDown(dialog, {
+      button: 0,
+      clientX: 180,
+      clientY: 40,
+      isPrimary: true,
+      pointerId: 21,
     });
+    fireEvent.pointerMove(dialog, { clientX: 40, clientY: 40, pointerId: 21 });
+    fireEvent.pointerUp(dialog, { clientX: 40, clientY: 40, pointerId: 21 });
+    fireEvent.keyDown(dialog, { key: "Escape" });
+
+    expect(dialog).not.toHaveClass("aizu-banner--dragging");
+    expect(dialog.style.getPropertyValue("--aizu-swipe-offset")).toBe("0px");
+    expect(container.querySelector('[data-banner-id="-2"]')).toBeInTheDocument();
+    expect(backend.dismiss).not.toHaveBeenCalled();
+    expect(backend.decideApproval).not.toHaveBeenCalled();
   });
 });

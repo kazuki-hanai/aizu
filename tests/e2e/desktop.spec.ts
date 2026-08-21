@@ -348,11 +348,36 @@ describe("Aizu desktop MVP", () => {
     });
     expect(approvalPreferences.preferences.commandApprovalsEnabled).toBe(true);
     const approvalHook = runPermissionHook(stateRoot as string);
+    await browser.waitUntil(async () => {
+      const queued = await browser.tauri.execute(({ core }) =>
+        core.invoke("get_e2e_banners")) as CapturedNotification[];
+      return queued.some((banner) => banner.title === "Codex requests permission");
+    }, { timeout: 4_000, timeoutMsg: "approval request never reached the backend banner queue" });
     await browser.switchToWindow("banner");
     await expect($("strong=Codex requests permission")).toBeDisplayed();
+    expect(await browser.execute(() => {
+      const dialog = document.querySelector('[role="alertdialog"]');
+      return dialog instanceof HTMLElement ? getComputedStyle(dialog).opacity : "0";
+    })).toBe("1");
+    const [approvalWindowVisible] = await invokeCurrentWindow<[boolean, boolean]>(
+      "get_e2e_banner_window_state",
+    );
+    expect(approvalWindowVisible).toBe(true);
     await expect($("pre=printf 'Aizu approval E2E'")).toBeDisplayed();
+    await expect($('[data-presentation="approval"]')).toBeDisplayed();
+    const approvalDialog = $('[role="alertdialog"]');
+    await expect(approvalDialog).toBeDisplayed();
+    expect(await approvalDialog.getAttribute("aria-modal")).toBe("true");
+    await expect($("button=Dismiss notification")).not.toBeExisting();
     await expect($("button=Choose in terminal")).not.toBeExisting();
     await expect($("button=Deny")).toBeDisplayed();
+    await browser.action("pointer", { parameters: { pointerType: "mouse" } })
+      .move({ duration: 0, origin: approvalDialog, x: 180, y: 80 })
+      .down({ button: 0 })
+      .move({ duration: 120, origin: "pointer", x: -160, y: 0 })
+      .up({ button: 0 })
+      .perform();
+    await expect(approvalDialog).toBeDisplayed();
     const allowOnce = $("button=Allow once");
     await expect(allowOnce).toBeEnabled();
     await allowOnce.click();

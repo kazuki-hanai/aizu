@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { SwipeDismissBanner } from "./components/SwipeDismissBanner";
 import { bannerBackend, type BannerClient } from "./lib/backend";
@@ -15,17 +15,37 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
   const [unavailable, setUnavailable] = useState(false);
   const stackRef = useRef<HTMLElement>(null);
   const refreshGeneration = useRef(0);
+  const refreshInFlight = useRef(false);
+  const refreshRequestVersion = useRef(0);
+  const presentedBanners = useMemo(() => {
+    const approval = banners.find((banner) => banner.approval !== null);
+    return approval ? [approval] : banners;
+  }, [banners]);
+  const approvalMode = presentedBanners.some((banner) => banner.approval !== null);
 
   const refresh = useCallback(async () => {
-    const generation = ++refreshGeneration.current;
+    refreshRequestVersion.current += 1;
+    if (refreshInFlight.current) {
+      return;
+    }
+    refreshInFlight.current = true;
     try {
-      const nextBanners = await client.getBanners();
-      if (refreshGeneration.current !== generation) return;
-      setBanners(nextBanners);
-      setUnavailable(false);
-    } catch {
-      if (refreshGeneration.current !== generation) return;
-      setUnavailable(true);
+      let handledRequestVersion: number;
+      do {
+        handledRequestVersion = refreshRequestVersion.current;
+        const generation = refreshGeneration.current;
+        try {
+          const nextBanners = await client.getBanners();
+          if (refreshGeneration.current !== generation) continue;
+          setBanners(nextBanners);
+          setUnavailable(false);
+        } catch {
+          if (refreshGeneration.current !== generation) continue;
+          setUnavailable(true);
+        }
+      } while (handledRequestVersion !== refreshRequestVersion.current);
+    } finally {
+      refreshInFlight.current = false;
     }
   }, [client]);
 
@@ -95,6 +115,10 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
   useEffect(() => {
     let active = true;
     let unsubscribe: (() => void) | undefined;
+    const wake = () => {
+      if (active) void refresh();
+    };
+    window.addEventListener("aizu-banner-refresh", wake);
     void client.subscribe((nextBanners) => {
       if (!active) return;
       refreshGeneration.current += 1;
@@ -119,6 +143,7 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
       active = false;
       refreshGeneration.current += 1;
       window.clearInterval(reconciliation);
+      window.removeEventListener("aizu-banner-refresh", wake);
       unsubscribe?.();
     };
   }, [client, refresh]);
@@ -134,9 +159,14 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
   }, [banners, client, runAction, unavailable]);
 
   return (
-    <main aria-label="Aizu notifications" className="banner-stack" ref={stackRef}>
+    <main
+      aria-label="Aizu notifications"
+      className={`banner-stack${approvalMode ? " banner-stack--approval" : ""}`}
+      data-presentation={approvalMode ? "approval" : "passive"}
+      ref={stackRef}
+    >
       {unavailable ? <p className="banner-error">Aizu Banner is unavailable.</p> : null}
-      {banners.map((banner) => (
+      {presentedBanners.map((banner) => (
         <SwipeDismissBanner
           banner={banner}
           key={banner.id}

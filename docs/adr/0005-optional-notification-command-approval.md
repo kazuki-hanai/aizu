@@ -22,12 +22,15 @@ active decision surface for a request, but cannot safely make both surfaces acti
    timeout. When the setting is off, the private desktop broker immediately returns `unavailable`
    with `presented: false`; the CLI returns no decision and the agent continues to its standard
    terminal prompt.
-3. When the setting is on, one canonical local `Bash` request may show an Aizu Banner containing the
-   exact bounded command and only `Deny` and `Allow once`. The command becomes actionable only after
-   native window presentation and frontend render acknowledgement. The decision is consumed once.
-4. Closing, swiping, timing out, stopping Aizu, disabling the setting, losing the broker, or failing
-   presentation returns no decision. The agent then shows its terminal prompt. There is no separate
-   `Choose in terminal` button and closing never means deny.
+3. When the setting is on, one canonical local `Bash` request may show a large, centered Aizu
+   approval dialog containing the exact bounded command and only `Deny` and `Allow once`. It is
+   always on top, requests focus with a one-shot informational platform-attention fallback,
+   temporarily takes visual priority over queued passive banners, and cannot be closed or swiped
+   away. The command becomes actionable only after native window presentation and frontend render
+   acknowledgement. The decision is consumed once.
+4. Timing out, stopping Aizu, disabling the setting, losing the broker, or failing presentation
+   returns no decision. The agent then shows its terminal prompt. There is no separate `Choose in
+   terminal` button, and the absence of a decision never means deny.
 5. The raw command remains ephemeral in the hook process, private socket buffers, desktop memory,
    and banner WebView. It is never written to the spool, settings, desktop database, history,
    notification outbox, logs, SSH bridge, or Notification Center. Banner data and approval commands
@@ -41,7 +44,10 @@ active decision surface for a request, but cannot safely make both surfaces acti
 
 - Existing and new users retain the terminal approval flow until they opt in.
 - Opted-in local requests briefly show `Running PermissionRequest hook` while Aizu owns the decision
-  surface. Closing the banner ends that wait and hands the request back to the terminal.
+  surface. The centered dialog stays visible until an explicit choice or the bounded broker timeout;
+  timeout and other failure paths hand the request back to the terminal without a decision.
+- Passive banners remain queued while the approval dialog is visible and return to the normal
+  top-right stack after the request is resolved.
 - The setup merger replaces recognized five-second background Aizu permission hooks with the
   synchronous form while preserving unrelated and lookalike hooks.
 - Two simultaneously actionable approval surfaces remain out of scope without an agent-owned,
@@ -53,8 +59,8 @@ active decision surface for a request, but cannot safely make both surfaces acti
   replaces the familiar terminal prompt.
 - **Show both notification and terminal controls concurrently:** rejected because background-hook
   output cannot later decide the request, and terminal input injection is unsafe.
-- **Keep a `Choose in terminal` button:** rejected because closing or swiping already provides the
-  unambiguous no-decision fallback without adding another control.
+- **Keep a `Choose in terminal` button:** rejected because the approval dialog is intentionally a
+  focused two-choice surface; bounded failure and timeout paths already preserve terminal fallback.
 - **Persist raw approval requests:** rejected because commands can contain credentials, paths, and
   user data.
 
