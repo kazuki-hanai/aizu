@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-21
+- Updated: 2026-08-24
 - Deciders: repository owner
 - Supersedes: [ADR 0004](0004-terminal-owned-command-approval.md)
 - Related: `docs/mvp-design.md` §4, §13.5, architectural invariants #11, #12
@@ -22,6 +23,8 @@ both surfaces actionable at once.
    changes the decision surface without a fresh opt-in. Settings schema version 3 adds **Show
    approval in the center**, defaults it to on, and preserves every version 2 approval opt-in.
    Version 5 adds the secondary-display selection and preserves every version 4 display choice.
+   Version 6 adds a separate approval-display preference; migration copies the existing banner
+   display once, then persists both choices independently.
 2. Generated local first-party `PermissionRequest` hooks are synchronous with a 50-second outer
    timeout. When the setting is off, the private desktop broker immediately returns `unavailable`
    with `presented: false`; the CLI returns no decision and the agent continues to its standard
@@ -29,9 +32,10 @@ both surfaces actionable at once.
 3. When the setting is on, one canonical local `Bash` request or Claude Code `WebFetch` request may
    show a large Aizu approval dialog containing the exact bounded command or HTTP(S) URL and only
    `Deny` and `Allow once`. A WebFetch `prompt` and all other hook context are discarded before the
-   broker request is built; the URL is selectable but is not rendered as a link. Aizu uses the shared
-   banner-display preference: the macOS primary display by default, the first connected secondary
-   display, the focused-window display, or the pointer display. The dialog is centered by default;
+   broker request is built; the URL is selectable but is not rendered as a link. Aizu uses a separate
+   approval-display preference: the macOS primary display by default, the first connected secondary
+   display, the focused-window display, or the pointer display. Regular banners retain their own
+   notification-display preference. The dialog is centered by default;
    the separate centering setting moves it to that display's top right without removing its
    approval controls. A missing secondary display falls back to the primary display. It is
    always on top, requests focus with a one-shot informational platform-attention fallback,
@@ -60,6 +64,8 @@ both surfaces actionable at once.
   top-right stack after the request is resolved.
 - Changing the centering setting repositions an existing approval without replaying notification
   sound or changing its one-shot decision state.
+- Changing either display preference repositions only its corresponding visible surface. A hidden
+  passive stack adopts its new display after the active approval is resolved.
 - The setup merger replaces recognized five-second background Aizu permission hooks with the
   synchronous form while preserving unrelated and lookalike hooks.
 - Two simultaneously actionable approval surfaces remain out of scope without an agent-owned,

@@ -649,6 +649,26 @@ function SettingsView({ busy, muted, onChange, onMuteChange, preferences, onSend
           </select>
         </label>
         <label className="setting-row setting-row--select">
+          <ShieldCheck aria-hidden="true" size={17} />
+          <span>{t.approvalDisplay}</span>
+          <select
+            aria-label={t.approvalDisplay}
+            disabled={busy}
+            value={preferences.approvalDisplay}
+            onChange={(event) => {
+              const approvalDisplay = event.target.value;
+              if (approvalDisplay === "primary" || approvalDisplay === "secondary" || approvalDisplay === "focusedWindow" || approvalDisplay === "pointer") {
+                void onChange({ ...preferences, approvalDisplay });
+              }
+            }}
+          >
+            <option value="primary">{t.displayPrimary}</option>
+            <option value="secondary">{t.displaySecondary}</option>
+            <option value="focusedWindow">{t.displayFocusedWindow}</option>
+            <option value="pointer">{t.displayPointer}</option>
+          </select>
+        </label>
+        <label className="setting-row setting-row--select">
           <Volume2 aria-hidden="true" size={17} />
           <span>{t.notificationSound}</span>
           <select

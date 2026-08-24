@@ -27,6 +27,7 @@ type View = {
     commandApprovalsEnabled: boolean;
     centerApprovalDialogs: boolean;
     notificationDisplay: string;
+    approvalDisplay: string;
     soundEnabled: boolean;
     notificationDelivery: string;
     notificationSound: string;
@@ -161,6 +162,7 @@ describe("Aizu desktop MVP", () => {
     expect(initial.preferences.commandApprovalsEnabled).toBe(false);
     expect(initial.preferences.centerApprovalDialogs).toBe(true);
     expect(initial.preferences.notificationDisplay).toBe("primary");
+    expect(initial.preferences.approvalDisplay).toBe("primary");
     await invokeView("update_preferences", {
       request: { ...initial.preferences, notificationDelivery: "system" },
     });
@@ -530,6 +532,7 @@ describe("Aizu desktop MVP", () => {
       textSize: "large",
       agentDetailsEnabled: true,
       notificationDisplay: "secondary",
+      approvalDisplay: "focusedWindow",
       notificationSound: "bloom",
       quietHours: {
         ...resumed.preferences.quietHours,
@@ -544,17 +547,19 @@ describe("Aizu desktop MVP", () => {
     expect(updated.preferences.textSize).toBe("large");
     expect(updated.preferences.agentDetailsEnabled).toBe(true);
     expect(updated.preferences.notificationDisplay).toBe("secondary");
+    expect(updated.preferences.approvalDisplay).toBe("focusedWindow");
     await expect($("h1=エージェント")).toBeDisplayed();
     expect(await browser.execute(() => document.documentElement.lang)).toBe("ja");
     expect(await browser.execute(() => document.documentElement.dataset.textSize)).toBe("large");
     expect((await invokeView("get_app_view")).preferences.quietHours.enabled).toBe(true);
     const persisted = JSON.parse(await readFile(path.join(stateRoot as string, "settings.json"), "utf8")) as {
-      preferences: { agentDetailsEnabled: boolean; commandApprovalsEnabled: boolean; centerApprovalDialogs: boolean; language: string; notificationDisplay: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
+      preferences: { agentDetailsEnabled: boolean; commandApprovalsEnabled: boolean; centerApprovalDialogs: boolean; language: string; notificationDisplay: string; approvalDisplay: string; notificationSound: string; textSize: string; quietHours: { enabled: boolean } };
     };
     expect(persisted.preferences.agentDetailsEnabled).toBe(true);
     expect(persisted.preferences.commandApprovalsEnabled).toBe(true);
     expect(persisted.preferences.centerApprovalDialogs).toBe(true);
     expect(persisted.preferences.notificationDisplay).toBe("secondary");
+    expect(persisted.preferences.approvalDisplay).toBe("focusedWindow");
     expect(persisted.preferences.notificationSound).toBe("bloom");
     expect(persisted.preferences.language).toBe("ja");
     expect(persisted.preferences.textSize).toBe("large");

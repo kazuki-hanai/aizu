@@ -101,6 +101,7 @@ fn initialize_banner_preferences(
     preferences: &model::Preferences,
 ) -> Result<(), notifier::NotifyError> {
     banner::update_notification_display(app, preferences.notification_display)?;
+    banner::update_approval_display(app, preferences.approval_display)?;
     banner::update_approval_centering(app, preferences.center_approval_dialogs)
 }
 

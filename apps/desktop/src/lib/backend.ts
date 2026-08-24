@@ -148,6 +148,7 @@ const defaultPreferences: Preferences = {
   centerApprovalDialogs: true,
   soundEnabled: true,
   notificationDisplay: "primary",
+  approvalDisplay: "primary",
   notificationDelivery: "aizuBanner",
   notificationSound: "default",
   privacyMode: "generic",

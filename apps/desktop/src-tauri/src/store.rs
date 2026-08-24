@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::model::Preferences;
 
-const CURRENT_SETTINGS_VERSION: u32 = 5;
+const CURRENT_SETTINGS_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,6 +105,10 @@ impl SettingsStore {
                     // product contract. Require an explicit opt-in after upgrade.
                     if settings.settings_version < 2 {
                         settings.preferences.command_approvals_enabled = false;
+                    }
+                    if settings.settings_version < 6 {
+                        settings.preferences.approval_display =
+                            settings.preferences.notification_display;
                     }
                     settings.settings_version = CURRENT_SETTINGS_VERSION;
                     self.save(&settings)?;
@@ -452,12 +456,80 @@ mod tests {
             migrated.preferences.notification_display,
             crate::model::NotificationDisplay::Pointer
         );
+        assert_eq!(
+            migrated.preferences.approval_display,
+            crate::model::NotificationDisplay::Pointer
+        );
         let persisted: StoredSettings =
             serde_json::from_slice(&fs::read(&path).expect("read migrated settings"))
                 .expect("decode migrated settings");
         assert_eq!(persisted.settings_version, CURRENT_SETTINGS_VERSION);
         assert_eq!(
             persisted.preferences.notification_display,
+            crate::model::NotificationDisplay::Pointer
+        );
+        assert_eq!(
+            persisted.preferences.approval_display,
+            crate::model::NotificationDisplay::Pointer
+        );
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn version_five_copies_the_existing_display_to_approval_display() {
+        let (directory, path) = temporary_settings_path("migrate-approval-display");
+        let mut fixture = serde_json::to_value(StoredSettings::default())
+            .expect("encode current settings fixture");
+        fixture["settingsVersion"] = serde_json::json!(5);
+        fixture["preferences"]["notificationDisplay"] = serde_json::json!("focusedWindow");
+        fixture["preferences"]
+            .as_object_mut()
+            .expect("preferences object")
+            .remove("approvalDisplay");
+        fs::write(
+            &path,
+            serde_json::to_vec(&fixture).expect("encode v5 settings"),
+        )
+        .expect("write v5 settings");
+
+        let store = SettingsStore::new(path.clone());
+        let migrated = store.load().expect("v5 settings migrate");
+
+        assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
+        assert_eq!(
+            migrated.preferences.notification_display,
+            crate::model::NotificationDisplay::FocusedWindow
+        );
+        assert_eq!(
+            migrated.preferences.approval_display,
+            crate::model::NotificationDisplay::FocusedWindow
+        );
+        let persisted: StoredSettings =
+            serde_json::from_slice(&fs::read(&path).expect("read migrated settings"))
+                .expect("decode migrated settings");
+        assert_eq!(
+            persisted.preferences.approval_display,
+            crate::model::NotificationDisplay::FocusedWindow
+        );
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn current_version_persists_independent_display_preferences() {
+        let (directory, path) = temporary_settings_path("independent-displays");
+        let mut settings = StoredSettings::default();
+        settings.preferences.notification_display = crate::model::NotificationDisplay::Secondary;
+        settings.preferences.approval_display = crate::model::NotificationDisplay::Pointer;
+        let store = SettingsStore::new(path);
+        store.save(&settings).expect("save independent displays");
+
+        let loaded = store.load().expect("load independent displays");
+        assert_eq!(
+            loaded.preferences.notification_display,
+            crate::model::NotificationDisplay::Secondary
+        );
+        assert_eq!(
+            loaded.preferences.approval_display,
             crate::model::NotificationDisplay::Pointer
         );
         fs::remove_dir_all(directory).expect("temporary directory should be removable");

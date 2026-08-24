@@ -423,9 +423,10 @@ describe("Aizu desktop shell", () => {
     await user.click(await screen.findByRole("button", { name: "Settings" }));
     expect(screen.queryByRole("button", { name: "Save settings" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Notification style" })).toHaveValue("aizuBanner");
-    expect(screen.getByRole("combobox", { name: "Aizu display" })).toHaveValue("primary");
+    expect(screen.getByRole("combobox", { name: "Notification banner display" })).toHaveValue("primary");
+    expect(screen.getByRole("combobox", { name: "Approval dialog display" })).toHaveValue("primary");
     for (const display of ["Main display", "Secondary display", "Focused window", "Mouse pointer"]) {
-      expect(screen.getByRole("option", { name: display })).toBeInTheDocument();
+      expect(screen.getAllByRole("option", { name: display })).toHaveLength(2);
     }
     expect(screen.getByRole("combobox", { name: "Text size" })).toHaveValue("standard");
     expect(screen.getByRole("combobox", { name: "Notification sound" }))
@@ -441,14 +442,15 @@ describe("Aizu desktop shell", () => {
     expect(screen.getByRole("switch", { name: "Show approval in the center" })).toBeChecked();
     await user.click(screen.getByRole("switch", { name: "Show approval in the center" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification style" }), "system");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Aizu display" }), "secondary");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Notification banner display" }), "secondary");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Approval dialog display" }), "pointer");
     await user.selectOptions(screen.getByRole("combobox", { name: "Notification sound" }), "pulse");
     await user.selectOptions(screen.getByRole("combobox", { name: "Text size" }), "large");
     await user.click(screen.getByText("Advanced"));
     await user.click(screen.getByRole("switch", { name: "Show agent details" }));
 
     await waitFor(async () => {
-      expect(updatePreferences).toHaveBeenCalledTimes(8);
+      expect(updatePreferences).toHaveBeenCalledTimes(9);
       await expect(backend.getView()).resolves.toMatchObject({
         preferences: {
           completionEnabled: false,
@@ -456,6 +458,7 @@ describe("Aizu desktop shell", () => {
           commandApprovalsEnabled: true,
           centerApprovalDialogs: false,
           notificationDisplay: "secondary",
+          approvalDisplay: "pointer",
           notificationDelivery: "system",
           notificationSound: "pulse",
           textSize: "large",
@@ -483,7 +486,9 @@ describe("Aizu desktop shell", () => {
     expect(await screen.findByRole("heading", { name: "設定" })).toBeVisible();
     expect(screen.getByRole("button", { name: "エージェント" })).toBeVisible();
     expect(screen.getByRole("combobox", { name: "言語" })).toHaveValue("ja");
-    expect(screen.getByRole("option", { name: "サブディスプレイ" })).toBeInTheDocument();
+    expect(screen.getAllByRole("option", { name: "サブディスプレイ" })).toHaveLength(2);
+    expect(screen.getByRole("combobox", { name: "通知バナーの表示先" })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "許可画面の表示先" })).toBeVisible();
     expect(document.documentElement).toHaveAttribute("lang", "ja");
     expect(updatePreferences).toHaveBeenLastCalledWith({
       ...initial.preferences,

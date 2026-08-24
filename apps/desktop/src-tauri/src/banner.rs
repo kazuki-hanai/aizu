@@ -78,6 +78,7 @@ pub struct BannerState {
     generation: AtomicU64,
     center_approval_dialogs: AtomicBool,
     notification_display: AtomicU8,
+    approval_display: AtomicU8,
     dirty: AtomicBool,
     presentation_scheduled: AtomicBool,
 }
@@ -93,6 +94,9 @@ impl Default for BannerState {
             generation: AtomicU64::default(),
             center_approval_dialogs: AtomicBool::new(true),
             notification_display: AtomicU8::new(notification_display_code(
+                NotificationDisplay::Primary,
+            )),
+            approval_display: AtomicU8::new(notification_display_code(
                 NotificationDisplay::Primary,
             )),
             dirty: AtomicBool::default(),
@@ -347,23 +351,42 @@ impl BannerState {
         notification_display_from_code(self.notification_display.load(Ordering::Acquire))
     }
 
+    fn approval_display(&self) -> NotificationDisplay {
+        notification_display_from_code(self.approval_display.load(Ordering::Acquire))
+    }
+
     fn update_notification_display(
         &self,
         display: NotificationDisplay,
     ) -> Result<bool, NotifyError> {
+        self.update_display(&self.notification_display, display, false)
+    }
+
+    fn update_approval_display(&self, display: NotificationDisplay) -> Result<bool, NotifyError> {
+        self.update_display(&self.approval_display, display, true)
+    }
+
+    fn update_display(
+        &self,
+        target: &AtomicU8,
+        display: NotificationDisplay,
+        approval: bool,
+    ) -> Result<bool, NotifyError> {
         let display_code = notification_display_code(display);
-        if self
-            .notification_display
-            .swap(display_code, Ordering::AcqRel)
-            == display_code
-        {
+        if target.swap(display_code, Ordering::AcqRel) == display_code {
             return Ok(false);
         }
         let banners = self
             .banners
             .lock()
             .map_err(|_| NotifyError::Scheduling("Aizu banner state is unavailable".to_owned()))?;
-        if banners.is_empty() {
+        let approval_visible = banners.iter().any(|banner| banner.approval.is_some());
+        let should_refresh = if approval {
+            approval_visible
+        } else {
+            !banners.is_empty() && !approval_visible
+        };
+        if !should_refresh {
             return Ok(false);
         }
         let mut pending_sound = self.pending_sound.lock().map_err(|_| {
@@ -639,7 +662,12 @@ fn present(app: &AppHandle<Wry>, generation: u64) -> Result<(), NotifyError> {
             .center_approval_dialogs
             .load(Ordering::Acquire),
     );
-    let monitor = configured_monitor(&window, app.state::<BannerState>().notification_display())?;
+    let display = if mode.is_approval() {
+        app.state::<BannerState>().approval_display()
+    } else {
+        app.state::<BannerState>().notification_display()
+    };
+    let monitor = configured_monitor(&window, display)?;
     resize_window_for_mode(&window, &monitor, MIN_BANNER_HEIGHT, mode)?;
     window
         .show()
@@ -707,6 +735,19 @@ pub fn update_notification_display(
     if app
         .state::<BannerState>()
         .update_notification_display(display)?
+    {
+        request_present(app)?;
+    }
+    Ok(())
+}
+
+pub fn update_approval_display(
+    app: &AppHandle<Wry>,
+    display: NotificationDisplay,
+) -> Result<(), NotifyError> {
+    if app
+        .state::<BannerState>()
+        .update_approval_display(display)?
     {
         request_present(app)?;
     }
@@ -1657,6 +1698,10 @@ mod tests {
             state.notification_display(),
             crate::model::NotificationDisplay::Secondary
         );
+        assert_eq!(
+            state.approval_display(),
+            crate::model::NotificationDisplay::Primary
+        );
         let refreshed_generation = state.begin_presentation(now).expect("refresh presentation");
         assert_ne!(visible_generation, refreshed_generation);
         assert_eq!(
@@ -1664,6 +1709,67 @@ mod tests {
                 .take_pending_sound(refreshed_generation)
                 .expect("refresh sound"),
             None
+        );
+    }
+
+    #[test]
+    fn approval_display_changes_only_refresh_an_active_approval() {
+        let state = BannerState::default();
+        let now = Instant::now();
+        state
+            .push(notification(42, "passive"))
+            .expect("passive banner");
+        let passive_generation = state.begin_presentation(now).expect("passive presentation");
+        state.finish_presentation(passive_generation, true, now);
+
+        assert!(
+            !state
+                .update_approval_display(crate::model::NotificationDisplay::Pointer)
+                .expect("store approval display")
+        );
+        assert_eq!(
+            state.notification_display(),
+            crate::model::NotificationDisplay::Primary
+        );
+        assert_eq!(
+            state.approval_display(),
+            crate::model::NotificationDisplay::Pointer
+        );
+        assert!(state.begin_presentation(now).is_none());
+
+        let mut approval = notification(43, "approval");
+        approval.approval = Some(crate::model::ApprovalPresentation {
+            agent: crate::model::AgentKind::ClaudeCode,
+            tool_name: "WebFetch".to_owned(),
+            target: crate::model::ApprovalTargetPresentation::WebFetch {
+                url: "https://example.com/".to_owned(),
+            },
+        });
+        state.push(approval).expect("approval banner");
+        let approval_generation = state
+            .begin_presentation(now)
+            .expect("approval presentation");
+        state.finish_presentation(approval_generation, true, now);
+
+        assert!(
+            !state
+                .update_notification_display(crate::model::NotificationDisplay::Secondary)
+                .expect("store notification display while approval is visible")
+        );
+        assert!(state.begin_presentation(now).is_none());
+        assert!(
+            state
+                .update_approval_display(crate::model::NotificationDisplay::FocusedWindow)
+                .expect("move approval")
+        );
+        assert!(state.begin_presentation(now).is_some());
+        assert_eq!(
+            state.notification_display(),
+            crate::model::NotificationDisplay::Secondary
+        );
+        assert_eq!(
+            state.approval_display(),
+            crate::model::NotificationDisplay::FocusedWindow
         );
     }
 }

@@ -159,9 +159,10 @@ events remain in the source SQLite spool while the Mac is disconnected.
   approval buttons** in Settings to show a large dialog with `Deny` and
   `Allow once` for exact local shell commands and Claude Code WebFetch URLs.
   WebFetch prompts are not copied into Aizu, and URLs are shown as selectable
-  text rather than clickable links. The dialog uses the same **Aizu display**
-  setting and is centered by default. Turn off **Show approval in the center**
-  to place it at that display's top right. The dialog stays in
+  text rather than clickable links. Choose its screen independently under
+  **Approval dialog display**; regular Aizu banners use **Notification banner
+  display**. The dialog is centered by default. Turn off **Show approval in the
+  center** to place it at the selected display's top right. The dialog stays in
   front until you choose or the bounded request times out; it cannot be closed
   or swiped away. Aizu never runs the command or creates permanent permission
   rules. macOS Notification Center and remote SSH approvals remain

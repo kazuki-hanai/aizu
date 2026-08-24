@@ -222,6 +222,8 @@ pub struct Preferences {
     #[serde(default)]
     pub notification_display: NotificationDisplay,
     #[serde(default)]
+    pub approval_display: NotificationDisplay,
+    #[serde(default)]
     pub notification_delivery: NotificationDelivery,
     #[serde(default)]
     pub notification_sound: NotificationSound,
@@ -247,6 +249,7 @@ impl Default for Preferences {
             center_approval_dialogs: true,
             sound_enabled: true,
             notification_display: NotificationDisplay::default(),
+            approval_display: NotificationDisplay::default(),
             notification_delivery: NotificationDelivery::default(),
             notification_sound: NotificationSound::default(),
             privacy_mode: PrivacyMode::Generic,
@@ -477,6 +480,10 @@ mod tests {
         assert!(preferences.center_approval_dialogs);
         assert_eq!(
             preferences.notification_display,
+            super::NotificationDisplay::Primary
+        );
+        assert_eq!(
+            preferences.approval_display,
             super::NotificationDisplay::Primary
         );
     }
