@@ -202,6 +202,7 @@ aizu emit --stdin-json
 aizu hook --agent <agent-id> --event <agent-event>
 aizu integration-config --agent <codex|claude-code> --aizu-path <absolute-path>
 aizu integration-install [--agent <codex|claude-code>] [--aizu-path <absolute-path>] [--json]
+aizu integration-status [--aizu-path <absolute-path>] [--json]
 aizu bridge --protocol 1 --after <sequence> --follow
 aizu doctor [--json]
 aizu identity regenerate [--discard-events]
@@ -634,6 +635,7 @@ Sections:
    - Local
    - Remote SSH sources
    - add/edit/disable/reconnect/test
+   - sourceごとのCLI versionとCodex / Claude Code hook状態。SSH sourceは明示的なread-only setup checkで接続先の`integration-status --json`を取得し、設定がPCごとに独立することとremote approvalがsource terminal限定であることを表示する
 3. **Settings**
    - language: system default / Japanese / English, persisted and applied immediately
    - text size: small / standard / large, persisted and applied immediately to the desktop and Aizu Banner
@@ -742,6 +744,7 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 - hook 設定には絶対パスの利用を推奨
 - `aizu integration-config` は絶対 CLI path を検証し、Codex の `Stop` と Claude Code の `Stop` / `StopFailure` は5秒上限の同期hook、両agentの `PermissionRequest` は50秒上限の同期hookとして出力する。設定がオフならlocal brokerは即時 `unavailable` を返すためagentの標準許可画面を実質的に待たせない。既存user hookはstructured JSON mergeで保持し、過去のAizu生成5秒background PermissionRequest hookは同期形へ置換する。Codexのhook trust reviewは省略しない
 - `aizu integration-install` は引数なしで Codex と Claude Code の両方、`--agent` 指定時は一方だけを current user に設定する。両方の既存 JSON と保存先 directory を書込前に検証し、無関係な key/handler を保持し、128 KiB 上限、home 外への symlink、dangling symlink、unsafe directory、invalid JSON、incompatible hook shape を拒否する。Aizu installer 同士は `~/.aizu/hooks.lock` で直列化し、lock 取得後に全入力を再読込する。agent や editor はこの lock に参加しないため同時編集を禁止し、各 rename 直前の byte 比較で検出可能な競合を拒否する。変更時は同一 directory の `0600` temporary file を fsync して atomic rename し、新規 directory は `0700`、最終 file は `0600` とする。Claude Code の `disableAllHooks` は無断で解除せず、Codex の hook trust review も省略しない。machine-readable result は agent、更新状態、承認要否だけを返し、path や既存設定内容を出さない
+- `aizu integration-status` は設定を変更せず、CLI version、protocol version、Codex / Claude Codeの固定agent IDと`configured` / `missing` / `approval_required`だけを返す。設定path、handler、command、既存値を返さない。desktopのSSH setup checkは固定command `exec "$HOME/.local/bin/aizu" integration-status --json`だけをsystem SSHで実行し、bounded responseを検証して表示する
 
 ### 13.5 Local approval
 

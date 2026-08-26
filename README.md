@@ -101,6 +101,7 @@ procedure in [Installation details](docs/installation.md).
 
 ```bash
 "$HOME/.local/bin/aizu" integration-install --json
+"$HOME/.local/bin/aizu" integration-status --json
 "$HOME/.local/bin/aizu" agents --json
 ```
 
@@ -126,11 +127,13 @@ Host remote-host
 Replace the example values, then verify the connection outside Aizu:
 
 ```bash
-ssh remote-host '$HOME/.local/bin/aizu version --json'
+ssh remote-host '$HOME/.local/bin/aizu integration-status --json'
 ```
 
 In Aizu, open **Sources**, select **+**, enter `remote-host`, then select
-**Test connection** and **Add source**.
+**Test connection** and **Add source**. Each source shows its local CLI and
+Codex/Claude Code hook state. Use **Check setup** on an existing SSH source to
+refresh that computer's report.
 
 Aizu uses `/usr/bin/ssh` and the Mac's existing SSH configuration. It does not
 copy private keys, store passwords, or disable host-key verification. Remote
@@ -192,8 +195,8 @@ or English under **Settings > Language**.
    trusts it.
 4. If Claude Code has `disableAllHooks` enabled, turn it off intentionally and
    rerun `integration-install --json`; Aizu never overrides it automatically.
-5. For SSH sources, use **Test connection** and verify the source is
-   **Connected**.
+5. For SSH sources, use **Check setup** and verify the remote CLI plus both
+   agent hooks. Agent settings are installed separately on every computer.
 
 ### `an agent configuration path is unsafe`
 
@@ -210,13 +213,19 @@ for ownership, symlink, and upgrade guidance.
 
 ### SSH connects but no event arrives
 
-A successful connection test verifies the CLI and protocol only. Trigger a
-real Codex or Claude Code completion on the source, then check **Recent
-activity** on the Mac. Also verify directly:
+A successful setup check verifies the CLI, protocol, and the installed Codex
+and Claude Code hooks without returning their contents or paths. Trigger a real
+Codex or Claude Code completion on the source, then check **Recent activity**
+on the Mac. Also verify directly:
 
 ```bash
 ssh remote-host '$HOME/.local/bin/aizu doctor --json'
+ssh remote-host '$HOME/.local/bin/aizu integration-status --json'
 ```
+
+Remote permission requests are passive on the receiving Mac. Choose Allow or
+Deny in the agent terminal on the source computer; notification approval
+buttons are available only for agents running on the same Mac as Aizu.
 
 ## Development
 

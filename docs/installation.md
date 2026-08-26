@@ -102,6 +102,7 @@ After an Aizu or agent update, refresh and review the hooks:
 
 ```bash
 "$HOME/.local/bin/aizu" integration-install --json
+"$HOME/.local/bin/aizu" integration-status --json
 ```
 
 Existing spooled events remain on the source and are delivered when the SSH
@@ -164,4 +165,7 @@ aizu integration-install --json
 Use `--agent codex` or `--agent claude-code` to update only one integration.
 Use `--aizu-path /absolute/path/to/aizu` only when preparing hooks for a
 different installed CLI path. `aizu integration-config` prints a read-only
-preview and does not modify either agent configuration.
+preview and does not modify either agent configuration. `aizu
+integration-status --json` reports only each agent's fixed hook state; it does
+not return configuration paths or values. Run it separately on every machine
+that runs an agent.

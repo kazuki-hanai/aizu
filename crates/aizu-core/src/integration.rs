@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
-use crate::AgentKind;
+use crate::{AgentKind, HookStatus};
 
 const HOOK_TIMEOUT_SECONDS: u8 = 5;
 const PERMISSION_REQUEST_TIMEOUT_SECONDS: u8 = 50;
@@ -63,6 +63,61 @@ pub fn merge_hook_configuration(
         }
     }
     Ok(Value::Object(merged))
+}
+
+/// Reports whether the exact first-party hooks are present in one parsed
+/// agent configuration. The report contains no configuration values or paths.
+#[must_use]
+pub fn hook_configuration_status(agent: AgentKind, actual: &Value, aizu_path: &Path) -> HookStatus {
+    if agent == AgentKind::ClaudeCode
+        && actual
+            .get("disableAllHooks")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return HookStatus::Missing;
+    }
+    if !matches!(
+        merge_hook_configuration(agent, actual, aizu_path),
+        Ok(merged) if merged == *actual
+    ) {
+        return HookStatus::Missing;
+    }
+    let Ok(expected) = hook_configuration(agent, aizu_path) else {
+        return HookStatus::Missing;
+    };
+    let Some(expected_hooks) = expected.get("hooks").and_then(Value::as_object) else {
+        return HookStatus::Missing;
+    };
+    let Some(actual_hooks) = actual.get("hooks").and_then(Value::as_object) else {
+        return HookStatus::Missing;
+    };
+    let configured = expected_hooks.iter().all(|(event, groups)| {
+        let expected_handlers = configuration_handlers(groups);
+        actual_hooks.get(event).is_some_and(|actual_groups| {
+            expected_handlers
+                .iter()
+                .all(|handler| configuration_handlers(actual_groups).contains(handler))
+        })
+    });
+    if configured && agent == AgentKind::Codex {
+        HookStatus::ApprovalRequired
+    } else if configured {
+        HookStatus::Configured
+    } else {
+        HookStatus::Missing
+    }
+}
+
+fn configuration_handlers(groups: &Value) -> Vec<Value> {
+    groups
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|group| group.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .cloned()
+        .collect()
 }
 
 fn remove_generated_aizu_handlers(groups: &mut Vec<Value>, agent: AgentKind, event: &str) {

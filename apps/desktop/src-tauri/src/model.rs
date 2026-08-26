@@ -91,6 +91,14 @@ pub struct SshConnectionTestResult {
     pub reachable: bool,
     pub protocol_compatible: bool,
     pub remote_version: Option<String>,
+    pub integrations: Vec<AgentIntegrationStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentIntegrationStatus {
+    pub agent: AgentKind,
+    pub status: HookStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

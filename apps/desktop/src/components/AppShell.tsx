@@ -107,7 +107,7 @@ export function AppShell({
   const content = useMemo(() => {
     switch (activeView) {
       case "sources":
-        return <SourcesView appVersion={view.appVersion} busy={busy} cliStatus={view.cliStatus} cliVersion={view.cliVersion} locale={locale} onAdd={onAddRemoteSource} onConfirmIdentity={onConfirmRemoteIdentity} onInstallCli={onInstallCli} onReconnect={onReconnectRemoteSource} onRemove={onRemoveRemoteSource} onTest={onTestRemoteConnection} sources={view.sources} t={t} />;
+        return <SourcesView agentMonitors={view.agentMonitors} appVersion={view.appVersion} busy={busy} cliStatus={view.cliStatus} cliVersion={view.cliVersion} commandApprovalsEnabled={view.preferences.commandApprovalsEnabled} locale={locale} onAdd={onAddRemoteSource} onConfirmIdentity={onConfirmRemoteIdentity} onInstallCli={onInstallCli} onReconnect={onReconnectRemoteSource} onRemove={onRemoveRemoteSource} onTest={onTestRemoteConnection} sources={view.sources} t={t} />;
       case "settings":
         return (
           <SettingsView
@@ -288,10 +288,12 @@ function RunningAgentRow({ agent, monitor, t }: { agent: RunningAgent; monitor: 
 }
 
 type SourcesViewProps = {
+  agentMonitors: AgentMonitor[];
   appVersion: string;
   busy: boolean;
   cliStatus: AppView["cliStatus"];
   cliVersion: string | null;
+  commandApprovalsEnabled: boolean;
   sources: SourceView[];
   onAdd: (hostAlias: string, localLabel: string) => Promise<boolean>;
   onTest: (hostAlias: string) => Promise<SshConnectionTestResult>;
@@ -303,12 +305,14 @@ type SourcesViewProps = {
   t: AppMessages;
 };
 
-function SourcesView({ appVersion, busy, cliStatus, cliVersion, locale, sources, onAdd, onRemove, onReconnect, onConfirmIdentity, onInstallCli, onTest, t }: SourcesViewProps) {
+function SourcesView({ agentMonitors, appVersion, busy, cliStatus, cliVersion, commandApprovalsEnabled, locale, sources, onAdd, onRemove, onReconnect, onConfirmIdentity, onInstallCli, onTest, t }: SourcesViewProps) {
   const [addSourceOpen, setAddSourceOpen] = useState(false);
   const [hostAlias, setHostAlias] = useState("");
   const [localLabel, setLocalLabel] = useState("");
   const [connectionResult, setConnectionResult] = useState<SshConnectionTestResult | null>(null);
   const [testingConnection, setTestingConnection] = useState(false);
+  const [testingSource, setTestingSource] = useState<string | null>(null);
+  const [sourceResults, setSourceResults] = useState<Partial<Record<string, SshConnectionTestResult>>>({});
   const addSourceButton = useRef<HTMLButtonElement>(null);
   const sourceDialog = useRef<HTMLElement>(null);
   const testGeneration = useRef(0);
@@ -359,17 +363,25 @@ function SourcesView({ appVersion, busy, cliStatus, cliVersion, locale, sources,
       if (testGeneration.current === generation) setConnectionResult(result);
     } catch {
       if (testGeneration.current === generation) {
-        setConnectionResult({
-          status: "remoteFailure",
-          message: t.sshTestError,
-          configResolved: false,
-          reachable: false,
-          protocolCompatible: false,
-          remoteVersion: null,
-        });
+        setConnectionResult(failedConnectionResult(t));
       }
     } finally {
       if (testGeneration.current === generation) setTestingConnection(false);
+    }
+  };
+
+  const checkSourceSetup = async (source: SourceView) => {
+    setTestingSource(source.id);
+    try {
+      const result = await onTest(source.id.slice(4));
+      setSourceResults((current) => ({ ...current, [source.id]: result }));
+    } catch {
+      setSourceResults((current) => ({
+        ...current,
+        [source.id]: failedConnectionResult(t),
+      }));
+    } finally {
+      setTestingSource((current) => current === source.id ? null : current);
     }
   };
 
@@ -407,16 +419,33 @@ function SourcesView({ appVersion, busy, cliStatus, cliVersion, locale, sources,
         </div>
       )}
       <div className="source-list">
-        {sources.map((source) => (
-          <div className="source-manage-row" key={source.id}>
+        {sources.map((source) => {
+          const sourceResult = sourceResults[source.id];
+          return <div className="source-manage-row" key={source.id}>
             <SourceRow locale={locale} source={source} t={t} />
             {source.kind === "remoteSsh" ? <div className="source-actions">
               {source.actionRequired === "confirmIdentityChange" ? <button className="button button--warning" disabled={busy} onClick={() => void onConfirmIdentity(source.id.slice(4))} type="button">{t.confirmIdentity}</button> : null}
+              <button aria-label={`${t.checkSetup} ${source.name}`} className="icon-button" disabled={busy || testingSource !== null} onClick={() => void checkSourceSetup(source)} title={`${t.checkSetup} ${source.name}`} type="button">{testingSource === source.id ? <LoaderCircle aria-hidden="true" className="spin" size={15} /> : <Cable aria-hidden="true" size={15} />}</button>
               <button className="icon-button" disabled={busy} onClick={() => void onReconnect(source.id.slice(4))} title={`${t.reconnect} ${source.name}`} type="button"><RefreshCw aria-hidden="true" size={15} /><span className="sr-only">{t.reconnect} {source.name}</span></button>
               <button className="text-button" disabled={busy} onClick={() => void onRemove(source.id.slice(4))} type="button">{t.remove}</button>
             </div> : null}
-          </div>
-        ))}
+            <SourceSetupSummary
+              approvalMessage={source.kind === "local"
+                ? (commandApprovalsEnabled ? t.localApprovalAvailable : t.localApprovalDisabled)
+                : t.remoteApprovalTerminal}
+              integrations={source.kind === "local"
+                ? agentMonitors.map((monitor) => ({ agent: monitor.agent, status: monitor.hookStatus }))
+                : sourceResult?.integrations ?? []}
+              message={source.kind === "local"
+                ? t.settingsPerComputer
+                : sourceResult === undefined
+                  ? t.remoteSetupUnchecked
+                  : sshConnectionMessage(sourceResult, t)}
+              remoteVersion={source.kind === "remoteSsh" ? sourceResult?.remoteVersion ?? null : cliVersion}
+              t={t}
+            />
+          </div>;
+        })}
       </div>
     </section>
     {addSourceOpen ? (
@@ -431,7 +460,19 @@ function SourcesView({ appVersion, busy, cliStatus, cliVersion, locale, sources,
               <X aria-hidden="true" size={18} />
             </button>
           </div>
-          <form className="source-form" onSubmit={(event) => { event.preventDefault(); void onAdd(hostAlias, localLabel).then((added) => { if (added) closeAddSource(); }); }}>
+          <form className="source-form" onSubmit={(event) => {
+            event.preventDefault();
+            void onAdd(hostAlias, localLabel).then((added) => {
+              if (!added) return;
+              if (connectionResult !== null) {
+                setSourceResults((current) => ({
+                  ...current,
+                  [`ssh:${hostAlias}`]: connectionResult,
+                }));
+              }
+              closeAddSource();
+            });
+          }}>
             <label>{t.sshAlias}<input autoComplete="off" autoFocus maxLength={255} onChange={(event) => { testGeneration.current += 1; setHostAlias(event.target.value); setConnectionResult(null); setTestingConnection(false); }} required value={hostAlias} /></label>
             <label>{t.localLabel}<input autoComplete="off" maxLength={200} onChange={(event) => setLocalLabel(event.target.value)} required value={localLabel} /></label>
             <div className="source-form__actions">
@@ -446,14 +487,84 @@ function SourcesView({ appVersion, busy, cliStatus, cliVersion, locale, sources,
             <div className={`connection-test-result connection-test-result--${connectionResult.status === "compatible" ? "success" : "error"}`} role={connectionResult.status === "compatible" ? "status" : "alert"}>
               {connectionResult.status === "compatible" ? <CheckCircle2 aria-hidden="true" size={17} /> : <AlertTriangle aria-hidden="true" size={17} />}
               <div>
-                <strong>{connectionResult.message}</strong>
+                <strong>{sshConnectionMessage(connectionResult, t)}</strong>
                 {connectionResult.remoteVersion === null ? null : <span>{t.remoteAizu} {connectionResult.remoteVersion}</span>}
+                {connectionResult.integrations.map((integration) => (
+                  <span key={integration.agent}>{agentLabel(integration.agent)}: {integrationStatusLabel(integration, t)}</span>
+                ))}
+                {connectionResult.status === "compatible" ? <span>{t.remoteApprovalTerminal}</span> : null}
               </div>
             </div>
           )}
         </section>
       </div>
     ) : null}
+    </div>
+  );
+}
+
+function failedConnectionResult(t: AppMessages): SshConnectionTestResult {
+  return {
+    status: "remoteFailure",
+    message: t.sshTestError,
+    configResolved: false,
+    reachable: false,
+    protocolCompatible: false,
+    remoteVersion: null,
+    integrations: [],
+  };
+}
+
+function sshConnectionMessage(result: SshConnectionTestResult, t: AppMessages): string {
+  switch (result.status) {
+    case "compatible": return t.sshCompatible;
+    case "invalidAlias": return t.sshInvalidAlias;
+    case "configurationError": return t.sshConfigurationError;
+    case "networkUnavailable": return t.sshNetworkUnavailable;
+    case "authenticationRequired": return t.sshAuthenticationRequired;
+    case "hostVerificationFailed": return t.sshHostVerificationFailed;
+    case "missingRemoteCli": return t.sshMissingRemoteCli;
+    case "incompatibleProtocol": return t.sshIncompatibleProtocol;
+    case "timedOut": return t.sshTimedOut;
+    case "remoteFailure": return result.message === t.sshTestError ? t.sshTestError : t.sshRemoteSetupFailed;
+  }
+}
+
+function agentLabel(agent: "codex" | "claudeCode"): string {
+  return agent === "codex" ? "Codex" : "Claude Code";
+}
+
+function integrationStatusLabel(
+  integration: SshConnectionTestResult["integrations"][number],
+  t: AppMessages,
+): string {
+  if (integration.agent === "codex" && integration.status === "approvalRequired") {
+    return t.codexTrustRequired;
+  }
+  return localizedState(integration.status, t);
+}
+
+function SourceSetupSummary({ approvalMessage, integrations, message, remoteVersion, t }: {
+  approvalMessage: string;
+  integrations: SshConnectionTestResult["integrations"];
+  message: string;
+  remoteVersion: string | null;
+  t: AppMessages;
+}) {
+  return (
+    <div className="source-setup-summary">
+      <div className="source-setup-summary__status">
+        <strong>{t.setupStatus}</strong>
+        {remoteVersion === null ? null : <span>{t.aizuCli} {remoteVersion}</span>}
+        {integrations.map((integration) => (
+          <span className={`source-setup-item source-setup-item--${integration.status}`} key={integration.agent}>
+            {integration.status === "configured" ? <CheckCircle2 aria-hidden="true" size={13} /> : <AlertTriangle aria-hidden="true" size={13} />}
+            {agentLabel(integration.agent)} {integrationStatusLabel(integration, t)}
+          </span>
+        ))}
+      </div>
+      <span>{message}</span>
+      <small>{approvalMessage}</small>
     </div>
   );
 }

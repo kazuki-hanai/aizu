@@ -12,14 +12,17 @@ use std::{
 
 use aizu_core::{
     PROTOCOL_VERSION, SshCommandSpec, SshFailureCategory, SystemSshSource, classify_ssh_failure,
-    validate_preflight_output,
+    parse_strict_json_value, validate_preflight_output,
 };
 use serde::Deserialize;
 
-use crate::model::{SshConnectionTestResult, SshConnectionTestStatus};
+use crate::model::{
+    AgentIntegrationStatus, AgentKind, HookStatus, SshConnectionTestResult, SshConnectionTestStatus,
+};
 
 const SYSTEM_SSH: &str = "/usr/bin/ssh";
-const REMOTE_VERSION_COMMAND: &str = "exec \"$HOME/.local/bin/aizu\" version --json";
+const REMOTE_INTEGRATION_STATUS_COMMAND: &str =
+    "exec \"$HOME/.local/bin/aizu\" integration-status --json";
 const REMOTE_AGENTS_COMMAND: &str = "exec \"$HOME/.local/bin/aizu\" agents --json";
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -31,6 +34,13 @@ const MAX_STDERR_BYTES: usize = 8 * 1024;
 struct RemoteVersion {
     application: String,
     protocol: u32,
+    integrations: Vec<RemoteIntegrationStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteIntegrationStatus {
+    agent: aizu_core::AgentKind,
+    status: aizu_core::HookStatus,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +80,7 @@ pub fn test_connection(host_alias: &str) -> SshConnectionTestResult {
             false,
             false,
             None,
+            Vec::new(),
         );
     };
 
@@ -87,7 +98,7 @@ pub fn test_connection(host_alias: &str) -> SshConnectionTestResult {
         return configuration_failure();
     }
 
-    let command = version_command(&source);
+    let command = integration_status_command(&source);
     let output = match run_bounded(&command, CONNECTION_TIMEOUT) {
         Ok(output) => output,
         Err(CaptureError::Timeout) => return timed_out(true),
@@ -99,6 +110,7 @@ pub fn test_connection(host_alias: &str) -> SshConnectionTestResult {
                 false,
                 false,
                 None,
+                Vec::new(),
             );
         }
     };
@@ -109,7 +121,7 @@ pub fn test_connection(host_alias: &str) -> SshConnectionTestResult {
         return invalid_remote_response();
     }
 
-    parse_remote_version(&output.stdout)
+    parse_remote_status(&output.stdout)
 }
 
 pub fn validate_alias(host_alias: &str) -> Result<(), ()> {
@@ -157,8 +169,8 @@ fn strict_source(
     Ok(source)
 }
 
-fn version_command(source: &SystemSshSource) -> SshCommandSpec {
-    remote_command(source, REMOTE_VERSION_COMMAND)
+fn integration_status_command(source: &SystemSshSource) -> SshCommandSpec {
+    remote_command(source, REMOTE_INTEGRATION_STATUS_COMMAND)
 }
 
 fn remote_command(source: &SystemSshSource, command: &str) -> SshCommandSpec {
@@ -202,8 +214,11 @@ fn parse_remote_agents(stdout: &[u8]) -> Option<Vec<aizu_core::AgentKind>> {
     Some(report.agents.into_iter().map(|entry| entry.agent).collect())
 }
 
-fn parse_remote_version(stdout: &[u8]) -> SshConnectionTestResult {
-    let Ok(version) = serde_json::from_slice::<RemoteVersion>(stdout) else {
+fn parse_remote_status(stdout: &[u8]) -> SshConnectionTestResult {
+    let Ok(value) = parse_strict_json_value(stdout, MAX_STDOUT_BYTES) else {
+        return invalid_remote_response();
+    };
+    let Ok(version) = serde_json::from_value::<RemoteVersion>(value) else {
         return invalid_remote_response();
     };
     if !safe_version(&version.application) {
@@ -217,8 +232,12 @@ fn parse_remote_version(stdout: &[u8]) -> SshConnectionTestResult {
             true,
             false,
             Some(version.application),
+            Vec::new(),
         );
     }
+    let Some(integrations) = validated_integrations(version.integrations) else {
+        return invalid_remote_response();
+    };
     result(
         SshConnectionTestStatus::Compatible,
         "SSH connected and the remote Aizu CLI is compatible.",
@@ -226,7 +245,42 @@ fn parse_remote_version(stdout: &[u8]) -> SshConnectionTestResult {
         true,
         true,
         Some(version.application),
+        integrations,
     )
+}
+
+fn validated_integrations(
+    integrations: Vec<RemoteIntegrationStatus>,
+) -> Option<Vec<AgentIntegrationStatus>> {
+    if integrations.len() != 2 {
+        return None;
+    }
+    let mut codex = false;
+    let mut claude = false;
+    let mapped = integrations
+        .into_iter()
+        .map(|integration| {
+            let agent = match integration.agent {
+                aizu_core::AgentKind::Codex if !codex => {
+                    codex = true;
+                    AgentKind::Codex
+                }
+                aizu_core::AgentKind::ClaudeCode if !claude => {
+                    claude = true;
+                    AgentKind::ClaudeCode
+                }
+                _ => return None,
+            };
+            let status = match integration.status {
+                aizu_core::HookStatus::Configured => HookStatus::Configured,
+                aizu_core::HookStatus::Missing => HookStatus::Missing,
+                aizu_core::HookStatus::ApprovalRequired => HookStatus::ApprovalRequired,
+                aizu_core::HookStatus::Unsupported => HookStatus::Unsupported,
+            };
+            Some(AgentIntegrationStatus { agent, status })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (codex && claude).then_some(mapped)
 }
 
 fn safe_version(version: &str) -> bool {
@@ -258,6 +312,7 @@ fn invalid_remote_response() -> SshConnectionTestResult {
         true,
         false,
         None,
+        Vec::new(),
     )
 }
 
@@ -269,6 +324,7 @@ fn configuration_failure() -> SshConnectionTestResult {
         false,
         false,
         None,
+        Vec::new(),
     )
 }
 
@@ -280,6 +336,7 @@ fn timed_out(config_resolved: bool) -> SshConnectionTestResult {
         false,
         false,
         None,
+        Vec::new(),
     )
 }
 
@@ -312,11 +369,19 @@ fn failure_result(category: SshFailureCategory, config_resolved: bool) -> SshCon
         ),
         SshFailureCategory::RemoteFailure => (
             SshConnectionTestStatus::RemoteFailure,
-            "The remote SSH command failed.",
-            false,
+            "SSH connected, but remote setup could not be inspected. Update the remote Aizu CLI and try again.",
+            true,
         ),
     };
-    result(status, message, config_resolved, reachable, false, None)
+    result(
+        status,
+        message,
+        config_resolved,
+        reachable,
+        false,
+        None,
+        Vec::new(),
+    )
 }
 
 fn result(
@@ -326,6 +391,7 @@ fn result(
     reachable: bool,
     protocol_compatible: bool,
     remote_version: Option<String>,
+    integrations: Vec<AgentIntegrationStatus>,
 ) -> SshConnectionTestResult {
     SshConnectionTestResult {
         status,
@@ -334,6 +400,7 @@ fn result(
         reachable,
         protocol_compatible,
         remote_version,
+        integrations,
     }
 }
 
@@ -464,8 +531,9 @@ mod tests {
     use aizu_core::{PROTOCOL_VERSION, SystemSshSource};
 
     use super::{
-        CaptureError, REMOTE_AGENTS_COMMAND, parse_remote_agents, parse_remote_version,
-        remote_command, run_bounded_with_stop, strict_source, version_command,
+        CaptureError, REMOTE_AGENTS_COMMAND, REMOTE_INTEGRATION_STATUS_COMMAND,
+        integration_status_command, parse_remote_agents, parse_remote_status, remote_command,
+        run_bounded_with_stop, strict_source,
     };
     use crate::model::SshConnectionTestStatus;
 
@@ -483,9 +551,9 @@ mod tests {
     }
 
     #[test]
-    fn version_probe_uses_system_ssh_and_keeps_alias_in_its_own_argument() {
+    fn integration_probe_uses_system_ssh_and_keeps_alias_in_its_own_argument() {
         let source = SystemSshSource::new("/usr/bin/ssh", "build-host").unwrap();
-        let command = version_command(&source);
+        let command = integration_status_command(&source);
 
         assert_eq!(command.program, Path::new("/usr/bin/ssh"));
         assert!(
@@ -497,7 +565,7 @@ mod tests {
         assert_eq!(command.args[command.args.len() - 2], "build-host");
         assert_eq!(
             command.args.last().map(String::as_str),
-            Some("exec \"$HOME/.local/bin/aizu\" version --json")
+            Some(REMOTE_INTEGRATION_STATUS_COMMAND)
         );
     }
 
@@ -527,35 +595,50 @@ mod tests {
     }
 
     #[test]
-    fn remote_version_response_requires_current_protocol() {
-        let compatible = parse_remote_version(
-            format!(r#"{{"application":"0.1.0","protocol":{PROTOCOL_VERSION}}}"#).as_bytes(),
+    fn remote_status_response_requires_current_protocol_and_both_integrations() {
+        let compatible = parse_remote_status(
+            format!(
+                r#"{{"application":"0.1.0","protocol":{PROTOCOL_VERSION},"integrations":[{{"agent":"codex","status":"approval_required"}},{{"agent":"claude-code","status":"configured"}}]}}"#
+            )
+            .as_bytes(),
         );
         assert_eq!(compatible.status, SshConnectionTestStatus::Compatible);
         assert!(compatible.config_resolved);
         assert!(compatible.reachable);
         assert!(compatible.protocol_compatible);
         assert_eq!(compatible.remote_version.as_deref(), Some("0.1.0"));
+        assert_eq!(compatible.integrations.len(), 2);
 
-        let incompatible = parse_remote_version(br#"{"application":"0.1.0","protocol":999}"#);
+        let incompatible =
+            parse_remote_status(br#"{"application":"0.1.0","protocol":999,"integrations":[]}"#);
         assert_eq!(
             incompatible.status,
             SshConnectionTestStatus::IncompatibleProtocol
         );
         assert!(incompatible.reachable);
         assert!(!incompatible.protocol_compatible);
+
+        let incomplete = parse_remote_status(
+            format!(
+                r#"{{"application":"0.1.0","protocol":{PROTOCOL_VERSION},"integrations":[{{"agent":"codex","status":"missing"}}]}}"#
+            )
+            .as_bytes(),
+        );
+        assert_eq!(incomplete.status, SshConnectionTestStatus::RemoteFailure);
     }
 
     #[test]
     fn invalid_remote_output_never_reaches_the_ui() {
-        let invalid = parse_remote_version(b"/Users/example/private/path");
+        let invalid = parse_remote_status(b"/Users/example/private/path");
         assert_eq!(invalid.status, SshConnectionTestStatus::RemoteFailure);
         assert!(!invalid.message.contains("/Users"));
         assert!(invalid.remote_version.is_none());
 
-        let disguised_secret = parse_remote_version(
-            format!(r#"{{"application":"superSecretValue","protocol":{PROTOCOL_VERSION}}}"#)
-                .as_bytes(),
+        let disguised_secret = parse_remote_status(
+            format!(
+                r#"{{"application":"superSecretValue","protocol":{PROTOCOL_VERSION},"integrations":[]}}"#
+            )
+            .as_bytes(),
         );
         assert_eq!(
             disguised_secret.status,

@@ -42,6 +42,10 @@ export const sshConnectionTestResultSchema = z.object({
   reachable: z.boolean(),
   protocolCompatible: z.boolean(),
   remoteVersion: z.string().nullable(),
+  integrations: z.array(z.object({
+    agent: z.enum(["codex", "claudeCode"]),
+    status: z.enum(["configured", "missing", "approvalRequired", "unsupported"]),
+  })).max(2),
 });
 
 export const historyEventSchema = z.object({

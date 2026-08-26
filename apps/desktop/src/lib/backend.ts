@@ -265,6 +265,10 @@ const createDevelopmentBackend = (): BackendClient => {
       reachable: true,
       protocolCompatible: true,
       remoteVersion: "0.1.0-dev",
+      integrations: [
+        { agent: "codex", status: "approvalRequired" },
+        { agent: "claudeCode", status: "configured" },
+      ],
     }),
     removeRemoteSource: async (hostAlias) => {
       view = { ...view, sources: view.sources.filter((source) => source.id !== `ssh:${hostAlias}`) };
