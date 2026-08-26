@@ -141,20 +141,27 @@ pub fn install_agent_hooks(
 /// as missing and no configuration content or path is returned.
 #[must_use]
 pub fn inspect_agent_hooks(home: &Path, executable: &Path) -> [(AgentKind, HookStatus); 2] {
+    let Ok(home) = canonical_home(home) else {
+        return [AgentKind::Codex, AgentKind::ClaudeCode].map(|agent| (agent, HookStatus::Missing));
+    };
     [AgentKind::Codex, AgentKind::ClaudeCode]
-        .map(|agent| (agent, inspect_agent_hook(home, executable, agent)))
+        .map(|agent| (agent, inspect_agent_hook(&home, executable, agent)))
 }
 
 fn inspect_agent_hook(home: &Path, executable: &Path, agent: AgentKind) -> HookStatus {
-    let Ok(path) = resolve_agent_configuration_path(home, agent) else {
+    let requested = agent_configuration_path(home, agent);
+    let Ok(path) = resolve_configuration_path(home, &requested) else {
         return HookStatus::Missing;
     };
-    let Ok(bytes) = fs::read(path) else {
+    let Some(parent) = path.parent() else {
         return HookStatus::Missing;
     };
-    if bytes.len() > MAX_AGENT_CONFIG_BYTES {
+    if preflight_configuration_directory(home, parent).is_err() {
         return HookStatus::Missing;
     }
+    let Ok(Some(bytes)) = read_configuration_bytes(&path) else {
+        return HookStatus::Missing;
+    };
     let Ok(actual) = parse_strict_json_value(&bytes, MAX_AGENT_CONFIG_BYTES) else {
         return HookStatus::Missing;
     };
@@ -893,6 +900,42 @@ mod tests {
                 (AgentKind::ClaudeCode, HookStatus::Missing),
             ]
         );
+
+        fs::create_dir(home.path().join(".codex")).expect("Codex directory");
+        let oversized = fs::File::create(home.path().join(".codex/hooks.json"))
+            .expect("oversized Codex configuration");
+        oversized
+            .set_len(64 * 1_024 * 1_024)
+            .expect("sparse oversized configuration");
+        assert_eq!(
+            inspect_agent_hooks(home.path(), &executable)[0],
+            (AgentKind::Codex, HookStatus::Missing)
+        );
+
+        let valid = hook_configuration(AgentKind::Codex, &executable)
+            .expect("valid Codex hook configuration");
+        fs::write(
+            home.path().join(".codex/hooks.json"),
+            serde_json::to_vec(&valid).expect("serialized Codex hook configuration"),
+        )
+        .expect("Codex configuration");
+        assert_eq!(
+            inspect_agent_hooks(home.path(), &executable)[0],
+            (AgentKind::Codex, HookStatus::ApprovalRequired)
+        );
+
+        #[cfg(unix)]
+        {
+            fs::set_permissions(
+                home.path().join(".codex"),
+                fs::Permissions::from_mode(0o775),
+            )
+            .expect("insecure Codex directory permissions");
+            assert_eq!(
+                inspect_agent_hooks(home.path(), &executable)[0],
+                (AgentKind::Codex, HookStatus::Missing)
+            );
+        }
     }
 
     #[test]
