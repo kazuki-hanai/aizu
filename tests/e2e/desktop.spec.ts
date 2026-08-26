@@ -602,6 +602,14 @@ describe("Aizu desktop MVP", () => {
       status: "error",
     }));
 
+    await $("button=接続元").click();
+    await expect($("h1=接続元")).toBeDisplayed();
+    await expect($("span=エージェント設定はPCごとに個別にインストールされます。")).toBeDisplayed();
+    await expect($("span=このPCのCLIとエージェント設定を確認できます。")).toBeDisplayed();
+    await expect($("small=SSH先の許可・拒否は、接続先PCのターミナルで選択します。")).toBeDisplayed();
+    await $("button=エージェント").click();
+    await expect($("h1=エージェント")).toBeDisplayed();
+
     const title = `desktop-e2e-${String(Date.now())}`;
     await executeFile(cliBinary, [
       "emit",

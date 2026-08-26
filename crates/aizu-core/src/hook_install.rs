@@ -10,8 +10,8 @@ use thiserror::Error;
 
 use crate::protocol::ProtocolError;
 use crate::{
-    AgentKind, IntegrationError, hook_configuration, merge_hook_configuration,
-    parse_strict_json_value,
+    AgentKind, HookStatus, IntegrationError, hook_configuration, hook_configuration_status,
+    merge_hook_configuration, parse_strict_json_value,
 };
 
 #[cfg(unix)]
@@ -134,6 +134,31 @@ pub fn install_agent_hooks(
             outcome: update.outcome,
         })
         .collect())
+}
+
+/// Inspects the current user's first-party hook configuration without changing
+/// any file. Invalid, unsafe, missing, or oversized configurations are reported
+/// as missing and no configuration content or path is returned.
+#[must_use]
+pub fn inspect_agent_hooks(home: &Path, executable: &Path) -> [(AgentKind, HookStatus); 2] {
+    [AgentKind::Codex, AgentKind::ClaudeCode]
+        .map(|agent| (agent, inspect_agent_hook(home, executable, agent)))
+}
+
+fn inspect_agent_hook(home: &Path, executable: &Path, agent: AgentKind) -> HookStatus {
+    let Ok(path) = resolve_agent_configuration_path(home, agent) else {
+        return HookStatus::Missing;
+    };
+    let Ok(bytes) = fs::read(path) else {
+        return HookStatus::Missing;
+    };
+    if bytes.len() > MAX_AGENT_CONFIG_BYTES {
+        return HookStatus::Missing;
+    }
+    let Ok(actual) = parse_strict_json_value(&bytes, MAX_AGENT_CONFIG_BYTES) else {
+        return HookStatus::Missing;
+    };
+    hook_configuration_status(agent, &actual, executable)
 }
 
 fn prepare_updates(
@@ -839,6 +864,34 @@ mod tests {
             second
                 .iter()
                 .all(|result| result.outcome == HookInstallOutcome::AlreadyConfigured)
+        );
+
+        assert_eq!(
+            inspect_agent_hooks(home.path(), &executable),
+            [
+                (AgentKind::Codex, HookStatus::ApprovalRequired),
+                (AgentKind::ClaudeCode, HookStatus::Configured),
+            ]
+        );
+    }
+
+    #[test]
+    fn read_only_hook_inspection_fails_closed() {
+        let home = tempfile::tempdir().expect("temporary home");
+        fs::create_dir(home.path().join(".claude")).expect("Claude directory");
+        fs::write(
+            home.path().join(".claude/settings.json"),
+            br#"{"disableAllHooks":true,"private":"do-not-report"}"#,
+        )
+        .expect("Claude configuration");
+        let executable = executable(home.path());
+
+        assert_eq!(
+            inspect_agent_hooks(home.path(), &executable),
+            [
+                (AgentKind::Codex, HookStatus::Missing),
+                (AgentKind::ClaudeCode, HookStatus::Missing),
+            ]
         );
     }
 

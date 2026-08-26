@@ -41,10 +41,13 @@ pub use event::{
 };
 pub use hook_install::{
     HookInstallError, HookInstallOutcome, HookInstallResult, MAX_AGENT_CONFIG_BYTES,
-    agent_configuration_path, install_agent_hooks, resolve_agent_configuration_path,
+    agent_configuration_path, inspect_agent_hooks, install_agent_hooks,
+    resolve_agent_configuration_path,
 };
 pub use install::{InstallError, InstallOutcome, install_cli};
-pub use integration::{IntegrationError, hook_configuration, merge_hook_configuration};
+pub use integration::{
+    IntegrationError, hook_configuration, hook_configuration_status, merge_hook_configuration,
+};
 pub use notification::{
     BacklogPlan, CLOCK_SKEW_THRESHOLD, NotificationContext, NotificationDecision,
     NotificationPolicy, PreparedNotification, QuietHours, SuppressionReason, aggregate_backlog,

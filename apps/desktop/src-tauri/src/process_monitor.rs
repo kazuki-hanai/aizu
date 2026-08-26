@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    fs,
     io::Read,
     num::NonZeroU32,
     path::Path,
@@ -10,10 +9,9 @@ use std::{
 };
 
 use aizu_core::{
-    AgentKind, HookInstallError, HookStatus, MAX_AGENT_CONFIG_BYTES, MAX_PROCESS_SNAPSHOT_ENTRIES,
-    ObservedAgentProcess, ProcessLifecycleState, ProcessSnapshot, ProcessSnapshotError,
-    hook_configuration, install_agent_hooks, merge_hook_configuration,
-    resolve_agent_configuration_path,
+    AgentKind, HookInstallError, HookStatus, MAX_PROCESS_SNAPSHOT_ENTRIES, ObservedAgentProcess,
+    ProcessLifecycleState, ProcessSnapshot, ProcessSnapshotError, inspect_agent_hooks,
+    install_agent_hooks,
 };
 use chrono::Utc;
 use sysinfo::{Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -191,7 +189,10 @@ fn classify_agent_executable(name: &std::ffi::OsStr) -> Option<AgentKind> {
 }
 
 pub fn inspect_hooks() -> AgentHooks {
-    [AgentKind::Codex, AgentKind::ClaudeCode].map(|agent| (agent, inspect_agent_hooks(agent)))
+    let Some(base) = directories::BaseDirs::new() else {
+        return [AgentKind::Codex, AgentKind::ClaudeCode].map(|agent| (agent, HookStatus::Missing));
+    };
+    inspect_agent_hooks(base.home_dir(), &base.home_dir().join(".local/bin/aizu"))
 }
 
 pub fn configure_hooks() -> Result<AgentHooks, HookInstallError> {
@@ -206,93 +207,15 @@ fn configure_hooks_at(home: &Path, executable: &Path) -> Result<(), HookInstallE
     Ok(())
 }
 
-fn inspect_agent_hooks(agent: AgentKind) -> HookStatus {
-    let Some(base) = directories::BaseDirs::new() else {
-        return HookStatus::Missing;
-    };
-    let Ok(path) = resolve_agent_configuration_path(base.home_dir(), agent) else {
-        return HookStatus::Missing;
-    };
-    let Ok(bytes) = fs::read(path) else {
-        return HookStatus::Missing;
-    };
-    if bytes.len() > MAX_AGENT_CONFIG_BYTES {
-        return HookStatus::Missing;
-    }
-    let Ok(actual) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return HookStatus::Missing;
-    };
-    let executable = base.home_dir().join(".local/bin/aizu");
-    let Ok(expected) = hook_configuration(agent, &executable) else {
-        return HookStatus::Missing;
-    };
-    configuration_status(agent, &actual, &expected, &executable)
-}
-
-fn configuration_status(
-    agent: AgentKind,
-    actual: &serde_json::Value,
-    expected: &serde_json::Value,
-    executable: &Path,
-) -> HookStatus {
-    if agent == AgentKind::ClaudeCode
-        && actual
-            .get("disableAllHooks")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-    {
-        return HookStatus::Missing;
-    }
-    if !matches!(
-        merge_hook_configuration(agent, actual, executable),
-        Ok(merged) if merged == *actual
-    ) {
-        return HookStatus::Missing;
-    }
-    let Some(expected_hooks) = expected.get("hooks").and_then(serde_json::Value::as_object) else {
-        return HookStatus::Missing;
-    };
-    let Some(actual_hooks) = actual.get("hooks").and_then(serde_json::Value::as_object) else {
-        return HookStatus::Missing;
-    };
-    let configured = expected_hooks.iter().all(|(event, groups)| {
-        let expected_handlers = handlers(groups);
-        actual_hooks.get(event).is_some_and(|actual_groups| {
-            expected_handlers
-                .iter()
-                .all(|handler| handlers(actual_groups).contains(handler))
-        })
-    });
-    if configured && agent == AgentKind::Codex {
-        HookStatus::ApprovalRequired
-    } else if configured {
-        HookStatus::Configured
-    } else {
-        HookStatus::Missing
-    }
-}
-
-fn handlers(groups: &serde_json::Value) -> Vec<serde_json::Value> {
-    groups
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|group| group.get("hooks").and_then(serde_json::Value::as_array))
-        .flatten()
-        .cloned()
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::{fs, path::Path};
 
-    use aizu_core::{AgentKind, HookStatus, hook_configuration};
+    use aizu_core::{AgentKind, HookStatus, hook_configuration, hook_configuration_status};
 
     use super::{
         ProcessMonitor, agent_process_refresh_kind, classify_agent_executable,
-        classify_agent_process, configuration_status, configure_hooks_at,
-        session_leader_is_present,
+        classify_agent_process, configure_hooks_at, session_leader_is_present,
     };
 
     #[test]
@@ -360,14 +283,14 @@ mod tests {
         let path = Path::new("/Users/example/.local/bin/aizu");
         let codex = hook_configuration(AgentKind::Codex, path).expect("codex hooks");
         assert_eq!(
-            configuration_status(AgentKind::Codex, &codex, &codex, path),
+            hook_configuration_status(AgentKind::Codex, &codex, path),
             HookStatus::ApprovalRequired
         );
 
         let mut claude = hook_configuration(AgentKind::ClaudeCode, path).expect("claude hooks");
         claude["disableAllHooks"] = serde_json::Value::Bool(true);
         assert_eq!(
-            configuration_status(AgentKind::ClaudeCode, &claude, &claude, path),
+            hook_configuration_status(AgentKind::ClaudeCode, &claude, path),
             HookStatus::Missing
         );
     }
@@ -389,7 +312,7 @@ mod tests {
             }));
 
         assert_eq!(
-            configuration_status(AgentKind::Codex, &actual, &expected, path),
+            hook_configuration_status(AgentKind::Codex, &actual, path),
             HookStatus::Missing
         );
 
@@ -407,7 +330,7 @@ mod tests {
             }
         });
         assert_eq!(
-            configuration_status(AgentKind::Codex, &custom_only, &expected, path),
+            hook_configuration_status(AgentKind::Codex, &custom_only, path),
             HookStatus::Missing
         );
     }

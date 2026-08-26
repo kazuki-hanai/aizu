@@ -331,6 +331,7 @@ pub async fn test_ssh_connection(host_alias: String) -> SshConnectionTestResult 
         reachable: false,
         protocol_compatible: false,
         remote_version: None,
+        integrations: Vec::new(),
     })
 }
 

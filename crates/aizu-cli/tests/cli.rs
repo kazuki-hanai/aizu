@@ -1397,6 +1397,39 @@ fn integration_install_configures_both_agents_and_preserves_existing_hooks() {
 }
 
 #[test]
+fn integration_status_reports_hook_health_without_configuration_content() {
+    let home = TempDir::new().unwrap();
+    let executable = test_executable(home.path());
+    aizu()
+        .env("HOME", home.path())
+        .args([
+            "integration-install",
+            "--aizu-path",
+            executable.to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let output = aizu()
+        .env("HOME", home.path())
+        .args(["integration-status", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["application"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(report["protocol"], aizu_core::PROTOCOL_VERSION);
+    assert_eq!(report["integrations"][0]["agent"], "codex");
+    assert_eq!(report["integrations"][0]["status"], "approval_required");
+    assert_eq!(report["integrations"][1]["agent"], "claude-code");
+    assert_eq!(report["integrations"][1]["status"], "configured");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains(home.path().to_str().unwrap()));
+    assert!(!stdout.contains("command"));
+}
+
+#[test]
 fn integration_install_can_target_one_agent() {
     let home = TempDir::new().unwrap();
     aizu()

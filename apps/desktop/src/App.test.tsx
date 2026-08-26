@@ -227,7 +227,7 @@ describe("Aizu desktop shell", () => {
     );
 
     await user.click(await screen.findByRole("button", { name: "Sources" }));
-    const rows = container.querySelectorAll<HTMLElement>(".source-row");
+    const rows = container.querySelectorAll<HTMLElement>(".source-manage-row");
     expect(rows).toHaveLength(2);
     expect(getComputedStyle(rows[0]).borderBottomStyle).toBe("solid");
     expect(getComputedStyle(rows[0]).borderBottomWidth).toBe("1px");
@@ -565,9 +565,13 @@ describe("Aizu desktop shell", () => {
       reachable: true,
       protocolCompatible: true,
       remoteVersion: "0.1.0",
+      integrations: [
+        { agent: "codex", status: "approvalRequired" },
+        { agent: "claudeCode", status: "configured" },
+      ],
     });
     expect(await screen.findByRole("status")).toHaveTextContent(
-      "SSH connected and the remote Aizu CLI is compatible.",
+      "SSH connected and the remote Aizu setup is compatible.",
     );
     expect(screen.getByRole("status")).toHaveTextContent("Remote Aizu 0.1.0");
     await expect(backend.getView()).resolves.toMatchObject({ sources: [{ id: "local" }] });
@@ -585,6 +589,7 @@ describe("Aizu desktop shell", () => {
       reachable: false,
       protocolCompatible: false,
       remoteVersion: null,
+      integrations: [],
     }));
     render(<App backend={backend} />);
 
@@ -597,6 +602,37 @@ describe("Aizu desktop shell", () => {
       "SSH authentication is required or was rejected.",
     );
     expect(screen.getByRole("alert")).not.toHaveTextContent("private-host");
+  });
+
+  it("shows per-computer hooks and the remote approval boundary", async () => {
+    const user = userEvent.setup();
+    const backend = makeBackend(makeView({
+      onboardingComplete: true,
+      notificationPermission: "granted",
+      preferences: { ...makeView().preferences, commandApprovalsEnabled: true },
+      agentMonitors: [
+        { agent: "codex", label: "Codex", status: "notDetected", hookStatus: "configured", version: null, lastSeenAt: null, detail: "Configured" },
+        { agent: "claudeCode", label: "Claude Code", status: "notDetected", hookStatus: "configured", version: null, lastSeenAt: null, detail: "Configured" },
+      ],
+      sources: [
+        ...makeView().sources,
+        { id: "ssh:build-host", name: "Build host", kind: "remoteSsh", status: "connected", detail: "Connected", lastEventAt: null, actionRequired: null },
+      ],
+    }));
+    backend.testSshConnection = vi.fn(backend.testSshConnection);
+    render(<App backend={backend} />);
+
+    await user.click(await screen.findByRole("button", { name: "Sources" }));
+    expect(screen.getByText("Agent settings are installed separately on each computer.")).toBeVisible();
+    expect(screen.getByText("Approval buttons are available for agents running on this Mac.")).toBeVisible();
+    expect(screen.getByText("Check setup to verify the CLI and agent hooks on this computer.")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Check setup Build host" }));
+
+    expect(await screen.findByText("Codex Confirm hook trust in Codex")).toBeVisible();
+    expect(screen.getAllByText("Claude Code Configured")).toHaveLength(2);
+    expect(screen.getByText("Remote approvals are chosen in the source computer's terminal.")).toBeVisible();
+    expect(backend.testSshConnection).toHaveBeenCalledWith("build-host");
   });
 
   it("keeps failed SSH source input and provides modal keyboard behavior", async () => {

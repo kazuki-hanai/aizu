@@ -14,7 +14,7 @@ use aizu_core::{
     CodexAdapter, EmitRequest, EventKind, HookInstallOutcome,
     LOCAL_APPROVAL_PRESENTED_METADATA_KEY, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool,
     SpoolError, StatePaths, TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation, Urgency,
-    hook_configuration, install_agent_hooks, local_approval_request_from_hook,
+    hook_configuration, inspect_agent_hooks, install_agent_hooks, local_approval_request_from_hook,
     parse_strict_json_value, remove_terminal_activation_metadata,
 };
 use chrono::Utc;
@@ -63,6 +63,8 @@ enum Command {
     IntegrationConfig(IntegrationConfigArgs),
     /// Safely merge and install first-party agent hooks for this user.
     IntegrationInstall(IntegrationInstallArgs),
+    /// Inspect first-party agent hooks without changing their configuration.
+    IntegrationStatus(IntegrationStatusArgs),
     /// Print application and protocol versions.
     Version(VersionArgs),
     /// List running supported agents without exposing process details.
@@ -166,6 +168,16 @@ struct IntegrationInstallArgs {
     #[arg(long, value_name = "PATH")]
     aizu_path: Option<PathBuf>,
     /// Print a machine-readable result without configuration paths.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct IntegrationStatusArgs {
+    /// Absolute Aizu CLI path expected in hooks. Defaults to ~/.local/bin/aizu.
+    #[arg(long, value_name = "PATH")]
+    aizu_path: Option<PathBuf>,
+    /// Print a machine-readable result without configuration paths or values.
     #[arg(long)]
     json: bool,
 }
@@ -292,6 +304,19 @@ struct InstalledIntegration {
     approval_required: bool,
 }
 
+#[derive(Serialize)]
+struct IntegrationStatusReport<'a> {
+    application: &'a str,
+    protocol: u32,
+    integrations: Vec<IntegrationStatusEntry>,
+}
+
+#[derive(Serialize)]
+struct IntegrationStatusEntry {
+    agent: CoreAgentKind,
+    status: aizu_core::HookStatus,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
@@ -332,6 +357,7 @@ fn run() -> Result<u8, Box<dyn Error>> {
             Ok(0)
         }
         Command::IntegrationInstall(args) => run_integration_install(args),
+        Command::IntegrationStatus(args) => run_integration_status(args),
         command => {
             let spool = open_spool(&paths, cli.display_name)?;
             match command {
@@ -348,6 +374,7 @@ fn run() -> Result<u8, Box<dyn Error>> {
                 | Command::Hook(_)
                 | Command::IntegrationConfig(_)
                 | Command::IntegrationInstall(_)
+                | Command::IntegrationStatus(_)
                 | Command::Agents(_)
                 | Command::Version(_) => {
                     unreachable!("handled above")
@@ -355,6 +382,47 @@ fn run() -> Result<u8, Box<dyn Error>> {
             }
         }
     }
+}
+
+fn run_integration_status(args: IntegrationStatusArgs) -> Result<u8, Box<dyn Error>> {
+    let base = directories::BaseDirs::new().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "the user home directory is unavailable",
+        )
+    })?;
+    let executable = args
+        .aizu_path
+        .unwrap_or_else(|| base.home_dir().join(".local/bin/aizu"));
+    let integrations = inspect_agent_hooks(base.home_dir(), &executable)
+        .into_iter()
+        .map(|(agent, status)| IntegrationStatusEntry { agent, status })
+        .collect::<Vec<_>>();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string(&IntegrationStatusReport {
+                application: env!("CARGO_PKG_VERSION"),
+                protocol: PROTOCOL_VERSION,
+                integrations,
+            })?
+        );
+    } else {
+        for integration in integrations {
+            let name = match integration.agent {
+                CoreAgentKind::Codex => "Codex",
+                CoreAgentKind::ClaudeCode => "Claude Code",
+            };
+            let status = match integration.status {
+                aizu_core::HookStatus::Configured => "configured",
+                aizu_core::HookStatus::Missing => "missing",
+                aizu_core::HookStatus::ApprovalRequired => "approval required",
+                aizu_core::HookStatus::Unsupported => "unsupported",
+            };
+            println!("{name}: {status}");
+        }
+    }
+    Ok(0)
 }
 
 fn run_integration_install(args: IntegrationInstallArgs) -> Result<u8, Box<dyn Error>> {
