@@ -11,6 +11,8 @@ use directories::BaseDirs;
 use serde::Deserialize;
 use thiserror::Error;
 
+use aizu_core::LOCAL_APPROVAL_PROTOCOL_VERSION;
+
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_VERSION_OUTPUT_BYTES: u64 = 16 * 1_024;
 
@@ -47,6 +49,7 @@ pub enum CliDiagnosticError {
 struct VersionReport {
     application: String,
     protocol: u16,
+    local_approval_protocol: Option<u16>,
     event_schema: u16,
     database_schema: u16,
     sqlite: String,
@@ -123,6 +126,7 @@ pub fn inspect_path(
 fn diagnostic_for_report(report: VersionReport, expected_version: &str) -> CliDiagnostic {
     if report.application == expected_version
         && report.protocol == PROTOCOL_VERSION
+        && report.local_approval_protocol == Some(LOCAL_APPROVAL_PROTOCOL_VERSION)
         && report.event_schema == EVENT_SCHEMA_VERSION
         && report.database_schema == DATABASE_SCHEMA_VERSION
     {
@@ -194,27 +198,37 @@ mod tests {
         assert!(parse_version_report(br#"{"application":"0.1.0"}"#).is_err());
         assert!(
             parse_version_report(
-                br#"{"application":"tool","protocol":1,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
+                br#"{"application":"tool","protocol":1,"local_approval_protocol":2,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
             )
             .is_err()
         );
         assert!(
             parse_version_report(
-                br#"{"application":"0.1.0","protocol":2,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
+                br#"{"application":"0.1.0","protocol":2,"local_approval_protocol":2,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
             )
             .is_ok()
         );
         assert!(
             parse_version_report(
-                br#"{"application":"0.1.0","protocol":1,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
+                br#"{"application":"0.1.0","protocol":1,"local_approval_protocol":2,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
             )
             .is_ok()
         );
         assert!(
             parse_version_report(
-                br#"{"application":"0.1.0-dev.1","protocol":1,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
+                br#"{"application":"0.1.0-dev.1","protocol":1,"local_approval_protocol":2,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
             )
             .is_ok()
+        );
+        let current = parse_version_report(
+            br#"{"application":"0.1.0","protocol":1,"local_approval_protocol":2,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
+        )
+        .expect("current version report");
+        assert_eq!(
+            diagnostic_for_report(current, "0.1.0"),
+            CliDiagnostic::Installed {
+                version: "0.1.0".to_owned(),
+            }
         );
         let older = parse_version_report(
             br#"{"application":"0.0.9","protocol":0,"event_schema":0,"database_schema":0,"sqlite":"3.45.0"}"#,
@@ -224,6 +238,26 @@ mod tests {
             diagnostic_for_report(older, "0.1.0"),
             CliDiagnostic::VersionMismatch {
                 version: Some("0.0.9".to_owned()),
+            }
+        );
+        let approval_v1 = parse_version_report(
+            br#"{"application":"0.1.0","protocol":1,"local_approval_protocol":1,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
+        )
+        .expect("older local approval protocols remain identifiable");
+        assert_eq!(
+            diagnostic_for_report(approval_v1, "0.1.0"),
+            CliDiagnostic::VersionMismatch {
+                version: Some("0.1.0".to_owned()),
+            }
+        );
+        let missing_approval_protocol = parse_version_report(
+            br#"{"application":"0.1.0","protocol":1,"event_schema":1,"database_schema":1,"sqlite":"3.53.2"}"#,
+        )
+        .expect("older version reports remain identifiable");
+        assert_eq!(
+            diagnostic_for_report(missing_approval_protocol, "0.1.0"),
+            CliDiagnostic::VersionMismatch {
+                version: Some("0.1.0".to_owned()),
             }
         );
     }

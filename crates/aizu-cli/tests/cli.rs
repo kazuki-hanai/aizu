@@ -983,6 +983,10 @@ fn version_does_not_create_a_spool() {
     assert!(output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["protocol"], 1);
+    assert_eq!(
+        report["local_approval_protocol"],
+        aizu_core::LOCAL_APPROVAL_PROTOCOL_VERSION
+    );
     assert_eq!(report["event_schema"], 1);
     assert!(!state_path.exists());
 }

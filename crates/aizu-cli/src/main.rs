@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 use aizu_core::{
     AgentAdapter, AgentKind as CoreAgentKind, ApprovalDecision, BridgeFrame, ClaudeCodeAdapter,
     CodexAdapter, EmitRequest, EventKind, HookInstallOutcome,
-    LOCAL_APPROVAL_PRESENTED_METADATA_KEY, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool,
-    SpoolError, StatePaths, TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation, Urgency,
-    hook_configuration, inspect_agent_hooks, install_agent_hooks, local_approval_request_from_hook,
-    parse_strict_json_value, remove_terminal_activation_metadata,
+    LOCAL_APPROVAL_PRESENTED_METADATA_KEY, LOCAL_APPROVAL_PROTOCOL_VERSION, MAX_FRAME_BYTES,
+    Outcome, PROTOCOL_VERSION, Spool, SpoolError, StatePaths, TERMINAL_ACTIVATION_METADATA_KEY,
+    TerminalActivation, Urgency, hook_configuration, inspect_agent_hooks, install_agent_hooks,
+    local_approval_request_from_hook, parse_strict_json_value, remove_terminal_activation_metadata,
 };
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -275,6 +275,7 @@ struct PersistedEvent<'a> {
 struct VersionReport<'a> {
     application: &'a str,
     protocol: u32,
+    local_approval_protocol: u16,
     event_schema: u32,
     database_schema: i64,
     sqlite: &'a str,
@@ -997,6 +998,7 @@ fn print_version(json_output: bool) -> Result<(), Box<dyn Error>> {
             serde_json::to_string(&VersionReport {
                 application: env!("CARGO_PKG_VERSION"),
                 protocol: PROTOCOL_VERSION,
+                local_approval_protocol: LOCAL_APPROVAL_PROTOCOL_VERSION,
                 event_schema: aizu_core::event::SCHEMA_VERSION,
                 database_schema: aizu_core::DATABASE_SCHEMA_VERSION,
                 sqlite: aizu_core::sqlite_version(),
