@@ -192,6 +192,23 @@ if (!design.includes("128 KiB") || !protocol.includes("131072 bytes")) {
   errors.push("design/protocol: 128 KiB frame limit is inconsistent or missing");
 }
 
+const installationDocs = [
+  ["README.md", read("README.md"), ["AIZU_INSTALL"]],
+  ["docs/installation.md", read("docs/installation.md"), ["AIZU_INSTALL", "AIZU_UPGRADE"]],
+];
+for (const [relativePath, text, heredocs] of installationDocs) {
+  if (/```bash\n\(\n\s*set -eu/gmu.test(text)) {
+    errors.push(`${relativePath}: CLI procedure inherits strict options in the interactive shell`);
+  }
+  for (const heredoc of heredocs) {
+    const hasOpening = text.includes(`bash <<'${heredoc}'\nset -euo pipefail`);
+    const hasClosing = text.includes(`\n${heredoc}\n\`\`\``);
+    if (!hasOpening || !hasClosing) {
+      errors.push(`${relativePath}: missing isolated Bash ${heredoc} procedure`);
+    }
+  }
+}
+
 if (errors.length > 0) {
   for (const error of errors) console.error(error);
   process.exitCode = 1;

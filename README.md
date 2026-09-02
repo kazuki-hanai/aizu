@@ -73,25 +73,28 @@ Repeat this section on each Linux or macOS machine where an agent runs.
 Clone and build Aizu on the source machine:
 
 ```bash
-(
-  set -eu
-  git clone https://github.com/kazuki-hanai/aizu.git
-  cd aizu
-  mise trust
-  mise install rust node
-  mise exec -- cargo build --locked --release -p aizu-cli
-  install -d -m 700 "$HOME/.local/bin"
-  stage="$HOME/.local/bin/.aizu-install-$$"
-  trap 'rm -f "$stage"' EXIT HUP INT TERM
-  install -m 755 target/release/aizu "$stage"
-  "$stage" version --json
-  ln "$stage" "$HOME/.local/bin/aizu"
-  rm -f "$stage"
-  trap - EXIT HUP INT TERM
-  "$HOME/.local/bin/aizu" version --json
-  "$HOME/.local/bin/aizu" doctor --json
-)
+bash <<'AIZU_INSTALL'
+set -euo pipefail
+git clone https://github.com/kazuki-hanai/aizu.git
+cd aizu
+mise trust
+mise install rust node
+mise exec -- cargo build --locked --release -p aizu-cli
+install -d -m 700 "$HOME/.local/bin"
+stage="$HOME/.local/bin/.aizu-install-$$"
+trap 'rm -f "$stage"' EXIT HUP INT TERM
+install -m 755 target/release/aizu "$stage"
+"$stage" version --json
+ln "$stage" "$HOME/.local/bin/aizu"
+rm -f "$stage"
+trap - EXIT HUP INT TERM
+"$HOME/.local/bin/aizu" version --json
+"$HOME/.local/bin/aizu" doctor --json
+AIZU_INSTALL
 ```
+
+The explicit Bash process keeps strict shell options from affecting interactive
+Zsh hooks or plugins while the procedure changes directories.
 
 The hard-link step stops if anything already exists at the target path. Do not
 remove or replace that item until you know who owns it. Upgrades use a separate
