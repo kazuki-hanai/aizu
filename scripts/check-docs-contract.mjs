@@ -192,21 +192,18 @@ if (!design.includes("128 KiB") || !protocol.includes("131072 bytes")) {
   errors.push("design/protocol: 128 KiB frame limit is inconsistent or missing");
 }
 
-const installationDocs = [
-  ["README.md", read("README.md"), ["AIZU_INSTALL"]],
-  ["docs/installation.md", read("docs/installation.md"), ["AIZU_INSTALL", "AIZU_UPGRADE"]],
-];
-for (const [relativePath, text, heredocs] of installationDocs) {
+const installationDocs = ["README.md", "docs/installation.md"];
+for (const relativePath of installationDocs) {
+  const text = read(relativePath);
   if (/```bash\n\(\n\s*set -eu/gmu.test(text)) {
     errors.push(`${relativePath}: CLI procedure inherits strict options in the interactive shell`);
   }
-  for (const heredoc of heredocs) {
-    const hasOpening = text.includes(`bash <<'${heredoc}'\nset -euo pipefail`);
-    const hasClosing = text.includes(`\n${heredoc}\n\`\`\``);
-    if (!hasOpening || !hasClosing) {
-      errors.push(`${relativePath}: missing isolated Bash ${heredoc} procedure`);
-    }
+  if (!text.includes("./scripts/install-cli.sh")) {
+    errors.push(`${relativePath}: missing source CLI installer command`);
   }
+}
+if (!read("docs/installation.md").includes("./scripts/install-cli.sh --upgrade")) {
+  errors.push("docs/installation.md: missing explicit source CLI upgrade command");
 }
 
 if (errors.length > 0) {

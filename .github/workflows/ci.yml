@@ -62,6 +62,7 @@ jobs:
         run: |
           node scripts/check-docs-contract.mjs
           node scripts/check-ci-budget.mjs
+          ./scripts/test-install-cli.sh
           ./scripts/check-icons.sh
           ./scripts/test-branding-integrity.sh
           node scripts/generate-notification-sound.mjs --check

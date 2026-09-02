@@ -29,34 +29,17 @@ writing to it.
 
 ## First CLI Install on an SSH Source
 
-The following procedure commits the binary with a hard link. It fails rather
-than replacing anything already present at the target path.
+The following procedure commits the binary with a hard link. A repeated install
+of the same binary succeeds; a different existing target is left untouched.
 
 ```bash
-bash <<'AIZU_INSTALL'
-set -euo pipefail
 cd /path/to/aizu
-mise trust
-mise install rust node
-mise exec -- cargo build --locked --release -p aizu-cli
-install -d -m 700 "$HOME/.local/bin"
-stage="$HOME/.local/bin/.aizu-install-$$"
-trap 'rm -f "$stage"' EXIT HUP INT TERM
-install -m 755 target/release/aizu "$stage"
-"$stage" version --json
-ln "$stage" "$HOME/.local/bin/aizu"
-rm -f "$stage"
-trap - EXIT HUP INT TERM
-"$HOME/.local/bin/aizu" version --json
-"$HOME/.local/bin/aizu" doctor --json
-AIZU_INSTALL
+./scripts/install-cli.sh
 ```
 
-The explicit Bash process keeps strict shell options from affecting interactive
-Zsh hooks or plugins while the procedure changes directories.
-
-If `ln` fails, inspect the existing target. Never remove or overwrite it until
-you know who owns it and how it was installed.
+The script runs strict options in its own shell, so interactive Zsh hooks and
+plugins are unaffected. If it reports an existing target, inspect that target.
+Never remove or overwrite it until you know who owns it and how it was installed.
 
 ## Upgrade a Source CLI
 
@@ -65,38 +48,9 @@ above. A successful version response checks compatibility; it is not
 cryptographic proof that an unfamiliar file belongs to Aizu.
 
 ```bash
-bash <<'AIZU_UPGRADE'
-set -euo pipefail
 cd /path/to/aizu
 git pull --ff-only
-mise exec -- cargo build --locked --release -p aizu-cli
-target="$HOME/.local/bin/aizu"
-test -f "$target" && test ! -L "$target"
-
-validate_report() {
-  "$1" version --json | mise exec -- node -e '
-    let input = "";
-    process.stdin.on("data", chunk => input += chunk);
-    process.stdin.on("end", () => {
-      const report = JSON.parse(input);
-      const version = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u;
-      if (!version.test(report.application)
-        || !Number.isInteger(report.protocol)
-        || !Number.isInteger(report.event_schema)
-        || !Number.isInteger(report.database_schema)
-        || typeof report.sqlite !== "string") process.exit(1);
-    });'
-}
-
-validate_report "$target"
-stage="$HOME/.local/bin/.aizu-update-$$"
-trap 'rm -f "$stage"' EXIT HUP INT TERM
-install -m 755 target/release/aizu "$stage"
-validate_report "$stage"
-mv -f "$stage" "$target"
-trap - EXIT HUP INT TERM
-validate_report "$target"
-AIZU_UPGRADE
+./scripts/install-cli.sh --upgrade
 ```
 
 The staging file is in the target directory, so the final rename stays on one
