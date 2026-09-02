@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+mkdir -p "$root/target"
 fixture=$(mktemp -d "$root/target/install-cli-test.XXXXXX")
 trap 'rm -rf "$fixture"' EXIT HUP INT TERM
 
@@ -77,6 +78,24 @@ chmod 755 "$fixture/upgrade-home/.local/bin/aizu"
 HOME="$fixture/upgrade-home" PATH="$test_path" "$installer" --upgrade >/dev/null
 cmp "$fixture/repo/target/release/aizu" "$fixture/upgrade-home/.local/bin/aizu"
 
+mkdir -p "$fixture/nonzero-home/.local/bin"
+cat >"$fixture/nonzero-home/.local/bin/aizu" <<'NONZERO_AIZU'
+#!/bin/sh
+set -eu
+if [ "${1:-}" = version ]; then
+  printf '%s\n' '{"application":"1.2.2","protocol":1,"event_schema":1,"database_schema":1,"sqlite":"3.50.0"}'
+  exit 1
+fi
+exit 64
+NONZERO_AIZU
+chmod 755 "$fixture/nonzero-home/.local/bin/aizu"
+cp "$fixture/nonzero-home/.local/bin/aizu" "$fixture/nonzero-original"
+if HOME="$fixture/nonzero-home" PATH="$test_path" "$installer" --upgrade >/dev/null 2>"$fixture/nonzero-error"; then
+  printf '%s\n' "installer accepted a version command that exited unsuccessfully" >&2
+  exit 1
+fi
+cmp "$fixture/nonzero-original" "$fixture/nonzero-home/.local/bin/aizu"
+
 mkdir -p "$fixture/symlink-home/.local/bin"
 ln -s "$fixture/repo/target/release/aizu" "$fixture/symlink-home/.local/bin/aizu"
 if HOME="$fixture/symlink-home" PATH="$test_path" "$installer" >/dev/null 2>"$fixture/symlink-error"; then
@@ -85,4 +104,4 @@ if HOME="$fixture/symlink-home" PATH="$test_path" "$installer" >/dev/null 2>"$fi
 fi
 grep -F "refusing to replace a symlink" "$fixture/symlink-error" >/dev/null
 
-printf '%s\n' "validated first install, idempotency, explicit upgrade, and unsafe-target rejection"
+printf '%s\n' "validated install, idempotency, upgrade, failed-version handling, and unsafe-target rejection"

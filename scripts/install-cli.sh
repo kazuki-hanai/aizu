@@ -38,7 +38,10 @@ target_dir="$HOME/.local/bin"
 target="$target_dir/aizu"
 
 validate_report() {
-  "$1" version --json | mise exec -- node -e '
+  if ! report=$("$1" version --json); then
+    return 1
+  fi
+  printf '%s\n' "$report" | mise exec -- node -e '
     let input = "";
     process.stdin.on("data", chunk => input += chunk);
     process.stdin.on("end", () => {
