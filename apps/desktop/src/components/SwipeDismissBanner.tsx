@@ -33,12 +33,14 @@ export function SwipeDismissBanner({
   banner,
   onAcknowledgeApproval,
   onActivate,
+  onAnswerQuestion,
   onDecideApproval,
   onDismiss,
 }: {
   banner: BannerNotification;
   onAcknowledgeApproval: (id: number) => Promise<boolean>;
   onActivate: (id: number) => Promise<boolean>;
+  onAnswerQuestion: (id: number, optionIndex: number) => Promise<boolean>;
   onDecideApproval: (id: number, decision: "allowOnce" | "deny") => Promise<boolean>;
   onDismiss: (id: number) => Promise<boolean>;
 }) {
@@ -255,6 +257,19 @@ export function SwipeDismissBanner({
       if (!decided) reset();
     });
   };
+  const answerQuestion = (optionIndex: number) => {
+    if (
+      banner.approval?.target.kind !== "question" ||
+      !approvalReady ||
+      approvalStarted.current ||
+      dismissStarted.current
+    ) return;
+    approvalStarted.current = true;
+    setApprovalPending(true);
+    void onAnswerQuestion(banner.id, optionIndex).then((answered) => {
+      if (!answered) reset();
+    });
+  };
   return (
     <article
       aria-labelledby={requiresApproval ? approvalTitleId : undefined}
@@ -312,34 +327,59 @@ export function SwipeDismissBanner({
           {banner.approval ? (
             <>
               <span className="aizu-banner__approval-tool">{banner.approval.toolName}</span>
-              <pre
-                aria-label={banner.approval.target.kind === "webFetch"
-                  ? messages(banner.language).approvalUrl
-                  : messages(banner.language).approvalCommand}
-                className="aizu-banner__approval-target"
-              >
-                <code>{banner.approval.target.kind === "webFetch"
-                  ? banner.approval.target.url
-                  : banner.approval.target.command}</code>
-              </pre>
-              <div className="aizu-banner__actions">
-                <button
-                  className="aizu-banner__action aizu-banner__action--deny"
-                  disabled={!approvalReady || approvalPending}
-                  onClick={() => decideApproval("deny")}
-                  type="button"
-                >
-                  {messages(banner.language).deny}
-                </button>
-                <button
-                  className="aizu-banner__action aizu-banner__action--allow"
-                  disabled={!approvalReady || approvalPending}
-                  onClick={() => decideApproval("allowOnce")}
-                  type="button"
-                >
-                  {messages(banner.language).allowOnce}
-                </button>
-              </div>
+              {banner.approval.target.kind === "question" ? (
+                <div className="aizu-banner__question">
+                  {banner.approval.target.header ? (
+                    <span className="aizu-banner__question-header">{banner.approval.target.header}</span>
+                  ) : null}
+                  <p className="aizu-banner__question-text">{banner.approval.target.question}</p>
+                  <div aria-label={messages(banner.language).questionOptions} className="aizu-banner__question-options" role="group">
+                    {banner.approval.target.options.map((option, index) => (
+                      <button
+                        className="aizu-banner__question-option"
+                        disabled={!approvalReady || approvalPending}
+                        key={`${String(index)}-${option.label}`}
+                        onClick={() => answerQuestion(index)}
+                        type="button"
+                      >
+                        <strong>{option.label}</strong>
+                        {option.description ? <span>{option.description}</span> : null}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <pre
+                    aria-label={banner.approval.target.kind === "webFetch"
+                      ? messages(banner.language).approvalUrl
+                      : messages(banner.language).approvalCommand}
+                    className="aizu-banner__approval-target"
+                  >
+                    <code>{banner.approval.target.kind === "webFetch"
+                      ? banner.approval.target.url
+                      : banner.approval.target.command}</code>
+                  </pre>
+                  <div className="aizu-banner__actions">
+                    <button
+                      className="aizu-banner__action aizu-banner__action--deny"
+                      disabled={!approvalReady || approvalPending}
+                      onClick={() => decideApproval("deny")}
+                      type="button"
+                    >
+                      {messages(banner.language).deny}
+                    </button>
+                    <button
+                      className="aizu-banner__action aizu-banner__action--allow"
+                      disabled={!approvalReady || approvalPending}
+                      onClick={() => decideApproval("allowOnce")}
+                      type="button"
+                    >
+                      {messages(banner.language).allowOnce}
+                    </button>
+                  </div>
+                </>
+              )}
             </>
           ) : null}
         </div>

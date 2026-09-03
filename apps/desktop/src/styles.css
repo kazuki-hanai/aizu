@@ -414,6 +414,69 @@ html[data-window="banner"] body {
   line-height: 1.55;
 }
 
+.aizu-banner__question {
+  display: grid;
+  gap: 10px;
+}
+
+.aizu-banner__question-header {
+  color: #b6bdb9;
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+}
+
+.aizu-banner__question-text {
+  margin: 0;
+  color: #f4f6f5;
+  font-size: var(--font-size-md);
+  font-weight: 650;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.aizu-banner__question-options {
+  display: grid;
+  gap: 8px;
+}
+
+.aizu-banner__question-option {
+  display: grid;
+  gap: 3px;
+  min-height: 52px;
+  padding: 10px 13px;
+  color: #f4f6f5;
+  text-align: left;
+  border: 1px solid #59625d;
+  border-radius: 7px;
+  background: #252b28;
+  cursor: pointer;
+}
+
+.aizu-banner__question-option:hover {
+  border-color: #72c8a7;
+  background: #303b36;
+}
+
+.aizu-banner__question-option:focus-visible {
+  outline: 2px solid #72c8a7;
+  outline-offset: 2px;
+}
+
+.aizu-banner__question-option strong {
+  font-size: var(--font-size-md);
+}
+
+.aizu-banner__question-option span {
+  color: #b6bdb9;
+  font-size: var(--font-size-sm);
+  line-height: 1.35;
+}
+
+.aizu-banner__question-option:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .aizu-banner__actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;

@@ -101,6 +101,7 @@ function client(): BannerClient {
       return Promise.resolve();
     }),
     acknowledgeApproval: vi.fn().mockResolvedValue(undefined),
+    answerQuestion: vi.fn().mockResolvedValue(undefined),
     decideApproval: vi.fn((id: number) => {
       queued = queued.filter((notice) => notice.id !== id);
       return Promise.resolve();
@@ -592,6 +593,52 @@ describe("Aizu Banner", () => {
     expect(target).toHaveClass("aizu-banner__approval-target");
     expect(container.querySelector("a")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("button", { name: "Allow once" })).toBeEnabled());
+  });
+
+  it("shows Claude Code question options and returns one selected answer", async () => {
+    const backend = client();
+    const question: BannerNotification = {
+      ...notices[1],
+      id: -4,
+      title: "Claude Code is asking a question",
+      body: "Choose an answer.",
+      approval: {
+        agent: "claudeCode",
+        toolName: "AskUserQuestion",
+        target: {
+          kind: "question",
+          header: "Deploy",
+          question: "Which environment?",
+          options: [
+            { label: "Staging", description: "Test first" },
+            { label: "Production", description: "Deploy now" },
+            { label: "Cancel", description: "Do nothing" },
+          ],
+        },
+      },
+    };
+    let queue = [question];
+    backend.getBanners = vi.fn(() => Promise.resolve(queue));
+    backend.answerQuestion = vi.fn(() => {
+      queue = [];
+      return Promise.resolve();
+    });
+    render(<BannerApp client={backend} />);
+
+    expect(await screen.findByText("Which environment?")).toBeVisible();
+    expect(screen.getByText("Deploy")).toBeVisible();
+    expect(screen.getByRole("group", { name: "Answer options" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Allow once" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Deny" })).not.toBeInTheDocument();
+    const production = screen.getByRole("button", { name: /ProductionDeploy now/u });
+    await waitFor(() => expect(production).toBeEnabled());
+    await userEvent.click(production);
+
+    expect(backend.answerQuestion).toHaveBeenCalledOnce();
+    expect(backend.answerQuestion).toHaveBeenCalledWith(-4, 1);
+    await waitFor(() => {
+      expect(screen.queryByText("Which environment?")).not.toBeInTheDocument();
+    });
   });
 
   it("keeps approval visible until an explicit decision", async () => {

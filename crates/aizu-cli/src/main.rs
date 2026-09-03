@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 use aizu_core::{
     AgentAdapter, AgentKind as CoreAgentKind, ApprovalDecision, BridgeFrame, ClaudeCodeAdapter,
     CodexAdapter, EmitRequest, EventKind, HookInstallOutcome,
-    LOCAL_APPROVAL_PRESENTED_METADATA_KEY, MAX_FRAME_BYTES, Outcome, PROTOCOL_VERSION, Spool,
-    SpoolError, StatePaths, TERMINAL_ACTIVATION_METADATA_KEY, TerminalActivation, Urgency,
-    hook_configuration, inspect_agent_hooks, install_agent_hooks, local_approval_request_from_hook,
-    parse_strict_json_value, remove_terminal_activation_metadata,
+    LOCAL_APPROVAL_PRESENTED_METADATA_KEY, LOCAL_APPROVAL_PROTOCOL_VERSION, MAX_FRAME_BYTES,
+    Outcome, PROTOCOL_VERSION, Spool, SpoolError, StatePaths, TERMINAL_ACTIVATION_METADATA_KEY,
+    TerminalActivation, Urgency, hook_configuration, inspect_agent_hooks, install_agent_hooks,
+    local_approval_request_from_hook, parse_strict_json_value, remove_terminal_activation_metadata,
 };
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -275,6 +275,7 @@ struct PersistedEvent<'a> {
 struct VersionReport<'a> {
     application: &'a str,
     protocol: u32,
+    local_approval_protocol: u16,
     event_schema: u32,
     database_schema: i64,
     sqlite: &'a str,
@@ -534,6 +535,9 @@ fn run_hook_command(
     display_name: Option<String>,
     args: HookArgs,
 ) -> Result<u8, Box<dyn Error>> {
+    if args.agent == "claude-code" && args.event == "PreToolUse" {
+        return run_question_hook(paths, &args);
+    }
     let first_party_agent = matches!(args.agent.as_str(), "claude-code" | "codex");
     let result = (|| -> Result<Option<ApprovalDecision>, Box<dyn Error>> {
         let raw = read_optional_stdin_limited(MAX_FRAME_BYTES)?;
@@ -629,6 +633,94 @@ fn hook_decision_output(decision: ApprovalDecision) -> Value {
             "decision": decision
         }
     })
+}
+
+/// Runs the Claude Code `PreToolUse` question hook. This path never persists a
+/// spool event; it only offers a bounded single-select `AskUserQuestion` to the
+/// desktop broker and, if the user chooses in Aizu, returns the selection to the
+/// agent. Every failure path prints nothing so the agent shows its terminal
+/// question (see ADR 0006).
+fn run_question_hook(paths: &StatePaths, args: &HookArgs) -> Result<u8, Box<dyn Error>> {
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        let raw = read_optional_stdin_limited(MAX_FRAME_BYTES)?;
+        if raw.is_empty() {
+            return Ok(());
+        }
+        let Some(request) =
+            local_approval_request_from_hook(CoreAgentKind::ClaudeCode, &args.event, &raw)?
+        else {
+            return Ok(());
+        };
+        let outcome = approval_client::request(paths, &request).unwrap_or_default();
+        if let Some(option_index) = outcome.answer
+            && let Some(updated) = question_updated_input(&raw, option_index)?
+        {
+            println!("{}", serde_json::to_string(&updated)?);
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(0),
+        Err(_) if !args.strict => {
+            eprintln!("aizu hook: question was not answered from Aizu (using the terminal)");
+            Ok(0)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Builds the `PreToolUse` `updatedInput` that auto-answers a single-select
+/// `AskUserQuestion` with the chosen option.
+///
+/// NOTE: the exact auto-answer payload is best-effort and must be validated
+/// against a live Claude Code release (ADR 0006). Returning `None` is always
+/// safe: the agent then shows its terminal question.
+fn question_updated_input(raw: &[u8], option_index: u16) -> Result<Option<Value>, Box<dyn Error>> {
+    let payload = parse_strict_json_value(raw, MAX_FRAME_BYTES)?;
+    let Some(object) = payload.as_object() else {
+        return Ok(None);
+    };
+    let Some(tool_input) = object.get("tool_input").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let Some(questions_value) = tool_input.get("questions") else {
+        return Ok(None);
+    };
+    let Some(questions) = questions_value.as_array() else {
+        return Ok(None);
+    };
+    if questions.len() != 1 {
+        return Ok(None);
+    }
+    let Some(first) = questions.first().and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let Some(question) = first.get("question").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let Some(options) = first.get("options").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    let Some(selected) = options
+        .get(usize::from(option_index))
+        .and_then(Value::as_object)
+    else {
+        return Ok(None);
+    };
+    let Some(label) = selected.get("label").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let updated_input = json!({
+        "questions": questions_value,
+        "answers": { question: label },
+    });
+    Ok(Some(json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": updated_input,
+        }
+    })))
 }
 
 fn reject_reserved_metadata(request: &EmitRequest) -> Result<(), String> {
@@ -997,6 +1089,7 @@ fn print_version(json_output: bool) -> Result<(), Box<dyn Error>> {
             serde_json::to_string(&VersionReport {
                 application: env!("CARGO_PKG_VERSION"),
                 protocol: PROTOCOL_VERSION,
+                local_approval_protocol: LOCAL_APPROVAL_PROTOCOL_VERSION,
                 event_schema: aizu_core::event::SCHEMA_VERSION,
                 database_schema: aizu_core::DATABASE_SCHEMA_VERSION,
                 sqlite: aizu_core::sqlite_version(),

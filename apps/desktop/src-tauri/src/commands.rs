@@ -87,6 +87,26 @@ pub fn decide_banner_approval(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+pub fn answer_banner_question(
+    app: AppHandle<Wry>,
+    window: WebviewWindow<Wry>,
+    id: i32,
+    option_index: u16,
+) -> Result<(), DesktopError> {
+    ensure_banner_caller(window.label())?;
+    let broker = app.state::<crate::approval_broker::ApprovalBroker>();
+    if !broker
+        .answer(id, option_index)
+        .map_err(|error| crate::notifier::NotifyError::Scheduling(error.to_string()))?
+    {
+        return Err(approval_unavailable());
+    }
+    cleanup_after_committed_approval(|| crate::banner::dismiss(&app, id));
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub async fn activate_banner(
     app: AppHandle<Wry>,
     window: WebviewWindow<Wry>,
@@ -401,14 +421,18 @@ pub fn update_preferences(
     state: State<'_, DesktopState>,
     request: Preferences,
 ) -> Result<AppView, DesktopError> {
-    let previous_launch_at_login = state.lock()?.view().preferences.launch_at_login;
+    let previous_preferences = state.lock()?.view().preferences;
+    let previous_launch_at_login = previous_preferences.launch_at_login;
     if previous_launch_at_login != request.launch_at_login {
         set_autostart(&app, request.launch_at_login)?;
     }
     let delivery = request.notification_delivery;
-    let approvals_enabled = request.command_approvals_enabled;
+    let command_approvals_disabled =
+        previous_preferences.command_approvals_enabled && !request.command_approvals_enabled;
+    let question_answers_disabled =
+        previous_preferences.question_answers_enabled && !request.question_answers_enabled;
     let view = state.lock()?.update_preferences(request)?;
-    if !approvals_enabled
+    if (command_approvals_disabled || question_answers_disabled)
         && let Some(broker) = app.try_state::<crate::approval_broker::ApprovalBroker>()
     {
         for id in broker.cancel_all() {

@@ -113,6 +113,20 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
     }
   }, [client, refresh]);
 
+  const answerQuestion = useCallback(async (id: number, optionIndex: number) => {
+    try {
+      await client.answerQuestion(id, optionIndex);
+      refreshGeneration.current += 1;
+      setBanners((current) => current.filter((banner) => banner.id !== id));
+      setUnavailable(false);
+      await refresh();
+      return true;
+    } catch {
+      setUnavailable(true);
+      return false;
+    }
+  }, [client, refresh]);
+
   useEffect(() => {
     let active = true;
     let unsubscribe: (() => void) | undefined;
@@ -180,6 +194,7 @@ export function BannerApp({ client = bannerBackend }: BannerAppProps) {
             key={banner.id}
             onAcknowledgeApproval={acknowledgeApproval}
             onActivate={activate}
+            onAnswerQuestion={answerQuestion}
             onDecideApproval={decideApproval}
             onDismiss={dismiss}
           />

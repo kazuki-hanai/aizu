@@ -79,6 +79,7 @@ cryptographic proof that an unfamiliar file belongs to Aizu.
         const version = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u;
         if (!version.test(report.application)
           || !Number.isInteger(report.protocol)
+          || !Number.isInteger(report.local_approval_protocol)
           || !Number.isInteger(report.event_schema)
           || !Number.isInteger(report.database_schema)
           || typeof report.sqlite !== "string") process.exit(1);

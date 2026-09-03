@@ -18,9 +18,10 @@ choose. Users want to choose the option directly from Aizu.
 selection among agent-supplied options, not a binary allow/deny. Second, the
 `PermissionRequest` hook cannot return a chosen option; only a `PreToolUse` hook
 matching `AskUserQuestion` can return an `updatedInput` that auto-answers the
-question. That `PreToolUse` auto-answer path is available in recent Claude Code
-releases but is not part of the stable, documented hook contract, so Aizu must
-treat it as best-effort and fail safe to the terminal.
+question. Claude Code documents this specialized `updatedInput` as the original
+`questions` array plus an `answers` object that maps each question text to the
+selected option label. Aizu still fails safe to the terminal for malformed,
+unsupported, or changed agent payloads.
 
 Displaying the question and its options, and returning the selected option to the
 agent, extends the trust boundary beyond ADR 0005: it shows agent-authored prompt
@@ -31,13 +32,13 @@ scoped change to the MVP non-goal in `docs/mvp-design.md` §4.
 
 1. A new preference **Answer questions in Aizu** (`question_answers_enabled`) is
    persisted in Settings and defaults to off. It is independent of
-   `command_approvals_enabled`. When it is off, Aizu never installs or acts on the
-   `AskUserQuestion` path and the current passive-notification behaviour is
-   unchanged.
-2. When the setting is on, Aizu installs a synchronous first-party `PreToolUse`
-   hook whose matcher is exactly `AskUserQuestion`. The hook has a bounded outer
-   timeout shorter than Claude Code's own `AskUserQuestion` timeout so a missed
-   answer always falls back to the terminal prompt rather than failing the tool.
+   `command_approvals_enabled`. The generated hook is installed during normal
+   agent setup, but while the preference is off the broker immediately returns
+   unavailable and the current terminal-answer behaviour is unchanged.
+2. Aizu installs a synchronous first-party `PreToolUse` hook whose matcher is
+   exactly `AskUserQuestion`. The hook has a bounded outer timeout shorter than
+   Claude Code's own `AskUserQuestion` timeout so a missed answer always falls
+   back to the terminal prompt rather than failing the tool.
 3. The hook extracts only the first question's bounded `question`, optional
    `header`, `multiSelect` flag, and its ordered option `label`/`description`
    pairs. `session_id`, `transcript_path`, `cwd`, and all other hook context are
@@ -75,9 +76,9 @@ scoped change to the MVP non-goal in `docs/mvp-design.md` §4.
 - Aizu now installs a `PreToolUse` hook when the setting is on. The setup merger
   adds and removes only its own generated `AskUserQuestion` handler and preserves
   unrelated and lookalike `PreToolUse` hooks.
-- The feature depends on Claude Code's best-effort `PreToolUse` `updatedInput`
-  auto-answer behaviour. If a future Claude Code release changes or removes it, the
-  fail-safe path degrades to the existing terminal prompt without breaking the tool.
+- The feature depends on Claude Code's documented `PreToolUse` `updatedInput`
+  auto-answer contract. If a future Claude Code release changes it, the fail-safe
+  path degrades to the existing terminal prompt without breaking the tool.
 - `multiSelect` questions and non-first questions remain terminal-answered for now.
 
 ## Alternatives considered

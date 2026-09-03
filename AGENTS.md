@@ -93,7 +93,7 @@ MVP の対象は次の通り。
 - 独自 account / cloud sync / relay API
 - iOS/watchOS app と APNs
 - Slack/Discord/Teams integration
-- 通知から agent へ自由形式回答を返す操作、永続的な許可、Aizu自身によるtool実行。ローカル`PermissionRequest`への一度限りの許可/拒否はDesign Doc §13.5の限定契約に従う
+- 通知から agent へ自由形式回答を返す操作、永続的な許可、Aizu自身によるtool実行。ローカル`PermissionRequest`への一度限りの許可/拒否と、Claude Code `AskUserQuestion`への単一選択回答はDesign Doc §13.5の限定契約に従う
 - Windows/Linux desktop app の正式配布
 - agent の会話全文・生成物の収集
 

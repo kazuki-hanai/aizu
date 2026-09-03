@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::model::Preferences;
 
-const CURRENT_SETTINGS_VERSION: u32 = 6;
+const CURRENT_SETTINGS_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,6 +109,12 @@ impl SettingsStore {
                     if settings.settings_version < 6 {
                         settings.preferences.approval_display =
                             settings.preferences.notification_display;
+                    }
+                    if settings.settings_version < 7 {
+                        // Answering questions from Aizu shows agent prompt text
+                        // and returns a selection, so an upgrade always requires
+                        // a fresh opt-in (ADR 0006).
+                        settings.preferences.question_answers_enabled = false;
                     }
                     settings.settings_version = CURRENT_SETTINGS_VERSION;
                     self.save(&settings)?;
@@ -367,6 +373,45 @@ mod tests {
         let loaded = store.load().expect("load current settings");
         assert_eq!(loaded.settings_version, CURRENT_SETTINGS_VERSION);
         assert!(loaded.preferences.command_approvals_enabled);
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn version_six_requires_a_fresh_question_answer_opt_in() {
+        let (directory, path) = temporary_settings_path("migrate-question-answers");
+        let mut fixture = serde_json::to_value(StoredSettings::default())
+            .expect("encode current settings fixture");
+        fixture["settingsVersion"] = serde_json::json!(6);
+        fixture["preferences"]["questionAnswersEnabled"] = serde_json::json!(true);
+        fs::write(
+            &path,
+            serde_json::to_vec(&fixture).expect("encode v6 settings"),
+        )
+        .expect("write v6 settings");
+
+        let store = SettingsStore::new(path.clone());
+        let migrated = store.load().expect("v6 settings migrate");
+
+        assert_eq!(migrated.settings_version, CURRENT_SETTINGS_VERSION);
+        assert!(!migrated.preferences.question_answers_enabled);
+        let persisted: StoredSettings =
+            serde_json::from_slice(&fs::read(&path).expect("read migrated settings"))
+                .expect("decode migrated settings");
+        assert!(!persisted.preferences.question_answers_enabled);
+        fs::remove_dir_all(directory).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn current_version_preserves_question_answer_opt_in() {
+        let (directory, path) = temporary_settings_path("preserve-question-answers");
+        let mut settings = StoredSettings::default();
+        settings.preferences.question_answers_enabled = true;
+        let store = SettingsStore::new(path);
+        store.save(&settings).expect("save current settings");
+
+        let loaded = store.load().expect("load current settings");
+        assert_eq!(loaded.settings_version, CURRENT_SETTINGS_VERSION);
+        assert!(loaded.preferences.question_answers_enabled);
         fs::remove_dir_all(directory).expect("temporary directory should be removable");
     }
 

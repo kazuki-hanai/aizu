@@ -7,6 +7,9 @@ use crate::{AgentKind, HookStatus};
 
 const HOOK_TIMEOUT_SECONDS: u8 = 5;
 const PERMISSION_REQUEST_TIMEOUT_SECONDS: u8 = 50;
+const PRE_TOOL_USE_TIMEOUT_SECONDS: u8 = 50;
+/// Matcher for the generated Claude Code `AskUserQuestion` `PreToolUse` hook.
+pub const ASK_USER_QUESTION_MATCHER: &str = "AskUserQuestion";
 
 /// Builds a first-party user hook configuration without reading or modifying
 /// the agent's configuration files.
@@ -131,7 +134,15 @@ fn is_generated_aizu_group(group: &Value, agent: AgentKind, event: &str) -> bool
     let Some(handlers) = group.get("hooks").and_then(Value::as_array) else {
         return false;
     };
-    group.len() == 1 && handlers.len() == 1 && is_generated_aizu_handler(&handlers[0], agent, event)
+    if handlers.len() != 1 || !is_generated_aizu_handler(&handlers[0], agent, event) {
+        return false;
+    }
+    match hook_matcher(event) {
+        Some(expected) => {
+            group.len() == 2 && group.get("matcher").and_then(Value::as_str) == Some(expected)
+        }
+        None => group.len() == 1,
+    }
 }
 
 fn is_generated_aizu_handler(handler: &Value, agent: AgentKind, event: &str) -> bool {
@@ -265,16 +276,26 @@ fn claude_code_configuration(executable: &str) -> Value {
         "hooks": {
             "Stop": [{"hooks": [handler("Stop")]}],
             "StopFailure": [{"hooks": [handler("StopFailure")]}],
-            "PermissionRequest": [{"hooks": [handler("PermissionRequest")]}]
+            "PermissionRequest": [{"hooks": [handler("PermissionRequest")]}],
+            "PreToolUse": [{"matcher": ASK_USER_QUESTION_MATCHER, "hooks": [handler("PreToolUse")]}]
         }
     })
 }
 
 fn hook_timeout_seconds(event: &str) -> u8 {
-    if event == "PermissionRequest" {
-        PERMISSION_REQUEST_TIMEOUT_SECONDS
-    } else {
-        HOOK_TIMEOUT_SECONDS
+    match event {
+        "PermissionRequest" => PERMISSION_REQUEST_TIMEOUT_SECONDS,
+        "PreToolUse" => PRE_TOOL_USE_TIMEOUT_SECONDS,
+        _ => HOOK_TIMEOUT_SECONDS,
+    }
+}
+
+/// Returns the fixed tool matcher required for a generated Aizu hook event, if
+/// that event scopes its handler to a single tool.
+fn hook_matcher(event: &str) -> Option<&'static str> {
+    match event {
+        "PreToolUse" => Some(ASK_USER_QUESTION_MATCHER),
+        _ => None,
     }
 }
 
@@ -340,6 +361,18 @@ mod tests {
             config["hooks"]["PermissionRequest"][0]["hooks"][0].get("async"),
             None
         );
+        assert_eq!(
+            config["hooks"]["PreToolUse"][0]["matcher"],
+            ASK_USER_QUESTION_MATCHER
+        );
+        assert_eq!(
+            config["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            "'/opt/aizu bin/aizu' hook --agent claude-code --event PreToolUse"
+        );
+        assert_eq!(
+            config["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"],
+            PRE_TOOL_USE_TIMEOUT_SECONDS
+        );
     }
 
     #[test]
@@ -388,6 +421,10 @@ mod tests {
         assert_eq!(merged["hooks"]["Stop"].as_array().unwrap().len(), 2);
         assert!(merged["hooks"]["PermissionRequest"].is_array());
         assert!(merged["hooks"]["StopFailure"].is_array());
+        assert_eq!(
+            merged["hooks"]["PreToolUse"][0]["matcher"],
+            ASK_USER_QUESTION_MATCHER
+        );
     }
 
     #[test]

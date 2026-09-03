@@ -107,7 +107,7 @@ export function AppShell({
   const content = useMemo(() => {
     switch (activeView) {
       case "sources":
-        return <SourcesView agentMonitors={view.agentMonitors} appVersion={view.appVersion} busy={busy} cliStatus={view.cliStatus} cliVersion={view.cliVersion} commandApprovalsEnabled={view.preferences.commandApprovalsEnabled} locale={locale} onAdd={onAddRemoteSource} onConfirmIdentity={onConfirmRemoteIdentity} onInstallCli={onInstallCli} onReconnect={onReconnectRemoteSource} onRemove={onRemoveRemoteSource} onTest={onTestRemoteConnection} sources={view.sources} t={t} />;
+        return <SourcesView agentMonitors={view.agentMonitors} appVersion={view.appVersion} busy={busy} cliStatus={view.cliStatus} cliVersion={view.cliVersion} localInteractionsEnabled={view.preferences.commandApprovalsEnabled || view.preferences.questionAnswersEnabled} locale={locale} onAdd={onAddRemoteSource} onConfirmIdentity={onConfirmRemoteIdentity} onInstallCli={onInstallCli} onReconnect={onReconnectRemoteSource} onRemove={onRemoveRemoteSource} onTest={onTestRemoteConnection} sources={view.sources} t={t} />;
       case "settings":
         return (
           <SettingsView
@@ -293,7 +293,7 @@ type SourcesViewProps = {
   busy: boolean;
   cliStatus: AppView["cliStatus"];
   cliVersion: string | null;
-  commandApprovalsEnabled: boolean;
+  localInteractionsEnabled: boolean;
   sources: SourceView[];
   onAdd: (hostAlias: string, localLabel: string) => Promise<boolean>;
   onTest: (hostAlias: string) => Promise<SshConnectionTestResult>;
@@ -305,7 +305,7 @@ type SourcesViewProps = {
   t: AppMessages;
 };
 
-function SourcesView({ agentMonitors, appVersion, busy, cliStatus, cliVersion, commandApprovalsEnabled, locale, sources, onAdd, onRemove, onReconnect, onConfirmIdentity, onInstallCli, onTest, t }: SourcesViewProps) {
+function SourcesView({ agentMonitors, appVersion, busy, cliStatus, cliVersion, localInteractionsEnabled, locale, sources, onAdd, onRemove, onReconnect, onConfirmIdentity, onInstallCli, onTest, t }: SourcesViewProps) {
   const [addSourceOpen, setAddSourceOpen] = useState(false);
   const [hostAlias, setHostAlias] = useState("");
   const [localLabel, setLocalLabel] = useState("");
@@ -431,7 +431,7 @@ function SourcesView({ agentMonitors, appVersion, busy, cliStatus, cliVersion, c
             </div> : null}
             <SourceSetupSummary
               approvalMessage={source.kind === "local"
-                ? (commandApprovalsEnabled ? t.localApprovalAvailable : t.localApprovalDisabled)
+                ? (localInteractionsEnabled ? t.localApprovalAvailable : t.localApprovalDisabled)
                 : t.remoteApprovalTerminal}
               integrations={source.kind === "local"
                 ? agentMonitors.map((monitor) => ({ agent: monitor.agent, status: monitor.hookStatus }))
@@ -661,7 +661,7 @@ type SettingsViewProps = {
 };
 
 function SettingsView({ busy, muted, onChange, onMuteChange, preferences, onSendTest, t }: SettingsViewProps) {
-  const toggle = (key: "completionEnabled" | "questionEnabled" | "agentDetailsEnabled" | "commandApprovalsEnabled" | "centerApprovalDialogs" | "launchAtLogin") => {
+  const toggle = (key: "completionEnabled" | "questionEnabled" | "agentDetailsEnabled" | "commandApprovalsEnabled" | "questionAnswersEnabled" | "centerApprovalDialogs" | "launchAtLogin") => {
     void onChange({ ...preferences, [key]: !preferences[key] });
   };
   const sounds: readonly { label: string; value: Preferences["notificationSound"] | "off" }[] = [
@@ -718,7 +718,8 @@ function SettingsView({ busy, muted, onChange, onMuteChange, preferences, onSend
         <SettingToggle checked={preferences.completionEnabled} disabled={busy} icon={ListChecks} label={t.taskCompletion} onChange={() => toggle("completionEnabled")} />
         <SettingToggle checked={preferences.questionEnabled} disabled={busy} icon={CircleHelp} label={t.agentQuestions} onChange={() => toggle("questionEnabled")} />
         <SettingToggle checked={preferences.commandApprovalsEnabled} disabled={busy} icon={ShieldCheck} label={t.commandApprovals} onChange={() => toggle("commandApprovalsEnabled")} />
-        {preferences.commandApprovalsEnabled ? (
+        <SettingToggle checked={preferences.questionAnswersEnabled} disabled={busy} icon={MessageSquareText} label={t.questionAnswers} onChange={() => toggle("questionAnswersEnabled")} />
+        {preferences.commandApprovalsEnabled || preferences.questionAnswersEnabled ? (
           <SettingToggle checked={preferences.centerApprovalDialogs} disabled={busy} icon={Focus} label={t.centerApprovalDialogs} onChange={() => toggle("centerApprovalDialogs")} />
         ) : null}
         <label className="setting-row setting-row--select">

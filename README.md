@@ -170,6 +170,12 @@ events remain in the source SQLite spool while the Mac is disconnected.
   or swiped away. Aizu never runs the command or creates permanent permission
   rules. macOS Notification Center and remote SSH approvals remain
   terminal-only.
+- Claude Code `AskUserQuestion` prompts use the terminal by default. Turn on
+  **Answer questions in Aizu** to show a local single-select question and its
+  labelled options in the same large dialog. Choosing an option returns only
+  that label to Claude Code. Multiple questions, multi-select prompts, timeouts,
+  presentation failures, remote SSH sources, and macOS Notification Center all
+  fall back to the source terminal.
 - **Show agent details** is on by default and adds a short filtered completion
   or permission excerpt. Aizu excludes raw commands, full prompts, transcripts,
   secrets, and absolute paths from notifications and history.

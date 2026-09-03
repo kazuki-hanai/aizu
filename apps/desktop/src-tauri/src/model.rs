@@ -224,6 +224,8 @@ pub struct Preferences {
     pub agent_details_enabled: bool,
     #[serde(default)]
     pub command_approvals_enabled: bool,
+    #[serde(default)]
+    pub question_answers_enabled: bool,
     #[serde(default = "default_true")]
     pub center_approval_dialogs: bool,
     pub sound_enabled: bool,
@@ -254,6 +256,7 @@ impl Default for Preferences {
             question_enabled: true,
             agent_details_enabled: true,
             command_approvals_enabled: false,
+            question_answers_enabled: false,
             center_approval_dialogs: true,
             sound_enabled: true,
             notification_display: NotificationDisplay::default(),
@@ -412,8 +415,26 @@ pub struct ApprovalPresentation {
 #[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ApprovalTargetPresentation {
-    ShellCommand { command: String },
-    WebFetch { url: String },
+    ShellCommand {
+        command: String,
+    },
+    WebFetch {
+        url: String,
+    },
+    Question {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        question: String,
+        options: Vec<ApprovalOptionPresentation>,
+    },
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalOptionPresentation {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -458,6 +479,7 @@ mod tests {
         assert_eq!(value["preferences"]["language"], "system");
         assert_eq!(value["preferences"]["textSize"], "standard");
         assert_eq!(value["preferences"]["commandApprovalsEnabled"], false);
+        assert_eq!(value["preferences"]["questionAnswersEnabled"], false);
     }
 
     #[test]
@@ -485,6 +507,7 @@ mod tests {
         assert_eq!(preferences.language, LanguagePreference::System);
         assert_eq!(preferences.text_size, TextSize::Standard);
         assert!(!preferences.command_approvals_enabled);
+        assert!(!preferences.question_answers_enabled);
         assert!(preferences.center_approval_dialogs);
         assert_eq!(
             preferences.notification_display,

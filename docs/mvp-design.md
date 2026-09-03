@@ -107,7 +107,7 @@ SSH 切断中に発生したイベントはリモート側へ保存されるた�
 
 エージェントの完了・質問を確実に判定するには、そのエージェントが提供する hook/notification 機構を利用する。画面出力の文字列解析は行わない。MVP の first-party 対応対象は **Codex と Claude Code の両方**とする。
 
-MVP コアはエージェント非依存の CLI 契約を提供する。Codex は `Stop` と `PermissionRequest`、Claude Code は `Stop`、`StopFailure`、`PermissionRequest` の lifecycle hook を first-party adapter で共通 event へ変換する。任意の hook から共通 JSON を渡す generic integration も維持する。
+MVP コアはエージェント非依存の CLI 契約を提供する。Codex は `Stop` と `PermissionRequest`、Claude Code は `Stop`、`StopFailure`、`PermissionRequest` の lifecycle hook を first-party adapter で共通 event へ変換する。Claude Code `AskUserQuestion` の `PreToolUse` hookは共通eventへ永続化せず、§13.5のlocal ephemeral回答経路だけに使う。任意の hook から共通 JSON を渡す generic integration も維持する。
 
 通知保証は agent が hook を実行した event に限る。agent が crash/SIGKILL/host power loss 時に hook を発火しない場合、Aizu は terminal scraping や process supervisor を持たないため、その終了を検出できない。正式対応 agent の選定時は成功・失敗・キャンセル・質問/許可待ちの各 hook coverage を確認し、未対応状態を setup UI に明示する。
 
@@ -742,7 +742,7 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 - install 先が symlink、user 所有でない file、または user が配置した異なる binary の場合は無断で上書きしない
 - unmanaged/incompatible CLI が hook path に残る場合、共有 local spool を新 schema へ migrate せず local source を warning/read-only にし、CLI path の解決または明示的 install を要求する
 - hook 設定には絶対パスの利用を推奨
-- `aizu integration-config` は絶対 CLI path を検証し、Codex の `Stop` と Claude Code の `Stop` / `StopFailure` は5秒上限の同期hook、両agentの `PermissionRequest` は50秒上限の同期hookとして出力する。設定がオフならlocal brokerは即時 `unavailable` を返すためagentの標準許可画面を実質的に待たせない。既存user hookはstructured JSON mergeで保持し、過去のAizu生成5秒background PermissionRequest hookは同期形へ置換する。Codexのhook trust reviewは省略しない
+- `aizu integration-config` は絶対 CLI path を検証し、Codex の `Stop` と Claude Code の `Stop` / `StopFailure` は5秒上限の同期hook、両agentの `PermissionRequest` とmatcherを `AskUserQuestion` に限定したClaude Code `PreToolUse` は50秒上限の同期hookとして出力する。対応設定がオフならlocal brokerは即時 `unavailable` を返すためagentの標準terminal UIを実質的に待たせない。既存user hookはstructured JSON mergeで保持し、過去のAizu生成5秒background PermissionRequest hookは同期形へ置換する。Codexのhook trust reviewは省略しない
 - `aizu integration-install` は引数なしで Codex と Claude Code の両方、`--agent` 指定時は一方だけを current user に設定する。両方の既存 JSON と保存先 directory を書込前に検証し、無関係な key/handler を保持し、128 KiB 上限、home 外への symlink、dangling symlink、unsafe directory、invalid JSON、incompatible hook shape を拒否する。Aizu installer 同士は `~/.aizu/hooks.lock` で直列化し、lock 取得後に全入力を再読込する。agent や editor はこの lock に参加しないため同時編集を禁止し、各 rename 直前の byte 比較で検出可能な競合を拒否する。変更時は同一 directory の `0600` temporary file を fsync して atomic rename し、新規 directory は `0700`、最終 file は `0600` とする。Claude Code の `disableAllHooks` は無断で解除せず、Codex の hook trust review も省略しない。machine-readable result は agent、更新状態、承認要否だけを返し、path や既存設定内容を出さない
 - `aizu integration-status` は設定を変更せず、CLI version、protocol version、Codex / Claude Codeの固定agent IDと`configured` / `missing` / `approval_required`だけを返す。設定path、handler、command、既存値を返さない。desktopのSSH setup checkは固定command `exec "$HOME/.local/bin/aizu" integration-status --json`だけをsystem SSHで実行し、bounded responseを検証して表示する
 
@@ -758,8 +758,8 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 
 #### Local question answers（AskUserQuestion）
 
-- `question_answers_enabled` は既定オフで `command_approvals_enabled` と独立する。オフの間はAizuが `AskUserQuestion` 経路をinstall・処理せず、現行のpassive通知挙動を変えない
-- オン時だけ、matcherが厳密に `AskUserQuestion` の同期 first-party `PreToolUse` hookをinstallする。outer timeoutはClaude Code側の `AskUserQuestion` timeoutより短くし、回答が間に合わない場合は必ずterminal promptへfallbackさせる（toolを失敗させない）
+- `question_answers_enabled` は既定オフで `command_approvals_enabled` と独立する。matcherが厳密に `AskUserQuestion` の同期 first-party `PreToolUse` hookは通常のagent setupでinstallするが、設定オフ時はbrokerが即時`unavailable`を返して現行のterminal回答挙動を変えない
+- `PreToolUse` hookのouter timeoutはClaude Code側の `AskUserQuestion` timeoutより短くし、回答が間に合わない場合は必ずterminal promptへfallbackさせる（toolを失敗させない）
 - hookは最初のquestionのbounded `question`、optionalな `header`、`multiSelect` flag、順序付きの `label` / `description` optionだけを抽出する。`session_id`、`transcript_path`、`cwd`、その他のhook contextはbroker requestへ含めない。size・件数はboundedにし、control characterはADR 0005と同じ基準で拒否する
 - brokerはADR 0005と同じ表示規則（独立した `approval_display`、centering、常時前面、一回限り消費、passive banner一時退避、close/swipe不可）で、bounded questionと各optionのbuttonを表示する。`multiSelect` questionは本ADRの対象外でterminalへfallbackする
 - 明示選択時だけ、CLIは選んだoptionのagent向け構造化回答を `PreToolUse` の `updatedInput` 契約で返す。選択が整形式の回答へmapできない場合は `updatedInput` を返さずterminal questionへ戻す。Aizuは回答を捏造せず、代理選択せず、free-form textを返さない

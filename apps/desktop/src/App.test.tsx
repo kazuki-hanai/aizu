@@ -436,8 +436,11 @@ describe("Aizu desktop shell", () => {
     }
     expect(screen.queryByRole("option", { name: "Hero" })).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Show approval buttons" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Answer questions in Aizu" })).not.toBeChecked();
     expect(screen.queryByRole("switch", { name: "Show approval in the center" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Task completion" }));
+    await user.click(screen.getByRole("switch", { name: "Answer questions in Aizu" }));
+    expect(screen.getByRole("switch", { name: "Show approval in the center" })).toBeChecked();
     await user.click(screen.getByRole("switch", { name: "Show approval buttons" }));
     expect(screen.getByRole("switch", { name: "Show approval in the center" })).toBeChecked();
     await user.click(screen.getByRole("switch", { name: "Show approval in the center" }));
@@ -450,12 +453,13 @@ describe("Aizu desktop shell", () => {
     await user.click(screen.getByRole("switch", { name: "Show agent details" }));
 
     await waitFor(async () => {
-      expect(updatePreferences).toHaveBeenCalledTimes(9);
+      expect(updatePreferences).toHaveBeenCalledTimes(10);
       await expect(backend.getView()).resolves.toMatchObject({
         preferences: {
           completionEnabled: false,
           agentDetailsEnabled: false,
           commandApprovalsEnabled: true,
+          questionAnswersEnabled: true,
           centerApprovalDialogs: false,
           notificationDisplay: "secondary",
           approvalDisplay: "pointer",
@@ -624,7 +628,7 @@ describe("Aizu desktop shell", () => {
 
     await user.click(await screen.findByRole("button", { name: "Sources" }));
     expect(screen.getByText("Agent settings are installed separately on each computer.")).toBeVisible();
-    expect(screen.getByText("Approval buttons are available for agents running on this Mac.")).toBeVisible();
+    expect(screen.getByText("Interactive approvals and question answers are available for agents running on this Mac.")).toBeVisible();
     expect(screen.getByText("Check setup to verify the CLI and agent hooks on this computer.")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Check setup Build host" }));

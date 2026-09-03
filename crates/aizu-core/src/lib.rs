@@ -27,9 +27,10 @@ pub use agent_monitor::{
 };
 pub use approval::{
     ApprovalDecision, ApprovalError, LOCAL_APPROVAL_PRESENTED_METADATA_KEY,
-    LOCAL_APPROVAL_PROTOCOL_VERSION, LocalApprovalRequest, LocalApprovalResponse,
-    LocalApprovalTarget, MAX_LOCAL_APPROVAL_COMMAND_BYTES, MAX_LOCAL_APPROVAL_FRAME_BYTES,
-    MAX_LOCAL_APPROVAL_TOOL_BYTES, MAX_LOCAL_APPROVAL_URL_BYTES, local_approval_request_from_hook,
+    LOCAL_APPROVAL_PROTOCOL_VERSION, LocalApprovalOption, LocalApprovalRequest,
+    LocalApprovalResponse, LocalApprovalTarget, MAX_LOCAL_APPROVAL_COMMAND_BYTES,
+    MAX_LOCAL_APPROVAL_FRAME_BYTES, MAX_LOCAL_APPROVAL_OPTIONS, MAX_LOCAL_APPROVAL_TOOL_BYTES,
+    MAX_LOCAL_APPROVAL_URL_BYTES, local_approval_request_from_hook,
 };
 pub use desktop::{
     DESKTOP_DATABASE_SCHEMA_VERSION, DesktopError, DesktopState, GapResult, HistoryEvent,

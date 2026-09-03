@@ -91,6 +91,7 @@ export const preferencesSchema = z.object({
   questionEnabled: z.boolean(),
   agentDetailsEnabled: z.boolean().default(true),
   commandApprovalsEnabled: z.boolean().default(false),
+  questionAnswersEnabled: z.boolean().default(false),
   centerApprovalDialogs: z.boolean().default(true),
   soundEnabled: z.boolean(),
   notificationDisplay: z.enum(["primary", "secondary", "focusedWindow", "pointer"]).default("primary"),
@@ -117,6 +118,15 @@ export const bannerNotificationSchema = z.object({
     target: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("shellCommand"), command: z.string() }),
       z.object({ kind: z.literal("webFetch"), url: z.url({ protocol: /^https?$/u }) }),
+      z.object({
+        kind: z.literal("question"),
+        header: z.string().optional(),
+        question: z.string(),
+        options: z.array(z.object({
+          label: z.string(),
+          description: z.string().optional(),
+        })).min(1),
+      }),
     ]),
   }).nullable(),
 });

@@ -679,6 +679,90 @@ fn claude_web_fetch_permission_uses_the_exact_url_for_local_approval() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn claude_question_hook_returns_the_selected_option_as_updated_input() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+
+    let directory = TempDir::new().unwrap();
+    fs::create_dir_all(directory.path()).unwrap();
+    let listener = UnixListener::bind(directory.path().join("approval.sock")).unwrap();
+    let broker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut frame = Vec::new();
+        let mut byte = [0_u8; 1];
+        while stream.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {
+            frame.push(byte[0]);
+        }
+        let request: aizu_core::LocalApprovalRequest = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(request.agent, aizu_core::AgentKind::ClaudeCode);
+        assert_eq!(request.tool_name, "AskUserQuestion");
+        assert!(matches!(
+            request.target,
+            aizu_core::LocalApprovalTarget::Question {
+                ref question,
+                ref options,
+                ..
+            } if question == "Which environment?"
+                && options.iter().map(|option| option.label.as_str()).collect::<Vec<_>>()
+                    == ["Staging", "Production", "Cancel"]
+        ));
+        let serialized = String::from_utf8(frame).unwrap();
+        for private in ["secret-session", "private-transcript", "/private/work"] {
+            assert!(!serialized.contains(private));
+        }
+        let response = aizu_core::LocalApprovalResponse::Answer {
+            request_id: request.request_id,
+            option_index: 1,
+        };
+        serde_json::to_writer(&mut stream, &response).unwrap();
+        stream.write_all(b"\n").unwrap();
+    });
+
+    let output = aizu()
+        .args([
+            "--state-dir",
+            directory.path().to_str().unwrap(),
+            "hook",
+            "--agent",
+            "claude-code",
+            "--event",
+            "PreToolUse",
+            "--strict",
+        ])
+        .write_stdin(
+            r#"{"session_id":"secret-session","transcript_path":"/private/private-transcript.jsonl","cwd":"/private/work","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[{"header":"Deploy","question":"Which environment?","multiSelect":false,"options":[{"label":"Staging","description":"Test first"},{"label":"Production","description":"Deploy now"},{"label":"Cancel","description":"Do nothing"}]}]}}"#,
+        )
+        .output()
+        .unwrap();
+
+    broker.join().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty());
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        response["hookSpecificOutput"]["hookEventName"],
+        "PreToolUse"
+    );
+    assert_eq!(
+        response["hookSpecificOutput"]["permissionDecision"],
+        "allow"
+    );
+    assert_eq!(
+        response["hookSpecificOutput"]["updatedInput"]["answers"]["Which environment?"],
+        "Production"
+    );
+    assert_eq!(
+        response["hookSpecificOutput"]["updatedInput"]["questions"][0]["options"][2]["label"],
+        "Cancel"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("secret-session"));
+    assert!(!stdout.contains("private-transcript"));
+    assert!(!directory.path().join("spool.sqlite3").exists());
+}
+
 #[test]
 fn claude_code_fixtures_map_to_private_normalized_events() {
     let directory = TempDir::new().unwrap();
@@ -983,6 +1067,10 @@ fn version_does_not_create_a_spool() {
     assert!(output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["protocol"], 1);
+    assert_eq!(
+        report["local_approval_protocol"],
+        aizu_core::LOCAL_APPROVAL_PROTOCOL_VERSION
+    );
     assert_eq!(report["event_schema"], 1);
     assert!(!state_path.exists());
 }

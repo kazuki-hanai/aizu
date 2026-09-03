@@ -36,8 +36,15 @@ const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 struct PendingApproval {
     request_id: uuid::Uuid,
     sender: SyncSender<LocalApprovalResponse>,
+    kind: PendingApprovalKind,
     frontend_rendered: bool,
     window_shown: bool,
+}
+
+#[derive(Clone, Copy)]
+enum PendingApprovalKind {
+    Decision,
+    Question { option_count: u16 },
 }
 
 impl PendingApproval {
@@ -57,6 +64,7 @@ impl ApprovalRegistry {
         &self,
         request_id: uuid::Uuid,
         sender: SyncSender<LocalApprovalResponse>,
+        kind: PendingApprovalKind,
     ) -> Result<i32, BrokerError> {
         let mut pending = self
             .pending
@@ -74,6 +82,7 @@ impl ApprovalRegistry {
             PendingApproval {
                 request_id,
                 sender,
+                kind,
                 frontend_rendered: false,
                 window_shown: false,
             },
@@ -110,7 +119,9 @@ impl ApprovalRegistry {
             .pending
             .lock()
             .map_err(|_| BrokerError::StateUnavailable)?;
-        if !pending.get(&id).is_some_and(PendingApproval::presented) {
+        if !pending.get(&id).is_some_and(|pending| {
+            pending.presented() && matches!(pending.kind, PendingApprovalKind::Decision)
+        }) {
             return Ok(false);
         }
         let pending = pending.remove(&id);
@@ -120,6 +131,31 @@ impl ApprovalRegistry {
         let _ = pending.sender.send(LocalApprovalResponse::Decision {
             request_id: pending.request_id,
             decision,
+        });
+        Ok(true)
+    }
+
+    fn answer(&self, id: i32, option_index: u16) -> Result<bool, BrokerError> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| BrokerError::StateUnavailable)?;
+        if !pending.get(&id).is_some_and(|pending| {
+            pending.presented()
+                && matches!(
+                    pending.kind,
+                    PendingApprovalKind::Question { option_count }
+                        if option_index < option_count
+                )
+        }) {
+            return Ok(false);
+        }
+        let Some(pending) = pending.remove(&id) else {
+            return Ok(false);
+        };
+        let _ = pending.sender.send(LocalApprovalResponse::Answer {
+            request_id: pending.request_id,
+            option_index,
         });
         Ok(true)
     }
@@ -241,6 +277,10 @@ impl ApprovalBroker {
         self.registry.complete(id, decision)
     }
 
+    pub fn answer(&self, id: i32, option_index: u16) -> Result<bool, BrokerError> {
+        self.registry.answer(id, option_index)
+    }
+
     pub fn mark_frontend_rendered(&self, id: i32) -> Result<bool, BrokerError> {
         self.registry.mark_frontend_rendered(id)
     }
@@ -300,7 +340,15 @@ fn handle_connection(
         return;
     };
     let (sender, receiver) = mpsc::sync_channel(1);
-    let Ok(id) = registry.register(request.request_id, sender) else {
+    let kind = match &request.target {
+        LocalApprovalTarget::ShellCommand { .. } | LocalApprovalTarget::WebFetch { .. } => {
+            PendingApprovalKind::Decision
+        }
+        LocalApprovalTarget::Question { options, .. } => PendingApprovalKind::Question {
+            option_count: u16::try_from(options.len()).unwrap_or_default(),
+        },
+    };
+    let Ok(id) = registry.register(request.request_id, sender, kind) else {
         let _ = write_response(
             &mut stream,
             LocalApprovalResponse::Unavailable {
@@ -323,7 +371,13 @@ fn handle_connection(
         );
         return;
     };
-    if !preferences.command_approvals_enabled {
+    let enabled = match request.target {
+        LocalApprovalTarget::Question { .. } => preferences.question_answers_enabled,
+        LocalApprovalTarget::ShellCommand { .. } | LocalApprovalTarget::WebFetch { .. } => {
+            preferences.command_approvals_enabled
+        }
+    };
+    if !enabled {
         let _ = registry.expire(id, request.request_id);
         let _ = write_response(
             &mut stream,
@@ -396,6 +450,7 @@ fn approval_notification(
         AgentKind::Codex => "Codex",
         AgentKind::ClaudeCode => "Claude Code",
     };
+    let is_question = matches!(request.target, LocalApprovalTarget::Question { .. });
     let (body, target) = match &request.target {
         LocalApprovalTarget::ShellCommand { command } => (
             if japanese {
@@ -415,10 +470,38 @@ fn approval_notification(
             },
             ApprovalTargetPresentation::WebFetch { url: url.clone() },
         ),
+        LocalApprovalTarget::Question {
+            header,
+            question,
+            options,
+        } => (
+            if japanese {
+                "回答を選択してください。"
+            } else {
+                "Choose an answer."
+            },
+            ApprovalTargetPresentation::Question {
+                header: header.clone(),
+                question: question.clone(),
+                options: options
+                    .iter()
+                    .map(|option| crate::model::ApprovalOptionPresentation {
+                        label: option.label.clone(),
+                        description: option.description.clone(),
+                    })
+                    .collect(),
+            },
+        ),
     };
     Notification {
         id,
-        title: if japanese {
+        title: if is_question {
+            if japanese {
+                format!("{agent_label} が質問しています")
+            } else {
+                format!("{agent_label} is asking a question")
+            }
+        } else if japanese {
             format!("{agent_label} が実行許可を求めています")
         } else {
             format!("{agent_label} requests permission")
@@ -549,12 +632,13 @@ mod tests {
     use std::{fs, sync::mpsc};
 
     use aizu_core::{
-        ApprovalDecision, LocalApprovalRequest, LocalApprovalResponse, LocalApprovalTarget,
+        ApprovalDecision, LocalApprovalOption, LocalApprovalRequest, LocalApprovalResponse,
+        LocalApprovalTarget,
     };
 
     use super::{
-        ApprovalRegistry, BrokerError, approval_notification, bind_listener, expiry_response,
-        read_request,
+        ApprovalRegistry, BrokerError, PendingApprovalKind, approval_notification, bind_listener,
+        expiry_response, read_request,
     };
     use crate::model::{ApprovalTargetPresentation, LanguagePreference, Preferences};
 
@@ -593,6 +677,53 @@ mod tests {
         assert!(!serialized.to_string().contains("private prompt"));
     }
 
+    #[test]
+    fn question_approval_exposes_bounded_options() {
+        let request = LocalApprovalRequest::new(
+            uuid::Uuid::new_v4(),
+            aizu_core::AgentKind::ClaudeCode,
+            "AskUserQuestion".to_owned(),
+            LocalApprovalTarget::Question {
+                header: Some("Deploy".to_owned()),
+                question: "Which environment?".to_owned(),
+                options: vec![
+                    LocalApprovalOption {
+                        label: "Staging".to_owned(),
+                        description: Some("Test first".to_owned()),
+                    },
+                    LocalApprovalOption {
+                        label: "Production".to_owned(),
+                        description: None,
+                    },
+                ],
+            },
+        )
+        .expect("valid question");
+        let preferences = Preferences {
+            language: LanguagePreference::English,
+            ..Preferences::default()
+        };
+
+        let notification = approval_notification(&request, &preferences, -1);
+
+        assert_eq!(notification.title, "Claude Code is asking a question");
+        assert_eq!(notification.body, "Choose an answer.");
+        assert!(matches!(
+            notification
+                .approval
+                .as_ref()
+                .map(|approval| &approval.target),
+            Some(ApprovalTargetPresentation::Question {
+                header,
+                question,
+                options,
+            }) if header.as_deref() == Some("Deploy")
+                && question == "Which environment?"
+                && options.len() == 2
+                && options[0].label == "Staging"
+        ));
+    }
+
     #[cfg(unix)]
     #[test]
     fn socket_boundary_rejects_noncanonical_approval_target_combinations() {
@@ -620,7 +751,9 @@ mod tests {
         let registry = ApprovalRegistry::default();
         let request_id = uuid::Uuid::new_v4();
         let (sender, receiver) = mpsc::sync_channel(1);
-        let id = registry.register(request_id, sender).unwrap();
+        let id = registry
+            .register(request_id, sender, PendingApprovalKind::Decision)
+            .unwrap();
 
         assert!(registry.mark_window_shown(id).unwrap());
         assert!(registry.mark_frontend_rendered(id).unwrap());
@@ -636,17 +769,53 @@ mod tests {
     }
 
     #[test]
+    fn question_answers_are_one_shot_and_index_bounded() {
+        let registry = ApprovalRegistry::default();
+        let request_id = uuid::Uuid::new_v4();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let id = registry
+            .register(
+                request_id,
+                sender,
+                PendingApprovalKind::Question { option_count: 3 },
+            )
+            .unwrap();
+
+        assert!(registry.mark_window_shown(id).unwrap());
+        assert!(registry.mark_frontend_rendered(id).unwrap());
+        assert!(!registry.answer(id, 3).unwrap());
+        assert!(!registry.complete(id, ApprovalDecision::AllowOnce).unwrap());
+        assert!(registry.answer(id, 1).unwrap());
+        assert!(!registry.answer(id, 0).unwrap());
+        assert_eq!(
+            receiver.recv().unwrap(),
+            LocalApprovalResponse::Answer {
+                request_id,
+                option_index: 1,
+            }
+        );
+    }
+
+    #[test]
     fn only_one_command_approval_can_wait_at_a_time() {
         let registry = ApprovalRegistry::default();
         let (first_sender, _first_receiver) = mpsc::sync_channel(1);
         registry
-            .register(uuid::Uuid::new_v4(), first_sender)
+            .register(
+                uuid::Uuid::new_v4(),
+                first_sender,
+                PendingApprovalKind::Decision,
+            )
             .unwrap();
         let (second_sender, _second_receiver) = mpsc::sync_channel(1);
 
         assert!(
             registry
-                .register(uuid::Uuid::new_v4(), second_sender)
+                .register(
+                    uuid::Uuid::new_v4(),
+                    second_sender,
+                    PendingApprovalKind::Decision,
+                )
                 .is_err()
         );
     }
@@ -656,7 +825,9 @@ mod tests {
         let registry = ApprovalRegistry::default();
         let request_id = uuid::Uuid::new_v4();
         let (sender, receiver) = mpsc::sync_channel(1);
-        let id = registry.register(request_id, sender).unwrap();
+        let id = registry
+            .register(request_id, sender, PendingApprovalKind::Decision)
+            .unwrap();
 
         assert!(registry.cancel(id).unwrap());
         assert!(!registry.cancel(id).unwrap());
@@ -670,7 +841,9 @@ mod tests {
 
         let presented_request_id = uuid::Uuid::new_v4();
         let (sender, receiver) = mpsc::sync_channel(1);
-        let id = registry.register(presented_request_id, sender).unwrap();
+        let id = registry
+            .register(presented_request_id, sender, PendingApprovalKind::Decision)
+            .unwrap();
         assert!(registry.mark_window_shown(id).unwrap());
         assert!(registry.mark_frontend_rendered(id).unwrap());
         assert!(registry.cancel(id).unwrap());
@@ -688,7 +861,9 @@ mod tests {
         let registry = ApprovalRegistry::default();
         let request_id = uuid::Uuid::new_v4();
         let (sender, _receiver) = mpsc::sync_channel(1);
-        let id = registry.register(request_id, sender).unwrap();
+        let id = registry
+            .register(request_id, sender, PendingApprovalKind::Decision)
+            .unwrap();
 
         assert!(registry.mark_frontend_rendered(id).unwrap());
         assert!(!registry.complete(id, ApprovalDecision::AllowOnce).unwrap());
@@ -701,7 +876,9 @@ mod tests {
         let registry = ApprovalRegistry::default();
         let request_id = uuid::Uuid::new_v4();
         let (sender, _receiver) = mpsc::sync_channel(1);
-        let id = registry.register(request_id, sender).unwrap();
+        let id = registry
+            .register(request_id, sender, PendingApprovalKind::Decision)
+            .unwrap();
         assert!(registry.mark_frontend_rendered(id).unwrap());
 
         assert_eq!(

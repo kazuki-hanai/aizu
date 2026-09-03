@@ -19,6 +19,7 @@ export type BannerClient = {
   activate: (id: number) => Promise<void>;
   acknowledgeApproval: (id: number) => Promise<void>;
   decideApproval: (id: number, decision: "allowOnce" | "deny") => Promise<void>;
+  answerQuestion: (id: number, optionIndex: number) => Promise<void>;
   resize: (height: number) => Promise<void>;
   subscribe: (onChange: (banners: BannerNotification[]) => void) => Promise<UnlistenFn>;
 };
@@ -129,6 +130,9 @@ export const bannerBackend: BannerClient = {
   decideApproval: async (id, decision) => {
     await invokeBackend("decide_banner_approval", { id, decision });
   },
+  answerQuestion: async (id, optionIndex) => {
+    await invokeBackend("answer_banner_question", { id, optionIndex });
+  },
   resize: async (height) => {
     await invokeBackend("resize_banner", { height });
   },
@@ -145,6 +149,7 @@ const defaultPreferences: Preferences = {
   questionEnabled: true,
   agentDetailsEnabled: true,
   commandApprovalsEnabled: false,
+  questionAnswersEnabled: false,
   centerApprovalDialogs: true,
   soundEnabled: true,
   notificationDisplay: "primary",

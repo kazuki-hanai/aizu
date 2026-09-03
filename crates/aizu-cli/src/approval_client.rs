@@ -17,6 +17,7 @@ const APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(48);
 pub struct ApprovalClientOutcome {
     pub presented: bool,
     pub decision: Option<ApprovalDecision>,
+    pub answer: Option<u16>,
 }
 
 #[derive(Debug, Error)]
@@ -76,10 +77,17 @@ pub fn request(
         LocalApprovalResponse::Decision { decision, .. } => ApprovalClientOutcome {
             presented: true,
             decision: Some(decision),
+            answer: None,
+        },
+        LocalApprovalResponse::Answer { option_index, .. } => ApprovalClientOutcome {
+            presented: true,
+            decision: None,
+            answer: Some(option_index),
         },
         LocalApprovalResponse::Unavailable { presented, .. } => ApprovalClientOutcome {
             presented,
             decision: None,
+            answer: None,
         },
     })
 }
