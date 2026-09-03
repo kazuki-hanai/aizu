@@ -72,7 +72,7 @@ GitHub Releases はアプリの配布・更新ファイルの静的ホスティ�
 - iPhone / Apple Watch アプリ、APNs 配信
 - Slack / Discord / Teams 連携
 - Windows/Linux 向けデスクトップアプリの正式配布
-- 通知から自由形式の回答を返す操作、永続的な許可、permission rule変更、または Aizu 自身による tool 実行。local exact shell commandに対する設定オプトイン式の一回限り許可・拒否だけは §13.5 の例外とする
+- 通知から自由形式の回答を返す操作、永続的な許可、permission rule変更、または Aizu 自身による tool 実行。local exact shell commandに対する設定オプトイン式の一回限り許可・拒否は §13.5、Claude Code `AskUserQuestion` の単一選択回答は §13.5 と [ADR 0006](adr/0006-notification-answered-questions.md) の例外とする
 - ターミナル画面や標準出力を常時スクレイピングして状態を推測する機能
 - エージェントの会話全文や生成結果の同期・保存
 - パスワードや SSH 秘密鍵の独自管理
@@ -755,6 +755,18 @@ macOS app bundle に同じ version の `aizu` CLI を sidecar として含める
 - CLIはagentの構造化allow/deny responseだけを返す。Aizuはcommandを実行せず、常時許可、permission rule変更、free-form回答、terminal入力注入を提供しない
 - settings schema v2は旧default-on値をfalseへ移行し、upgrade後に明示的な再オプトインを要求する。v2以降の明示選択は保持する。schema v3は`center_approval_dialogs`を既定オンで追加し、既存のapproval opt-inを変更しない。schema v6は`approval_display`を追加し、旧schemaでは既存`notification_display`を初期値としてコピーした後、両設定を独立保存する
 - macOS Notification Centerとremote SSH PermissionRequestはpassiveのままにし、remoteの許可判断はsource terminalだけで行う
+
+#### Local question answers（AskUserQuestion）
+
+- `question_answers_enabled` は既定オフで `command_approvals_enabled` と独立する。オフの間はAizuが `AskUserQuestion` 経路をinstall・処理せず、現行のpassive通知挙動を変えない
+- オン時だけ、matcherが厳密に `AskUserQuestion` の同期 first-party `PreToolUse` hookをinstallする。outer timeoutはClaude Code側の `AskUserQuestion` timeoutより短くし、回答が間に合わない場合は必ずterminal promptへfallbackさせる（toolを失敗させない）
+- hookは最初のquestionのbounded `question`、optionalな `header`、`multiSelect` flag、順序付きの `label` / `description` optionだけを抽出する。`session_id`、`transcript_path`、`cwd`、その他のhook contextはbroker requestへ含めない。size・件数はboundedにし、control characterはADR 0005と同じ基準で拒否する
+- brokerはADR 0005と同じ表示規則（独立した `approval_display`、centering、常時前面、一回限り消費、passive banner一時退避、close/swipe不可）で、bounded questionと各optionのbuttonを表示する。`multiSelect` questionは本ADRの対象外でterminalへfallbackする
+- 明示選択時だけ、CLIは選んだoptionのagent向け構造化回答を `PreToolUse` の `updatedInput` 契約で返す。選択が整形式の回答へmapできない場合は `updatedInput` を返さずterminal questionへ戻す。Aizuは回答を捏造せず、代理選択せず、free-form textを返さない
+- timeout、app停止、設定オフ、broker不在、別request待機中、表示失敗は回答なしで終了しterminalへ戻す。回答の欠如が特定optionを意味することはない
+- questionとoption text（label / description）はhook process、private socket buffer、desktop memory、banner WebViewにだけ一時保持し、spool、desktop DB、history、notification outbox、settings、log、SSH bridge、macOS Notification Centerへ保存・転送しない
+- remote SSHとNotification Centerのquestionはpassiveのままにする。現行の一方向bridgeは回答をsource terminalへ返せないため、回答はlocalのみとする
+- local approval protocol versionをbumpする。desktop appはmanaged/bundled CLIのreport protocolが一致する場合だけcurrentとみなし、questionを回答できない旧CLIはupdate扱いにして誤用しない
 
 ### 13.6 App icon, tray icon, and branding assets
 
